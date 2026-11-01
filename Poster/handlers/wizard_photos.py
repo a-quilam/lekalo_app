@@ -211,7 +211,11 @@ def photo_step_text(
 
         humor = ui_humor.get_humor_line(announcement_is_empty=True)
         if humor:
-            lines.extend(["", humor])
+            # Экран уходит с parse_mode=HTML: фраза из редактируемого
+            # каталога — обычный текст, а не разметка. Без экранирования
+            # `<`, `>` или `&` ломают разбор и Telegram не отправляет экран
+            # (пользователь видит «Что-то пошло не так» без кнопок шага).
+            lines.extend(["", h(humor)])
     return "\n".join(lines)
 
 

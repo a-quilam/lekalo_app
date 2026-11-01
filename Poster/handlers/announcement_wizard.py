@@ -90,9 +90,6 @@ from announcement_wizard import (
 )
 from brick_store import BrickError
 from brick_types import (
-    BRICK_SCOPE_PERSONAL,
-    BRICK_SCOPE_PLACE,
-    BRICK_SCOPE_SYSTEM,
     BRICK_TYPE_CHOICE,
     BRICK_TYPE_DATE,
     BRICK_TYPE_NUMBER,
@@ -176,12 +173,6 @@ STAGE_LABELS = {
     WizardStage.EXTRAS.value: tr("wizard.module.dop_polya"),
     WizardStage.PREVIEW.value: tr("wizard.module.obzor"),
     WizardStage.COMPLETED.value: tr("wizard.module.opublikovan"),
-}
-
-SCOPE_LABELS = {
-    BRICK_SCOPE_SYSTEM: tr("wizard.module.sistemnyy"),
-    BRICK_SCOPE_PLACE: tr("wizard.module.mesta"),
-    BRICK_SCOPE_PERSONAL: tr("wizard.module.lichnyy"),
 }
 
 STALE_TEXT = tr("errors.stale.wizard")
@@ -3195,6 +3186,9 @@ async def _render_extras(
     _clear_active(ui)
     await _ensure_service_screen_below(update, context, details.delivered_message_ids)
     await _sync_live(update, context, details)
+    # Признак «экран не смог построить список»: тогда штатная подпись
+    # «нет расширенной версии» не показывается — причина другая.
+    failed = False
     try:
         entries, has_extended = _extras_entries(details, _user_id(update))
     except AnnouncementError as exc:
@@ -3203,7 +3197,11 @@ async def _render_extras(
         # показываем честный текст и безопасный возврат.
         logger.warning("Доп. поля анонса #%s недоступны: %s", details.draft_id, exc)
         entries, has_extended = [], False
-        notice = notice or tr("wizard.extras.no_extended")
+        # Причина может быть любой доменной ошибкой (пропал снимок шаблона,
+        # кирпичик стал недоступен), а не только «нет расширенного текста»:
+        # поэтому здесь нейтральный текст причины, а не `no_extended`.
+        notice = notice or tr("wizard.extras.unavailable")
+        failed = True
     current_page = ui.get("extras_page") if page is None else page
     current_page = _clamped_page(
         max(0, int(current_page or 0)), len(entries), EXTRA_PAGE_SIZE
@@ -3219,7 +3217,7 @@ async def _render_extras(
 
     def build(limits: list[int]) -> str:
         lines = [header, "", intro]
-        if not has_extended:
+        if not has_extended and not failed:
             lines.extend(["", tr("wizard.extras.no_extended")])
         if shown:
             for offset, entry in enumerate(shown, start=1):
@@ -3995,7 +3993,9 @@ async def _render_preview(
     if not preview.visible_text and not preview.draft.photos:
         humor = ui_humor.get_humor_line(announcement_is_empty=True)
         if humor:
-            lines.extend(["", humor])
+            # Тот же экран, что и шаг фото: текст уходит с parse_mode=HTML,
+            # поэтому фраза каталога экранируется как обычный текст.
+            lines.extend(["", _h(humor)])
     if notice:
         lines.insert(1, notice)
     await _render(

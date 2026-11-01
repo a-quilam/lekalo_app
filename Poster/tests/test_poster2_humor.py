@@ -16,7 +16,11 @@ SQLite (не реальная `post_bot.db`, не сеть Telegram).
 
 from __future__ import annotations
 
+import logging
+import tempfile
 import unittest
+from html.parser import HTMLParser
+from pathlib import Path
 from unittest.mock import patch
 
 from sqlalchemy import select
@@ -37,7 +41,7 @@ try:
         scenario_test,
     )
     from user_store import get_or_create_user
-    from utils import ui_humor
+    from utils import ui_humor, ui_texts
 
     INTEGRATION_IMPORT_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
@@ -45,6 +49,9 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 
 JOKE_PROBE = "ШУТКА-ПРОБА-7f3a: сегодня без пафоса."
+
+# Каталог фраз юмора (Poster 2.4 P4): отдельный файл, не ui_texts.yaml.
+CATALOG_PATH = Path(__file__).resolve().parent.parent / "config" / "humor_phrases.yaml"
 
 
 def _callbacks(h, prefix: str) -> list[str]:
@@ -256,6 +263,152 @@ class HumorCoreTests(unittest.TestCase):
         self.assertTrue(config.parse_humor_enabled("да"))
         for raw in ("0", "false", "NO", " off ", "нет", "выкл"):
             self.assertFalse(config.parse_humor_enabled(raw), raw)
+
+
+class HumorPhrasesCatalogTests(unittest.TestCase):
+    """
+    Poster 2.4 (P4): фразы живут в редактируемом YAML, механика прежняя.
+
+    Каталог `config/humor_phrases.yaml` — отдельный файл (не ui_texts.yaml),
+    ключ `humor.phrases` со списком строк. Любая проблема файла не ломает
+    импорт: действует вшитый набор `DEFAULT_JOKES`.
+    """
+
+    def tearDown(self) -> None:
+        # Возвращаем рабочий каталог: остальные тесты модуля смотрят на набор.
+        ui_humor.reload_phrases()
+
+    def _write(self, tmp: str, text: str):
+        path = Path(tmp) / "humor_phrases.yaml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_catalog_file_is_valid_and_used(self) -> None:
+        report = ui_humor.reload_phrases(CATALOG_PATH)
+        self.assertTrue(report.ok, report.errors)
+        self.assertFalse(report.used_defaults)
+        self.assertGreaterEqual(report.phrases, 3)
+        self.assertEqual(len(ui_humor.HUMOR_JOKES), report.phrases)
+        # Отдельный каталог: юмор не добавлен в ui_texts.yaml.
+        self.assertNotIn("humor.phrases", ui_texts.DEFAULTS)
+
+    def test_builtin_defaults_are_the_historical_set(self) -> None:
+        """
+        Вшитая страховка не должна «уезжать» вслед за правками файла.
+
+        Владелец правит `humor_phrases.yaml` свободно; `DEFAULT_JOKES`
+        остаётся прежним набором S5 — это последний рубеж при битом файле.
+        """
+        self.assertEqual(len(ui_humor.DEFAULT_JOKES), 8)
+        self.assertTrue(
+            all(isinstance(item, str) and item for item in ui_humor.DEFAULT_JOKES)
+        )
+        self.assertEqual(len(set(ui_humor.DEFAULT_JOKES)), 8)
+
+    def test_edited_catalog_is_used_not_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(
+                tmp,
+                'humor:\n  phrases:\n    - "Своя фраза раз"\n'
+                '    - "Своя фраза два"\n',
+            )
+            report = ui_humor.reload_phrases(path)
+        self.assertTrue(report.ok, report.errors)
+        self.assertEqual(ui_humor.HUMOR_JOKES, ("Своя фраза раз", "Своя фраза два"))
+        # Механика не изменилась: шутка выбирается только из набора файла.
+        value = ui_humor.pick_variant("empty:1", forced=True)
+        self.assertIn(value, ui_humor.HUMOR_JOKES)
+
+    def test_flat_key_form_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, '"humor.phrases": ["Фраза из плоского ключа"]\n')
+            report = ui_humor.reload_phrases(path)
+        self.assertTrue(report.ok, report.errors)
+        self.assertEqual(ui_humor.HUMOR_JOKES, ("Фраза из плоского ключа",))
+
+    def test_broken_yaml_falls_back_to_defaults_with_warning(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, "humor: [не список фраз\n")
+            with self.assertLogs("utils.ui_humor", level=logging.WARNING):
+                report = ui_humor.reload_phrases(path)
+        self.assertFalse(report.ok)
+        self.assertTrue(report.used_defaults)
+        self.assertEqual(ui_humor.HUMOR_JOKES, ui_humor.DEFAULT_JOKES)
+        self.assertIsNotNone(ui_humor.empty_announcement_joke())
+
+    def test_missing_file_falls_back_to_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "no_such.yaml"
+            with self.assertLogs("utils.ui_humor", level=logging.WARNING):
+                report = ui_humor.reload_phrases(path)
+        self.assertFalse(report.ok)
+        self.assertEqual(ui_humor.HUMOR_JOKES, ui_humor.DEFAULT_JOKES)
+
+    def test_empty_list_and_missing_key_fall_back_to_defaults(self) -> None:
+        cases = {
+            "пустой список": "humor:\n  phrases: []\n",
+            "нет ключа": "humor:\n  other: 1\n",
+            "не список": 'humor:\n  phrases: "одна фраза"\n',
+            "пустая строка": 'humor:\n  phrases: ["   "]\n',
+            "не строка": "humor:\n  phrases: [42]\n",
+        }
+        for name, text in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                path = self._write(tmp, text)
+                with self.assertLogs("utils.ui_humor", level=logging.WARNING):
+                    report = ui_humor.reload_phrases(path)
+                self.assertFalse(report.ok, name)
+                self.assertEqual(ui_humor.HUMOR_JOKES, ui_humor.DEFAULT_JOKES, name)
+
+    def test_joke_with_placeholder_is_rejected(self) -> None:
+        """Шутка — не шаблон: подстановка в ней не предусмотрена."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(tmp, 'humor:\n  phrases: ["Привет, {name}!"]\n')
+            with self.assertLogs("utils.ui_humor", level=logging.WARNING):
+                report = ui_humor.reload_phrases(path)
+        self.assertFalse(report.ok)
+        self.assertEqual(ui_humor.HUMOR_JOKES, ui_humor.DEFAULT_JOKES)
+
+    def test_joke_with_markup_chars_is_rejected(self) -> None:
+        """
+        D1: символы `<`, `>` и `&` в фразе запрещены каталогом.
+
+        Экран уходит с `parse_mode=HTML`, поэтому даже при экранировании на
+        стороне рендера такой файл не применяется: бот работает на вшитых
+        фразах, а владелец видит причину в логе.
+        """
+        for char in ("<", ">", "&"):
+            with self.subTest(char), tempfile.TemporaryDirectory() as tmp:
+                path = self._write(
+                    tmp, f'humor:\n  phrases:\n    - "Многоточие {char} и точка"\n'
+                )
+                with self.assertLogs("utils.ui_humor", level=logging.WARNING) as logs:
+                    report = ui_humor.reload_phrases(path)
+                self.assertFalse(report.ok, char)
+                self.assertTrue(report.used_defaults, char)
+                self.assertEqual(ui_humor.HUMOR_JOKES, ui_humor.DEFAULT_JOKES, char)
+                self.assertTrue(
+                    any("разметки" in error for error in report.errors),
+                    f"нет понятной причины: {report.errors}",
+                )
+                self.assertTrue(
+                    any("разметки" in line for line in logs.output),
+                    "причина должна попадать в WARNING",
+                )
+                # Бот жив: шутка пустого анонса есть и берётся из дефолтов.
+                self.assertIn(
+                    ui_humor.get_humor_line(announcement_is_empty=True),
+                    ui_humor.DEFAULT_JOKES,
+                )
+
+    def test_yaml_jokes_still_never_reach_forbidden_screens(self) -> None:
+        """Смена источника фраз не открывает запрещённые экраны."""
+        for kind in ui_humor.FORBIDDEN_SCREEN_KINDS:
+            for index in range(500):
+                self.assertIsNone(
+                    ui_humor.pick_variant(f"k{index}", screen_kind=kind, forced=True),
+                    kind,
+                )
 
 
 @unittest.skipIf(
@@ -477,6 +630,140 @@ class HumorQuestionScreenTests(unittest.TestCase):
         text = h.screen_text()
         self.assertIn("&lt;b&gt;Имя&lt;/b&gt; &amp;", text)
         self.assertNotIn("<b>Имя</b>", text)
+
+
+# «Злая» фраза для D1: незакрытый тег и амперсанд. В сыром виде такая
+# строка ломает parse_mode=HTML, поэтому на экране она обязана быть
+# экранирована. Валидатор каталога её тоже отвергает (см. выше), но здесь
+# набор подставляется напрямую — проверяется второй слой защиты.
+EVIL_JOKE = "Шутка & <b>без закрытия"
+ESCAPED_EVIL_JOKE = "Шутка &amp; &lt;b&gt;без закрытия"
+INTERNAL_ERROR_FRAGMENT = "Что-то пошло не так"
+
+
+class _BalanceChecker(HTMLParser):
+    """Собирает незакрытые/лишние теги — именно это Telegram и отвергает."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=False)
+        self.stack: list[str] = []
+        self.problems: list[str] = []
+
+    def handle_starttag(self, tag, attrs):  # noqa: ANN001, ANN201
+        self.stack.append(tag)
+
+    def handle_endtag(self, tag):  # noqa: ANN001, ANN201
+        if not self.stack:
+            self.problems.append(f"лишний </{tag}>")
+            return
+        if self.stack[-1] != tag:
+            self.problems.append(f"нарушен порядок: <{self.stack[-1]}> и </{tag}>")
+            return
+        self.stack.pop()
+
+
+def _assert_html_balanced(case: unittest.TestCase, html: str) -> None:
+    checker = _BalanceChecker()
+    checker.feed(html)
+    checker.close()
+    case.assertEqual(checker.problems, [], f"HTML сломан: {html!r}")
+    case.assertEqual(checker.stack, [], f"незакрытые теги: {html!r}")
+
+
+@unittest.skipIf(
+    INTEGRATION_IMPORT_ERROR is not None,
+    f"окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
+)
+class HumorEscapingTests(unittest.TestCase):
+    """
+    D1: фраза юмора — обычный текст, даже если она попала в набор в обход
+    валидатора каталога.
+
+    Сценарий дефекта: `/start` → `tp_pick` → «⏭ Пропустить» на вопросе без
+    значения → шаг фото. Экран уходит с `parse_mode=HTML`, и неэкранированная
+    фраза ломала разбор: Telegram не отправлял экран, пользователь видел
+    «Что-то пошло не так» без кнопок шага.
+    """
+
+    @scenario_test
+    async def test_evil_joke_is_escaped_on_photo_step_and_preview(self, h):
+        template_id = _seed_template(h, bricks=1)
+        await h.text("/start")
+        await h.callback(f"tp_pick:{template_id}")
+        # Пустое значение + «Пропустить»: анонс без текста, дальше шаг фото.
+        with patch.object(ui_humor, "HUMOR_JOKES", (EVIL_JOKE,)):
+            await h.callback(_callback(h, "aw_qskip"))
+            photo_text = h.screen_text()
+            photo_buttons = h.screen_buttons()
+
+            self.assertIn(ESCAPED_EVIL_JOKE, photo_text, photo_text)
+            self.assertNotIn(EVIL_JOKE, photo_text, "фраза не экранирована")
+            self.assertNotIn(INTERNAL_ERROR_FRAGMENT, photo_text)
+            _assert_html_balanced(self, photo_text)
+            callbacks = [data for _label, data in photo_buttons if data]
+            self.assertTrue(
+                any(data.startswith("aw_photo_none") for data in callbacks),
+                f"кнопка «Пропустить» шага фото потеряна: {photo_buttons}",
+            )
+            self.assertTrue(
+                any(data.startswith("aw_photo_back") for data in callbacks),
+                f"кнопка «Назад» шага фото потеряна: {photo_buttons}",
+            )
+            self.assertIn("Фотографии анонса", photo_text)
+
+            # Тот же путь дальше: служебный экран обзора пустого анонса
+            # (второй потребитель `get_humor_line`) тоже экранирует фразу.
+            draft = _latest_draft(h)
+            await h.callback(f"aw_preview:{draft.draft_id}:{draft.revision}")
+            preview_text = h.screen_text()
+
+        self.assertIn(ESCAPED_EVIL_JOKE, preview_text, preview_text)
+        self.assertNotIn(EVIL_JOKE, preview_text, "фраза не экранирована")
+        self.assertNotIn(INTERNAL_ERROR_FRAGMENT, preview_text)
+        _assert_html_balanced(self, preview_text)
+        self.assertTrue(h.screen_buttons(), "экран обзора остался без кнопок")
+
+    @scenario_test
+    async def test_catalog_with_evil_phrase_keeps_photo_step_alive(self, h):
+        """
+        Ровно репро D1: в каталоге фраза с `&`/`<b>`; валидатор её
+        отклоняет, бот работает на встроенных фразах, и экран шага фото
+        доходит до пользователя с шуткой и кнопками.
+        """
+        template_id = _seed_template(h, bricks=1)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "humor_phrases.yaml"
+            path.write_text(
+                'humor:\n  phrases:\n    - "Шутка & <b>без закрытия"\n',
+                encoding="utf-8",
+            )
+            with (
+                patch.dict("os.environ", {ui_humor.PATH_ENV_VARIABLE: str(path)}),
+                self.assertLogs("utils.ui_humor", level=logging.WARNING),
+            ):
+                report = ui_humor.reload_phrases()
+                self.assertFalse(report.ok)
+                self.assertEqual(ui_humor.HUMOR_JOKES, ui_humor.DEFAULT_JOKES)
+
+                await h.text("/start")
+                await h.callback(f"tp_pick:{template_id}")
+                await h.callback(_callback(h, "aw_qskip"))
+                photo_text = h.screen_text()
+                photo_buttons = h.screen_buttons()
+
+        self.assertNotIn(INTERNAL_ERROR_FRAGMENT, photo_text)
+        self.assertNotIn(EVIL_JOKE, photo_text, "злая фраза не должна дойти")
+        _assert_html_balanced(self, photo_text)
+        self.assertIn("Фотографии анонса", photo_text)
+        default_joke = next(
+            joke for joke in ui_humor.DEFAULT_JOKES if joke in photo_text
+        )
+        self.assertTrue(default_joke)
+        callbacks = [data for _label, data in photo_buttons if data]
+        self.assertTrue(
+            any(data.startswith("aw_photo_none") for data in callbacks),
+            f"кнопка «Пропустить» шага фото потеряна: {photo_buttons}",
+        )
 
 
 if __name__ == "__main__":
