@@ -207,8 +207,9 @@ class PhotoStepWiringTests(unittest.TestCase):
         self.assertIsNone(stored.publication_status)
         self.assertEqual(h.posts(), [])
 
-        # «Далее» снова ведёт на шаг фото, значение не потеряно.
-        await h.callback(_callback(h, "aw_qnext"))
+        # «⏭ Пропустить» (P2: вместо «➡️ Далее») снова ведёт на шаг фото,
+        # значение не потеряно — пропуск заполненного поля его сохраняет.
+        await h.callback(_callback(h, "aw_qskip"))
         self.assertIn(PHOTO_STEP_TITLE, h.screen_text())
         self.assertEqual(_details(h, draft.id).revision, stored.revision)
         self.assertEqual(bricks["main"], bricks["main"])

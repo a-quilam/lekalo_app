@@ -56,7 +56,11 @@ def _callbacks(h, prefix: str) -> list[str]:
 def _without_notice(text: str) -> str:
     """Убирает одноразовую строку «сохранено» — она не часть экрана."""
     blocks = text.split("\n\n")
-    return "\n\n".join(block for block in blocks if not block.startswith("Значение «"))
+    return "\n\n".join(
+        block
+        for block in blocks
+        if not block.startswith(("Значение «", "Значение поля «"))
+    )
 
 
 def _callback(h, prefix: str) -> str:
@@ -290,9 +294,11 @@ class HumorQuestionScreenTests(unittest.TestCase):
             self.assertIn(JOKE_PROBE, joked_text)
 
             # Тот же второй вопрос без шутки: назад и снова вперёд.
+            # Poster 2.4 (P2): кнопки «➡️ Далее» больше нет — заполненное
+            # поле перелистывается «⏭ Пропустить», значение сохраняется.
             with patch("utils.ui_humor.pick_variant", return_value=None):
                 await h.callback(_callback(h, "aw_qback"))
-                await h.callback(_callback(h, "aw_qnext"))
+                await h.callback(_callback(h, "aw_qskip"))
                 plain_text = h.screen_text()
                 plain_buttons = h.screen_buttons()
         after_plain = _details(h, _latest_draft(h).draft_id)
@@ -346,11 +352,12 @@ class HumorQuestionScreenTests(unittest.TestCase):
             await h.callback(f"tp_pick:{template_id}")
             await h.text("Заголовок анонса")
             second_first = h.screen_text()
-            # «◀️ Назад» и «➡️ Далее» перерисовывают тот же вопрос без
-            # изменения данных: ключ и текст обязаны совпасть.
+            # «◀️ Назад» и «⏭ Пропустить» (P2: вместо «➡️ Далее»)
+            # перерисовывают тот же вопрос без изменения данных: ключ и
+            # текст обязаны совпасть.
             await h.callback(_callback(h, "aw_qback"))
             self.assertIn("Вопрос 1 из 2", h.screen_text())
-            await h.callback(_callback(h, "aw_qnext"))
+            await h.callback(_callback(h, "aw_qskip"))
             second_again = h.screen_text()
 
         self.assertGreaterEqual(len(keys), 4)

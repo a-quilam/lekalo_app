@@ -492,7 +492,8 @@ class AnnouncementAutoDeliveryFailureTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Чужое изменение")
         # H3: «Применить изменения» больше нет, версия меняется сохранением.
         # Чужой callback пытается открыть правку по актуальной ревизии.
@@ -592,7 +593,8 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Обновлённое")
 
         # H3: ответ сразу применил правку — отдельной кнопки нет, а
@@ -617,7 +619,8 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Третье")
         third = _stored(h, draft.id)
         self.assertEqual(tuple(third.previous_message_ids), second_ids)
@@ -641,7 +644,8 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Новая версия")
 
         # Неудача удаления не откатывает успешную доставку: новая версия есть,
@@ -676,9 +680,10 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_extras"))
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_EXTRAS)
 
-        await h.callback(_callback(h, "aw_exadd"))
+        # Poster 2.4 (P2): список сразу содержит доп. кирпичики расширенного
+        # текста, кнопки «➕ Добавить поле» больше нет.
         for _attempt in range(4):
-            if _callbacks(h, "aw_exbrick", f":{bricks['extra0']}"):
+            if _callbacks(h, "aw_exedit", f":{bricks['extra0']}"):
                 break
             next_page = [
                 data for label, data in h.screen_buttons() if label == "▶️" and data
@@ -686,7 +691,7 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
             if not next_page:
                 break
             await h.callback(next_page[0])
-        await h.callback(_callback(h, "aw_exbrick", f":{bricks['extra0']}"))
+        await h.callback(_callback(h, "aw_exedit", f":{bricks['extra0']}"))
         # H2: секций и позиций больше нет — кирпичик сразу ждёт значение.
         await h.text("Дополнительно")
         self.assertIn("Дополнительно", h.screen_text())
@@ -702,7 +707,9 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         # сохранения значения остаёшься в списке дополнительных полей.
         self.assertIn("Доп 0", h.screen_text())
         await h.callback(_callback(h, "aw_exdel"))
-        self.assertIn("Дополнительных полей пока нет", h.screen_text())
+        # P2: удаляется только значение/выбор, определение кирпичика
+        # остаётся, поэтому список показывает его как незаполненное.
+        self.assertIn("Доп 0: не заполнено", h.screen_text())
         # Удаление тоже применилось сразу: канонический текст без extras.
         self.assertNotIn("Дополнительно", h.posts()[-1] or "")
 

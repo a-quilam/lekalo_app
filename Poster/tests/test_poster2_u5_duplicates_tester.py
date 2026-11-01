@@ -202,7 +202,8 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text(UPDATED)
         # Кнопки применения на экране правки нет: версия уже заменена.
         labels = [label for label, _data in h.screen_buttons()]

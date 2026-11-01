@@ -280,7 +280,7 @@ class Poster231AcceptanceTests(unittest.TestCase):
     # —— E1: список доступных доп. полей и его применение ————————
     @scenario_test
     async def test_s5_available_extras_excludes_content_bricks(self, h) -> None:
-        """Дефект 4: список = extended − content − выбранные, выбор работает."""
+        """Дефект 4: список = extended − content, выбор работает (P2)."""
         await _boot(h)
         place_id, _alias = _seed_place(h)
         bricks = _seed_extended_template(
@@ -295,16 +295,28 @@ class Poster231AcceptanceTests(unittest.TestCase):
         await _no_photos(h)
         await _open_edit(h)
         await h.callback(_callback(h, "aw_extras"))
-        add_data = _callback(h, "aw_exadd")
-        _prefix, draft_id, revision = add_data.split(":")
-        await h.callback(add_data)
 
+        # Poster 2.4 (P2): экран сразу показывает все доп. кирпичики
+        # расширенной версии, кнопки «➕ Добавить поле» больше нет.
         datas = [data for _label, data in h.screen_buttons()]
-        self.assertNotIn(
-            f"aw_exbrick:{draft_id}:{revision}:{bricks['main']}",
-            datas,
-            "кирпичик из content не должен предлагаться как доп. поле",
+        self.assertEqual(
+            [d for d in datas if d and d.startswith("aw_exadd")],
+            [],
+            "callback aw_exadd удалён: список показывается сразу",
         )
+        self.assertIn(
+            "Доп 1",
+            h.screen_text(),
+            f"кирпичик из extended должен быть в списке: {h.screen_text()[:300]!r}",
+        )
+        for data in datas:
+            self.assertFalse(
+                data
+                and data.startswith("aw_exedit")
+                and data.endswith(f":{bricks['main']}"),
+                "кирпичик из content не должен предлагаться как доп. поле: " f"{datas}",
+            )
+
         offered = [d for d in datas if d and d.endswith(f":{bricks['add1']}")]
         self.assertTrue(
             offered, f"кирпичик только из extended должен предлагаться: {datas}"
@@ -415,13 +427,15 @@ class Poster231AcceptanceTests(unittest.TestCase):
         self.assertNotIn("Произошла внутренняя ошибка", text)
         self.assertNotIn("Traceback", text)
         datas = [data for _label, data in h.screen_buttons()]
+        # P2: кнопки «➕ Добавить поле» (`aw_exadd`) больше нет вообще, а
+        # кирпичиков вне расширенного текста список не показывает.
         self.assertEqual(
             [d for d in datas if d and d.startswith("aw_exadd")],
             [],
             "добавлять нечего: расширенного текста в снимке нет",
         )
         self.assertEqual(
-            [d for d in datas if d and d.startswith("aw_exbrick")],
+            [d for d in datas if d and d.startswith(("aw_exedit", "aw_exbrick"))],
             [],
             "кирпичики вне расширенного текста не предлагаются",
         )
@@ -429,7 +443,7 @@ class Poster231AcceptanceTests(unittest.TestCase):
     # —— Совместимость и статусы полей ————————————————————————————
     @scenario_test
     async def test_s9_legacy_draft_without_extended_still_renders(self, h) -> None:
-        """Старый черновик без extended: доп. поле не ломает рендер (append)."""
+        """Старый черновик без extended: значение не ломает рендер (P2)."""
         await _boot(h)
         place_id, _alias = _seed_place(h)
         bricks = _seed_extended_template(
@@ -447,11 +461,17 @@ class Poster231AcceptanceTests(unittest.TestCase):
         _upsert_value(h, draft_id=draft.id, brick_id=bricks["add1"], text="ADD")
         await _no_photos(h)
 
-        # Снимок без extended: legacy-доп. поле дописывается в конец
-        # (совместимость чтения старых черновиков), рендер не падает.
+        # Poster 2.4 (P2): legacy append-fallback удалён. У снимка без
+        # extended доп. значение в текст не дописывается и в конец не
+        # попадает; строка в БД при этом сохраняется.
         text = (h.posts() or [""])[-1] or ""
-        self.assertIn("ADD", text, f"legacy-значение должно быть видно: {text!r}")
-        self.assertIn("A M B C", text)
+        self.assertNotIn(
+            "ADD",
+            text,
+            "legacy-значение не дописывается в конец текста: append-fallback "
+            f"удалён; фактический текст: {text!r}",
+        )
+        self.assertEqual(text.strip(), "A M B C", f"текст анонса: {text!r}")
         self.assertNotIn("Произошла внутренняя ошибка", h.screen_text())
 
     @scenario_test

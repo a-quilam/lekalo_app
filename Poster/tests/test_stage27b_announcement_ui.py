@@ -25,7 +25,11 @@ try:
         start_announcement_wizard,
     )
     from announcement_wizard import WizardStage
-    from brick_store import archive_personal_brick, create_personal_brick
+    from brick_store import (
+        archive_personal_brick,
+        create_personal_brick,
+        list_personal_bricks,
+    )
     from handlers.announcement_wizard import (
         AW_EXTRAS,
         AW_PLACE,
@@ -151,6 +155,13 @@ def _seed_place(
         )
 
 
+def _rename_codes(text: str, renamed: dict[str, str]) -> str:
+    """Переписывает `[код]` в текстах шаблона на уникальные коды кирпичиков."""
+    for old, new in renamed.items():
+        text = text.replace(f"[{old}]", f"[{new}]")
+    return text
+
+
 def _seed_personal_template(
     h,
     *,
@@ -158,17 +169,39 @@ def _seed_personal_template(
     specs: list[TemplateSpec] | None = None,
     content: str | None = None,
     extended_content: str | None = None,
+    extended: str | None = None,
     actor_tg: int = DEFAULT_USER_ID,
 ):
+    # `extended` — короткий алиас `extended_content` для тестов Poster 2.4.
+    if extended is not None:
+        extended_content = extended
     specs = specs or [("main", "Основное поле", "short_text", {})]
     with h.session_factory() as session:
         get_or_create_user(session, actor_tg, username=f"user-{actor_tg}")
+        # Код в личной области уникален даже у архивных кирпичиков. Повторный
+        # сев в одном тесте (второй шаблон с теми же кодами) получает свой
+        # кирпичик с суффиксом, а ссылки в текстах переписываются на него.
+        taken = {
+            definition.code
+            for definition in list_personal_bricks(
+                session, actor_tg, include_archived=True
+            )
+        }
         bricks: dict[str, int] = {}
+        renamed: dict[str, str] = {}
         for code, title, value_type, rules in specs:
+            unique = code
+            suffix = 2
+            while unique in taken:
+                unique = f"{code}_{suffix}"
+                suffix += 1
+            taken.add(unique)
+            if unique != code:
+                renamed[code] = unique
             definition = create_personal_brick(
                 session,
                 actor_telegram_user_id=actor_tg,
-                code=code,
+                code=unique,
                 title=title,
                 value_type=value_type,
                 rules=rules,
@@ -176,6 +209,10 @@ def _seed_personal_template(
             bricks[code] = definition.id
         if content is None:
             content = " ".join(f"[{code}]" for code, _title, _type, _rules in specs)
+        if renamed:
+            content = _rename_codes(content, renamed)
+            if extended_content is not None:
+                extended_content = _rename_codes(extended_content, renamed)
         template = create_personal_template(
             session,
             actor_telegram_user_id=actor_tg,
@@ -646,12 +683,13 @@ class AnnouncementWizardExtrasTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_extras"))
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_EXTRAS)
-        self.assertIn("Дополнительных полей пока нет", h.screen_text())
+        # Poster 2.4 (P2, требование IV): экран открывается сразу списком
+        # ВСЕХ доп. кирпичиков расширенного текста, включая незаполненные.
+        self.assertIn("Доп 0: не заполнено", h.screen_text())
 
-        await h.callback(_callback(h, "aw_exadd"))
         found = False
         for _attempt in range(4):
-            if _callbacks(h, "aw_exbrick", f":{extra_id}"):
+            if _callbacks(h, "aw_exedit", f":{extra_id}"):
                 found = True
                 break
             labels = h.screen_buttons()
@@ -660,7 +698,7 @@ class AnnouncementWizardExtrasTests(unittest.TestCase):
                 break
             await h.callback(next_page[0])
         self.assertTrue(found, f"Личный кирпичик не найден: {h.screen_buttons()}")
-        await h.callback(_callback(h, "aw_exbrick", f":{extra_id}"))
+        await h.callback(_callback(h, "aw_exedit", f":{extra_id}"))
         # H2: секции и позиции больше нет — кирпичик сразу ждёт значение.
         self.assertIn("Поле пока не заполнено", h.screen_text())
         await h.text("Дополнительно")
@@ -714,10 +752,13 @@ class AnnouncementWizardExtrasTests(unittest.TestCase):
         self.assertFalse(_callbacks(h, "aw_apply"))
         # Экран списка остаётся рабочим: поле видно и его можно править.
         self.assertIn("Доп 0", h.screen_text())
-        await h.callback(_callback(h, "aw_exedit"))
+        await h.callback(_callback(h, "aw_exedit", f":{extra_id}"))
         self.assertIn("Дополнительно", h.screen_text())
+        # Poster 2.4 (P2, требование VI): «⏭ Пропустить» у заполненного поля
+        # НЕ очищает значение — оно остаётся как есть, экран возвращается к
+        # списку с тем же значением.
         await h.callback(_callback(h, "aw_exskip"))
-        self.assertIn("пропущено", h.screen_text())
+        self.assertIn("Доп 0: Дополнительно", h.screen_text())
         with h.session_factory() as session:
             details = get_announcement_draft(
                 session,
@@ -727,9 +768,11 @@ class AnnouncementWizardExtrasTests(unittest.TestCase):
             value = details.value_for(details.extras[0].brick_id)
             self.assertIsNotNone(value)
             assert value is not None
-            self.assertTrue(value.is_empty_optional)
+            self.assertEqual(value.status, FIELD_STATUS_VALID)
         await h.callback(_callback(h, "aw_exdel"))
-        self.assertIn("Дополнительных полей пока нет", h.screen_text())
+        # Удаление убирает только значение/выбор, определение кирпичика
+        # остаётся: список P2 показывает его снова как незаполненное.
+        self.assertIn("Доп 0: не заполнено", h.screen_text())
         with h.session_factory() as session:
             details = get_announcement_draft(
                 session,
@@ -770,7 +813,8 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         )
         await h.callback(_callback(h, "aw_qgoto"))
         self.assertIn("Исходное", h.screen_text())
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # показывает текущее значение и принимает новый текст.
         self.assertIn("Текущее значение: Исходное", h.screen_text())
         await h.text("Новое")
         # H3: ответ сразу применил изменение — новой версии достаточно,

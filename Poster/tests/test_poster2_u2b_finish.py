@@ -183,7 +183,8 @@ class DeliveredScreenTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_edit"))
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Новое значение")
         self.assertNotIn(DELIVERED_PENDING_TEXT, h.screen_text())
         self.assertEqual(h.screen_text(), DELIVERED_TEXT)
@@ -250,8 +251,13 @@ class DeliveredEditScreenTests(unittest.TestCase):
         self.assertEqual(_details(h, draft.id).revision, draft.revision)
 
     @scenario_test
-    async def test_extras_row_disappears_when_nothing_left_to_add(self, h) -> None:
-        """Кнопка доп. полей условная: пустой список — не действие."""
+    async def test_extras_row_stays_when_all_extras_filled(self, h) -> None:
+        """
+        P2: строка доп. полей условная — она нужна, когда снимок содержит
+        кирпичики расширенного текста (или уже выбранные доп. поля).
+        Заполнение всех кирпичиков строку НЕ убирает: экран списка — точка
+        входа к правке значений, поэтому список не может опустеть.
+        """
         await h.text("/start")
         # Poster 2.3.1 (E1): доп. кирпичик доступен как кандидат только
         # там, где он стоит в расширенном тексте шаблона.
@@ -270,11 +276,10 @@ class DeliveredEditScreenTests(unittest.TestCase):
             [label for label, _data in h.screen_buttons()],
         )
 
-        # Добавляем все доступные кирпичики и проверяем, что строка исчезла
-        # ровно тогда, когда добавлять больше нечего.
+        # Заполняем все доступные кирпичики: P2 показывает и заполненные,
+        # поэтому строка остаётся — иначе правка значения стала бы тупиком.
         from announcement_store import add_announcement_extra
         from announcement_wizard import extra_candidate_brick_ids
-        from handlers.announcement_wizard import _available_extra_bricks
 
         with h.session_factory() as session:
             details = get_announcement_draft(
@@ -293,21 +298,36 @@ class DeliveredEditScreenTests(unittest.TestCase):
                     draft_id=draft.id,
                     brick_id=brick_id,
                 )
-            details = get_announcement_draft(
-                session,
-                actor_telegram_user_id=DEFAULT_USER_ID,
-                draft_id=draft.id,
-            )
-            self.assertEqual(_available_extra_bricks(details, DEFAULT_USER_ID), [])
 
-        # Возвращаемся на экран правки: строки доп. полей больше нет.
         await h.callback("main_menu")
         await h.text("/start")
         await h.callback("my_announcements")
         await h.callback(f"aw_open:{draft.id}")
-        await _open_edit(h)
-        labels = [label for label, _data in h.screen_buttons()]
-        self.assertNotIn("🧱 Дополнительные поля", labels, labels)
+        # Черновик возвращается на этап доп. полей: заполненный кирпичик
+        # виден в списке и доступен для правки/удаления значения.
+        if not _callbacks(h, "aw_exedit"):
+            await _open_edit(h)
+            await h.callback(_callback(h, "aw_extras"))
+        self.assertTrue(
+            _callbacks(h, "aw_exedit"),
+            f"заполненное доп. поле должно остаться в списке: " f"{h.screen_buttons()}",
+        )
+
+    @scenario_test
+    async def test_extras_row_hidden_without_extended_text(self, h) -> None:
+        """Без расширенного текста и без выбранных полей строка скрыта."""
+        await h.text("/start")
+        draft, _bricks = await _delivered(
+            h,
+            specs=[("main", "Основное поле", "short_text", {})],
+            content="[main]",
+            extended_content=None,
+        )
+        await h.callback(_callback(h, "aw_edit"))
+        self.assertNotIn(
+            "🧱 Дополнительные поля",
+            [label for label, _data in h.screen_buttons()],
+        )
 
     @scenario_test
     async def test_main_menu_replaces_the_fake_back_button(self, h) -> None:
@@ -429,7 +449,8 @@ class MessageOrderInvariantTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Обновлено")
         # H3: новая версия ушла сразу, без «Применить изменения».
 
@@ -498,7 +519,8 @@ class DeliveredApplyTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Другое значение")
 
         await h.callback(stale_edit)
@@ -524,7 +546,8 @@ class DeliveredApplyTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Другое")
 
         await h.callback(stale_edit)

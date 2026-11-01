@@ -224,7 +224,8 @@ class FormattingScreenTests(unittest.TestCase):
 
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): кнопки «✏️ Изменить ответ» больше нет — экран
+        # вопроса сам показывает текущее значение и принимает новый ввод.
         self.assertIn("Текущее значение: <u>Старое</u>", h.screen()["text"])
 
         await h.text("Новое", entities=[ent(MessageEntity.STRIKETHROUGH, 0, 5)])
@@ -259,15 +260,16 @@ class FormattingScreenTests(unittest.TestCase):
         await _open_edit(h)
 
         await h.callback(_callback(h, "aw_extras"))
-        await h.callback(_callback(h, "aw_exadd"))
-        await h.callback(_callback(h, "aw_exbrick", f":{bricks['extra']}"))
+        # Poster 2.4 (P2): незаполненный доп. кирпичик открывается сразу из
+        # списка (кнопки «➕ Добавить поле» больше нет).
+        await h.callback(_callback(h, "aw_exedit", f":{bricks['extra']}"))
         # H2: секций и позиций больше нет.
         await h.text("Доп", entities=[ent(MessageEntity.SPOILER, 0, 3)])
         self.assertEqual(
             _stored_payload(h, _latest_draft(h).id, bricks["main"])["text"], "Главное"
         )
         # Открытие заполненного доп. кирпичика снова показывает разметку.
-        await h.callback(_callback(h, "aw_exedit"))
+        await h.callback(_callback(h, "aw_exedit", f":{bricks['extra']}"))
         self.assertIn("<tg-spoiler>Доп</tg-spoiler>", h.screen()["text"])
         self.assertNotIn("&lt;tg-spoiler&gt;", h.screen()["text"])
 

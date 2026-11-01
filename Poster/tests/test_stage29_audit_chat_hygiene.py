@@ -264,20 +264,15 @@ class ScreenHtmlEscapingTests(unittest.TestCase):
         from tests.test_stage27b_announcement_ui import _callback
 
         await h.callback(_callback(h, "aw_extras"))
-        await h.callback(_callback(h, "aw_exadd"))
-        data = [d for d in _callbacks(h, "aw_exbrick") if d.endswith(f":{brick_id}")]
+        # Poster 2.4 (P2): список сразу содержит доп. кирпичики, кнопки
+        # «➕ Добавить поле» и выбора секции/позиции больше нет.
+        data = [d for d in _callbacks(h, "aw_exedit") if d.endswith(f":{brick_id}")]
         if not data:
             nav = _callbacks(h, "aw_exbpage", ":1")
             if nav:
                 await h.callback(nav[0])
-            data = [
-                d for d in _callbacks(h, "aw_exbrick") if d.endswith(f":{brick_id}")
-            ]
+            data = [d for d in _callbacks(h, "aw_exedit") if d.endswith(f":{brick_id}")]
         await h.callback(data[0])
-        sec = _callbacks(h, "aw_exsec")[0]
-        await h.callback(sec)
-        pos = _callbacks(h, "aw_expos")[0]
-        await h.callback(pos)
 
     @scenario_test
     async def test_extra_brick_title_is_escaped_in_section_and_prompt(self, h):
@@ -288,15 +283,13 @@ class ScreenHtmlEscapingTests(unittest.TestCase):
         # U2b: после доставки доп. кирпичики открываются с экрана «Изменить».
         await _open_edit(h)
         await h.callback(_callback(h, "aw_extras"))
-        await h.callback(_callback(h, "aw_exadd"))
-        data = [d for d in _callbacks(h, "aw_exbrick") if d.endswith(f":{brick_id}")]
+        # Poster 2.4 (P2): кирпичик открывается прямо из списка.
+        data = [d for d in _callbacks(h, "aw_exedit") if d.endswith(f":{brick_id}")]
         if not data:
             nav = _callbacks(h, "aw_exbpage", ":1")
             if nav:
                 await h.callback(nav[0])
-            data = [
-                d for d in _callbacks(h, "aw_exbrick") if d.endswith(f":{brick_id}")
-            ]
+            data = [d for d in _callbacks(h, "aw_exedit") if d.endswith(f":{brick_id}")]
         await h.callback(data[0])
 
         raw_section = h.screen()["text"]

@@ -174,7 +174,8 @@ class DeliveredEditLayoutTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): кнопки «✏️ Изменить ответ» больше нет — новый
+        # текст на экране вопроса сразу заменяет значение.
         await h.text("Новое значение")
 
         stored = _details(h, draft.id)
@@ -210,7 +211,11 @@ class DeliveredEditLayoutTests(unittest.TestCase):
         await h.callback(data[0])
         labels = [label for label, _data in h.screen_buttons()]
         self.assertNotIn("🔄 Применить изменения", labels)
-        self.assertIn("🏠 В меню", labels)
+        # P2: на экране доп. полей кнопок «➕ Добавить поле» и «🏠 В меню»
+        # больше нет; ниже списка — ровно «◀️ Назад».
+        self.assertNotIn("➕ Добавить поле", labels)
+        self.assertNotIn("🏠 В меню", labels)
+        self.assertEqual(labels[-1], "◀️ Назад", f"кнопки экрана: {labels}")
 
     @scenario_test
     async def test_save_of_sent_announcement_never_promises_removed_button(
@@ -661,14 +666,15 @@ class ScreenLimitRegressionTests(unittest.TestCase):
         draft = _latest_draft(h)
         await _open_edit(h)
         await h.callback(_callback(h, "aw_extras"))
-        await h.callback(_callback(h, "aw_exadd"))
+        # Poster 2.4 (P2): список сразу содержит все доп. кирпичики
+        # расширенного текста, кнопки `aw_exadd` больше нет.
         extra_id = bricks["extra"]
         found = None
         for _attempt in range(6):
             for _label, data in h.screen_buttons():
                 if (
                     data
-                    and data.startswith("aw_exbrick")
+                    and data.startswith("aw_exedit")
                     and data.endswith(f":{extra_id}")
                 ):
                     found = data

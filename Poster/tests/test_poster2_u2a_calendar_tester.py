@@ -210,33 +210,19 @@ class ExtraBrickCalendarTests(unittest.TestCase):
             await h.text("Главное")
             await _no_photos(h)
 
-            # U2b: доп. кирпичики доставленного анонса — на экране правки.
+            # U2b/P2a: доп. кирпичики доставленного анонса — на экране правки.
+            # Список открывается сразу полным набором: кнопки «Добавить поле»
+            # (`aw_exadd`) больше нет, кирпичик открывается своим `aw_exedit`.
             await _open_edit(h)
             await h.callback(_first(h, "aw_extras"))
-            await h.callback(_first(h, "aw_exadd"))
             suffix = f":{bricks['extra']}"
-            chosen = None
-            for _attempt in range(8):
-                found = [
-                    value
-                    for _label, value in h.screen_buttons()
-                    if value
-                    and value.startswith("aw_exbrick")
-                    and value.endswith(suffix)
-                ]
-                if found:
-                    chosen = found[0]
-                    break
-                pages = [
-                    value
-                    for _label, value in h.screen_buttons()
-                    if value and value.startswith("aw_exbpage")
-                ]
-                if not pages:
-                    break
-                await h.callback(pages[-1])
-            self.assertIsNotNone(chosen, "кирпичик доп. поля не найден")
-            await h.callback(str(chosen))
+            found = [
+                value
+                for _label, value in h.screen_buttons()
+                if value and value.startswith("aw_exedit") and value.endswith(suffix)
+            ]
+            self.assertTrue(found, "кирпичик доп. поля не найден")
+            await h.callback(found[0])
             # H2: выбора секции/позиции больше нет — кирпичик сразу ведёт на
             # экран значения, у даты это компактный календарь.
             self.assertIn("Выберите дату", h.screen_text())

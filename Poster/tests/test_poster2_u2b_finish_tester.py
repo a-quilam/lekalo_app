@@ -9,7 +9,7 @@ Poster 2.0 U2b, независимая проверка экрана завер�
 - чужой пользователь не открывает и не применяет правку чужого анонса (IDOR);
 - двойное нажатие «Изменить» не создаёт второй экран и не отправляет копию;
 - H3: чужая кнопка не может заменить версию (кнопки «Применить изменения»
-  больше нет, поэтому проверяется чужой `aw_qedit`/`aw_edit`);
+  больше нет, поэтому проверяется чужой `aw_qback`/`aw_edit`);
 - повторное открытие экранов правки не даёт второй пост;
 - устаревшая кнопка экрана правки не меняет готовый анонс.
 
@@ -117,7 +117,8 @@ class ForeignDeliveredTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_edit"))
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Своё изменение")
         stored = _details(h, draft.id)
         self.assertIn("Своё изменение", stored.publication_text or "")
@@ -237,7 +238,8 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
         await h.callback(stale_edit)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Новое значение")
         posts_before = h.posts()
 

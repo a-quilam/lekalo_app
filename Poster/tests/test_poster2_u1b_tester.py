@@ -555,13 +555,13 @@ class LongValueScreenTests(unittest.TestCase):
 
     @staticmethod
     async def _choose_extra_brick(h, brick_id: int) -> None:
-        """Выбирает extra-кирпичик, листая страницы доступных определений."""
+        """Открывает доп. кирпичик из списка, листая страницы."""
         suffix = f":{brick_id}"
         for _attempt in range(8):
             found = [
                 data
                 for _label, data in h.screen_buttons()
-                if data and data.startswith("aw_exbrick") and data.endswith(suffix)
+                if data and data.startswith("aw_exedit") and data.endswith(suffix)
             ]
             if found:
                 await h.callback(found[0])
@@ -600,7 +600,7 @@ class LongValueScreenTests(unittest.TestCase):
         await _open_edit(h)
 
         await h.callback(_callback(h, "aw_extras"))
-        await h.callback(_callback(h, "aw_exadd"))
+        # Poster 2.4 (P2): незаполненный доп. кирпичик открывается сразу.
         await self._choose_extra_brick(h, bricks["extra"])
         # H2: секций и позиций нет — после выбора кирпичика сразу значение.
 
@@ -673,8 +673,9 @@ class EmptyStoredHtmlTests(unittest.TestCase):
         self.assertEqual(_live_text(h), "Текст есть", "анонс обнулился в живом блоке")
 
         # Готовый пост тоже не пустой. U2b: после последнего вопроса идёт
-        # шаг фото, доставку запускает «⏭ Пропустить».
-        await h.callback(_callback(h, "aw_qnext"))
+        # шаг фото, доставку запускает «⏭ Пропустить» (P2: кнопки «Далее»
+        # больше нет, пропуск сохраняет уже введённое значение).
+        await h.callback(_callback(h, "aw_qskip"))
         self.assertIn("Фотографии анонса", h.screen_text())
         await h.callback(_callback(h, "aw_photo_none"))
         posts = [call for call in h.post_records() if call["type"] == "message"]

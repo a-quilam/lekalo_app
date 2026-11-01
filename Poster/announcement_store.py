@@ -81,7 +81,7 @@ from template_compiler import (
     render_announcement,
     render_template,
 )
-from template_parser import BrickNode, TextNode
+from template_parser import BrickNode
 from template_store import (
     TemplateError,
     TemplateNotFoundError,
@@ -2419,9 +2419,11 @@ def build_announcement_render_payload(
 
     Poster 2.3.1 (E1): при наличии `extended_content` доп. кирпичики уже
     стоят на своих местах в расширенном тексте — ничего не дописывается.
-    Исходный снимок шаблона не переписывается. Legacy: у старых черновиков
-    (снимок без `extended_content`) доп. кирпичики дописываются строками в
-    конец канонического текста, чтобы уже сохранённые значения не пропали.
+    Исходный снимок шаблона не переписывается. Poster 2.4 (P2): у снимка
+    без `extended_content` доп. кирпичики НЕ дописываются в конец
+    канонического текста — legacy append-fallback удалён. Строки значений
+    в базе при этом сохраняются, экран доп. полей честно сообщает, что
+    дополнительных полей в шаблоне нет.
     """
     actor = _require_actor(session, actor_telegram_user_id)
     row = _load_owned_draft(session, actor, draft_id)
@@ -2451,18 +2453,6 @@ def build_announcement_render_payload(
     texts: dict[str, tuple[Any, ...]] = {}
     for text_name, tokens in tokens_by_text.items():
         texts[text_name] = tuple(tokens)
-    if extra_nodes and not snapshot_has_extended_content(snapshot):
-        # Legacy-ветка: снимок без `extended_content` (черновик создан до
-        # Poster 2.3). Доп. кирпичики — отдельные строки в конце
-        # канонического текста, иначе сохранённые значения исчезли бы.
-        base = list(tokens_by_text.get(TEMPLATE_CONTENT, ()))
-        if base:
-            base.append(TextNode("\n"))
-        for index, node in enumerate(extra_nodes):
-            if index:
-                base.append(TextNode("\n"))
-            base.append(node)
-        texts[TEMPLATE_EXTENDED_CONTENT] = tuple(base)
 
     values_by_id: dict[int, object] = {}
     for value in details.values:

@@ -417,7 +417,9 @@ class ExplicitExitAfterRestartTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» больше нет — экран вопроса сам
+        # показывает текущее значение и принимает новый ввод.
+        self.assertIn("Текущее значение: Ценное значение", h.screen_text())
         draft = _latest_draft(h)
         self.assertEqual(
             _stored_payload(h, draft.id, bricks["main"])["text"], "Ценное значение"
@@ -778,7 +780,6 @@ class BlockquoteRegressionTests(unittest.TestCase):
             "Текущее значение: <blockquote>Старая цитата</blockquote>",
             h.screen_text(),
         )
-        await h.callback(_callback(h, "aw_qedit"))
         await h.text("Новая цитата", entities=[ent(MessageEntity.BLOCKQUOTE, 0, 12)])
         payload = _stored_payload(h, _latest_draft(h).id, bricks["main"])
         self.assertEqual(payload["html"], "<blockquote>Новая цитата</blockquote>")

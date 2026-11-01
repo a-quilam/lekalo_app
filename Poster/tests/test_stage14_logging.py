@@ -340,7 +340,8 @@ class UserTextNotLoggedTests(unittest.TestCase):
             # Правка поля через обзор: «Изменить поля» → выбор поля → ввод.
             await h.callback(self._callback(h, "aw_qmanage"))
             await h.callback(self._callback(h, "aw_qgoto"))
-            await h.callback(self._callback(h, "aw_qedit"))
+            # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса
+            # сам принимает новый текст.
             await h.text(edit_probe)
         finally:
             root.removeHandler(capture)

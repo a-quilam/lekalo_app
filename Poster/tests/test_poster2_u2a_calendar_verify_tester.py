@@ -599,7 +599,9 @@ class NegativeScenarioTests(unittest.TestCase):
             await _open(h)
             await h.callback(_first(h, "aw_qback"))
             self.assertIn("Вопрос 1 из 2", h.screen_text())
-            await h.callback(_first(h, "aw_qnext"))
+            # Poster 2.4 (P2, требование VI): «➡️ Далее» убрана; вперёд ведёт
+            # «⏭ Пропустить» — заполненное значение при этом сохраняется.
+            await h.callback(_first(h, "aw_qskip"))
             self.assertIn("Вопрос 2 из 2", h.screen_text())
             self.assertEqual(len(_days(h)), 8)
 

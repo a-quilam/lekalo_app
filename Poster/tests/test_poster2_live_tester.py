@@ -256,26 +256,29 @@ class SkipAndLiveUpdateTests(unittest.TestCase):
         )
 
     @scenario_test
-    async def test_skip_of_filled_brick_updates_live_block(self, h):
-        """Пропуск заполненного кирпичика виден сверху сразу."""
+    async def test_skip_of_filled_brick_keeps_value_and_live_block(self, h):
+        """Пропуск заполненного кирпичика сохраняет значение и верх как есть."""
         template_id = self._seed(h)
         await h.text("/start")
         await h.callback(f"tp_pick:{template_id}")
         await h.text("Вечеринка")
-        self.assertIn("Вечеринка", _live_text(h))
+        before_skip = _live_text(h)
+        self.assertIn("Вечеринка", before_skip)
 
-        # Возвращаемся к первому кирпичику и очищаем его пропуском.
+        # Poster 2.4 (P2, требование VI): «Пропустить» на заполненном поле
+        # НЕ очищает значение — просто идёт дальше.
         await h.callback(_callback(h, "aw_qback"))
         await h.callback(_callback(h, "aw_qskip"))
 
         after_skip = _live_text(h)
-        self.assertNotIn("Вечеринка", after_skip, "пропуск не убрал значение сверху")
-        # H2: строка, где все кирпичики пусты, скрывается целиком — литерал
-        # «—» не остаётся висеть, остаётся техническая заглушка.
-        self.assertEqual(after_skip.strip(), ".")
+        self.assertIn(
+            "Вечеринка", after_skip, "пропуск потерял сохранённое значение сверху"
+        )
+        self.assertEqual(after_skip, before_skip, "верх перерисован без причины")
+        self.assertIn("Вопрос 2 из 2", h.screen_text(), "пропуск ведёт дальше")
         draft = _drafts(h)[0]
         stored = " ".join(v or "" for v in _values(h, draft.draft_id).values())
-        self.assertNotIn("Вечеринка", stored)
+        self.assertIn("Вечеринка", stored)
 
     @scenario_test
     async def test_skip_of_untouched_brick_keeps_previous_value(self, h):

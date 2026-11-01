@@ -183,10 +183,19 @@ DEFAULTS: dict[str, str] = {
         )
     ),
     "wizard.extras.empty": "Дополнительных полей пока нет.",
+    # Poster 2.4 (P2): у снимка без расширенной версии доп. полей нет —
+    # экран объясняет это вместо молчаливого дописывания в конец.
+    "wizard.extras.no_extended": (
+        "В этом шаблоне дополнительных полей нет: у него нет расширенной версии текста."
+    ),
     "wizard.ready.collecting": (
         "✅ Всё заполнено. Анонс собирается и автоматически придёт в этот чат."
     ),
     "wizard.ready.sent": "✅ Анонс готов и уже отправлен в этот чат.",
+    # Poster 2.4 (P2): «⏭ Пропустить» на заполненном поле значение не меняет.
+    "wizard.skip_question.znachenie_ostavleno": (
+        "Значение поля «{title}» оставлено как есть."
+    ),
     # --- кирпичики: хаб, архив, пустые состояния ----------------------------
     "bricks.hub.title_html": "🧱 <b>Мои кирпичики</b>",
     "bricks.hub.intro": (
@@ -382,7 +391,6 @@ DEFAULTS: dict[str, str] = {
     "buttons.finished.photos": "🖼 Фото ({count})",
     "buttons.finished.extras_edit": "🧱 Дополнительные поля",
     "buttons.finished.main_menu": "🏠 В меню",
-    "buttons.extras.add": "➕ Добавить поле",
     "buttons.extras.edit": "✏️ {number}. {title}",
     "buttons.extras.delete": "🗑 {number}",
     "buttons.bricks.create": "➕ Создать кирпичик",
@@ -1194,17 +1202,13 @@ DEFAULTS: dict[str, str] = {
     "buttons.wizard.bez_fotografiy": "🚫 Без фотографий",
     "buttons.wizard.chernovik_sohranen": "✅ Черновик сохранён",
     "buttons.wizard.da_udalit_vse": "🗑 Да, удалить все",
-    "buttons.wizard.dalee": "➡️ Далее",
     "buttons.wizard.dobavit_foto": "📤 Добавить фото",
     "buttons.wizard.dopolnitelnye_kirpichiki": "➕ Дополнительные поля",
-    "buttons.wizard.dopolnitelnyy_kirpichik": "➕ Добавить поле",
     "buttons.wizard.fotografii": "📷 Фотографии ({count_photos})",
     "buttons.wizard.gotovo": "✅ Готово",
     "buttons.wizard.izmenit_drugoy_kirpichik": "✏️ Изменить другое поле",
-    "buttons.wizard.izmenit_otvet": "✏️ Изменить ответ",
     "buttons.wizard.izmenit_polya": "✏️ Изменить поля",
     "buttons.wizard.izmenit_zapros": "🔎 Изменить запрос",
-    "buttons.wizard.k_dopolnitelnym_polyam": "◀️ К дополнительным полям",
     "buttons.wizard.k_obzoru": "◀️ К обзору",
     "buttons.wizard.k_spisku_chernovikov": "📝 К списку черновиков",
     "buttons.wizard.k_upravleniyu": "◀️ К управлению",
@@ -1448,9 +1452,11 @@ DEFAULTS: dict[str, str] = {
     "wizard.handle.vyberite_deystvie_knopkami_ekrane": "Выберите действие кнопками на экране.",
     "wizard.handle_choice.vybor_sohranen_mozhno_otmetit": "Выбор сохранён. При желании отметьте ещё варианты.",
     "wizard.handle_choice.znachenie_dopolnitelnogo": "Дополнительное поле заполнено.",
-    "wizard.handle_extras_callback.etot_kirpichik_nedostupen_vyberi": "Это поле недоступно. Выберите другое из списка.",
     "wizard.handle_extras_callback.udalen_kirpichik": "Поле «{title}» удалено.",
     "wizard.handle_extras_callback.znachenie_dopolnitelnogo": "Дополнительное поле пропущено.",
+    "wizard.handle_extras_callback.znachenie_ostavleno": (
+        "Значение поля «{title}» оставлено как есть."
+    ),
     "wizard.handle_photo.fotografii_dobavlyayutsya_etape": "Фото можно добавить на экране обзора анонса. Пока закончите отвечать на вопросы. Анонс и ваши ответы сохранены.",
     "wizard.handle_photo.ne_udalos_prochitat_fotografiyu": "Не удалось прочитать фотографию.",
     "wizard.handle_photo.otpravka_nachata_novye_fotografii": "Анонс уже отправляется, поэтому новые фото пока не принимаются. Данные анонса и ход отправки сохранены.",
@@ -1522,8 +1528,6 @@ DEFAULTS: dict[str, str] = {
     "wizard.preview_template_name.ne_vybran": "не выбран",
     "wizard.reject_choice.vyberite_variant_knopkoy_tekstovyy": "Нажмите кнопку с нужным вариантом. Ответ текстом здесь не принимается.",
     "wizard.render_all_places.vsego_stranica": "Всего: {total}. Страница {value}.",
-    "wizard.render_available_bricks.dostupnyh_dopolnitelnyh": "Нет доступных дополнительных полей.",
-    "wizard.render_available_bricks.vyberite_dostupnoe_opredelenie": "Выберите дополнительное поле из списка. Личные кирпичики других пользователей и поля других мест здесь не показаны.",
     "wizard.render_calendar_month.vyberite_den": "📅 {format_month}\n\nВыберите день:",
     "wizard.render_calendar_months.dlya_vybora_mesyaca_net": "В календаре нет доступных дат. Напишите дату текстом.",
     "wizard.render_calendar_months.vyberite_mesyac": "📅 Выберите месяц:",

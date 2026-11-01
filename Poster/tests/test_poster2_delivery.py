@@ -537,7 +537,8 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
         # Сокращение кирпичика применяет ожидавшее фото автоматически.
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Короткий анонс")
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
@@ -710,7 +711,8 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        await h.callback(_callback(h, "aw_qedit"))
+        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
+        # принимает новый текст.
         await h.text("Обновлено")
 
         updated = self._assert_single_copy(h, draft.id, text="Обновлено")

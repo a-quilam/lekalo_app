@@ -87,7 +87,7 @@ from announcement_wizard import (
     answer_payload_to_raw,
     extra_candidate_brick_ids,
 )
-from brick_store import BrickError, list_available_bricks
+from brick_store import BrickError
 from brick_types import (
     BRICK_SCOPE_PERSONAL,
     BRICK_SCOPE_PLACE,
@@ -96,7 +96,6 @@ from brick_types import (
     BRICK_TYPE_DATE,
     BRICK_TYPE_NUMBER,
     BRICK_TYPE_TIME,
-    BRICK_TYPE_TITLES,
     BrickValueResult,
     BrickValueStatus,
 )
@@ -221,6 +220,9 @@ def _fresh_ui() -> dict[str, Any]:
     return {
         "draft_id": None,
         "revision": None,
+        # Poster 2.4 P2b: реальный путь по экранам (требование V).
+        "nav_current": None,
+        "nav_stack": [],
         "home_page": 0,
         "template_page": 0,
         "extras_page": 0,
@@ -270,6 +272,229 @@ def _clear_active(ui: dict[str, Any]) -> None:
     # H1: шаг фото — тоже режим ввода. Снимается на любом экране без ввода,
     # иначе снимок «ждём фото» пережил бы переход к обзору.
     ui["photo_step"] = False
+
+
+# —— Poster 2.4 P2b: навигационный стек конструктора (требование V) ————————
+#
+# «◀️ Назад» обязан вести на ТОТ экран, с которого человек пришёл, а не в
+# главное меню и не «на шаг раньше по индексу». Путь хранится здесь же, в
+# `announcement_ui` (user_data), и только как история экранов: данные
+# черновика, значения и фото по-прежнему живут в SQLite. После рестарта
+# службы user_data теряется — стек пуст, и «Назад» показывает безопасный
+# экран текущего этапа (`_resume_current`/фолбэки маршрутов).
+NAV_STACK_LIMIT = 32
+
+# Имена экранов пути. Только они попадают в стек; маршруты возврата
+# сопоставляют имя экрана с реальным рендером.
+NAV_HOME = "home"
+NAV_TEMPLATE = "template"
+NAV_QUESTION = "question"
+NAV_MANAGER = "manager"
+NAV_EXTRAS = "extras"
+NAV_EXTRA_VALUE = "extra_value"
+NAV_PHOTOS = "photos"
+NAV_PREVIEW = "preview"
+NAV_DELIVERED = "delivered"
+NAV_DELIVERED_EDIT = "delivered_edit"
+
+
+def _nav_stack(ui: dict[str, Any]) -> list[dict[str, Any]]:
+    """Стек экранов пути; после рестарта/сброса — пустой список."""
+    stack = ui.get("nav_stack")
+    if not isinstance(stack, list):
+        stack = []
+        ui["nav_stack"] = stack
+    return stack
+
+
+def _nav_reset(ui: dict[str, Any]) -> None:
+    """Новый корневой путь (главное меню, старт конструктора)."""
+    ui["nav_stack"] = []
+    ui["nav_current"] = None
+
+
+def _nav_identity(
+    screen: str,
+    *,
+    index: int | None = None,
+    brick_id: int | None = None,
+) -> tuple:
+    """
+    Ключ шага пути.
+
+    Вопрос отличается от соседнего вопроса того же экрана индексом и
+    кирпичиком: это разные шаги. У остальных экранов (списки, обзоры)
+    страница и позиция — данные экрана, а не новый шаг пути: «Назад» с
+    листания списка ведёт туда же, откуда список открыли.
+    """
+    if screen == NAV_QUESTION:
+        return (screen, brick_id if brick_id is not None else index)
+    return (screen,)
+
+
+def _nav_enter(
+    ui: dict[str, Any],
+    screen: str,
+    *,
+    page: int | None = None,
+    index: int | None = None,
+    brick_id: int | None = None,
+) -> None:
+    """
+    Фиксирует показ экрана в пути.
+
+    Запись несёт `draft_id`/`revision` и место в пути (страница списка,
+    индекс вопроса, кирпичик), поэтому возврат восстанавливает именно тот
+    экран. Повторный показ того же шага обновляет запись, а возврат на уже
+    пройденный экран (например, к списку после сохранения значения)
+    обрезает путь до него — копии не копятся, циклы невозможны.
+    """
+    stack = _nav_stack(ui)
+    identity = _nav_identity(screen, index=index, brick_id=brick_id)
+    entry: dict[str, Any] = {
+        "screen": screen,
+        "draft_id": ui.get("draft_id"),
+        "revision": ui.get("revision"),
+        # Источник перехода: экран, с которого пришли (для диагностики).
+        "source": stack[-1]["screen"] if stack else None,
+        "page": page,
+        "index": index,
+        "brick_id": brick_id,
+    }
+    ui["nav_current"] = screen
+    if (
+        stack
+        and _nav_identity(
+            stack[-1]["screen"],
+            index=stack[-1].get("index"),
+            brick_id=stack[-1].get("brick_id"),
+        )
+        == identity
+    ):
+        # Перерисовка того же шага (пагинация, повтор, ошибка ввода).
+        stack[-1] = entry
+        return
+    if (
+        len(stack) >= 2
+        and _nav_identity(
+            stack[-2]["screen"],
+            index=stack[-2].get("index"),
+            brick_id=stack[-2].get("brick_id"),
+        )
+        == identity
+    ):
+        # Действие вернуло на непосредственного родителя (сохранение
+        # значения — обратно к списку): шаг пути не удваивается, цикла нет.
+        stack.pop()
+        stack[-1] = entry
+        return
+    stack.append(entry)
+    if len(stack) > NAV_STACK_LIMIT:
+        del stack[: len(stack) - NAV_STACK_LIMIT]
+
+
+def _nav_pop(ui: dict[str, Any]) -> dict[str, Any] | None:
+    """Снимает текущий экран и возвращает предыдущий (None — стек пуст)."""
+    stack = _nav_stack(ui)
+    if not stack:
+        ui["nav_current"] = None
+        return None
+    stack.pop()
+    if not stack:
+        ui["nav_current"] = None
+        return None
+    ui["nav_current"] = stack[-1]["screen"]
+    return stack[-1]
+
+
+def _nav_pop_from(ui: dict[str, Any], screen: str) -> dict[str, Any] | None:
+    """
+    Возврат со строго ожидаемого экрана.
+
+    Устаревшая кнопка «Назад» с уже покинутого экрана не должна снимать
+    текущий шаг пути: сверяем имя экрана и при расхождении отдаём `None` —
+    маршрут покажет безопасный экран этапа.
+    """
+    if ui.get("nav_current") != screen:
+        return None
+    return _nav_pop(ui)
+
+
+async def _nav_render(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    entry: dict[str, Any] | None,
+) -> int | None:
+    """
+    Показывает экран, записанный в пути (реальный предыдущий шаг).
+
+    `None` — записи нет, она про другой черновик или экран больше
+    недоступен: вызывающий маршрут обязан показать безопасный экран
+    текущего этапа. Исключений наружу не выходит.
+    """
+    if not isinstance(entry, dict):
+        return None
+    screen_name = entry.get("screen")
+    draft_id = entry.get("draft_id")
+    if draft_id not in (None, details.draft_id):
+        # Путь другого черновика не переиспользуется.
+        return None
+    if screen_name == NAV_QUESTION:
+        fields = await _question_fields_for(update, context, details)
+        if not fields:
+            return None
+        found = None
+        brick_id = entry.get("brick_id")
+        if isinstance(brick_id, int):
+            found = _find_field(fields, brick_id)
+        if found is None:
+            index = entry.get("index")
+            if isinstance(index, int) and 0 <= index < len(fields):
+                found = (index, fields[index])
+        if found is None:
+            return None
+        index, _field = found
+        return await _render_question(update, context, details, fields, index)
+    if screen_name == NAV_MANAGER:
+        return await _render_question_manager(update, context, details)
+    if screen_name == NAV_EXTRAS:
+        page = entry.get("page")
+        return await _render_extras(
+            update,
+            context,
+            details,
+            page=page if isinstance(page, int) else None,
+        )
+    if screen_name == NAV_EXTRA_VALUE:
+        brick_id = entry.get("brick_id")
+        extra = next(
+            (
+                item
+                for item in details.extras
+                if isinstance(brick_id, int) and item.brick_id == brick_id
+            ),
+            None,
+        )
+        if extra is None:
+            return None
+        return await _render_extra_value_prompt(update, context, details, extra)
+    if screen_name == NAV_TEMPLATE:
+        return await _render_template_screen(update, context, details)
+    if screen_name == NAV_PHOTOS:
+        page = entry.get("page")
+        return await _render_photos(
+            update, context, details, page=page if isinstance(page, int) else None
+        )
+    if screen_name == NAV_DELIVERED_EDIT:
+        return await _render_delivered_edit(update, context, details)
+    if screen_name == NAV_DELIVERED:
+        return await _render_delivered(update, context, details)
+    if screen_name == NAV_PREVIEW:
+        return await _render_preview(update, context, details)
+    if screen_name == NAV_HOME:
+        return await _render_home(update, context)
+    return None
 
 
 # —— Poster 2.3 H1: авто-resume активного черновика ————————————————————
@@ -1005,6 +1230,8 @@ async def _render_home(
     ui["draft_id"] = None
     ui["revision"] = None
     _clear_active(ui)
+    _nav_reset(ui)
+    _nav_enter(ui, NAV_HOME)
     page = int(ui.get("home_page") or 0)
     text, keyboard, page = _home_content(_user_id(update), page)
     ui["home_page"] = page
@@ -1635,6 +1862,7 @@ async def _render_template_screen(
     ui = _ui(context)
     _set_details(ui, details)
     _clear_active(ui)
+    _nav_enter(ui, NAV_TEMPLATE)
     if details.template_snapshot is not None:
         text = _selected_template_text(details)
         body = f"{notice}\n\n{text}" if notice else text
@@ -1898,6 +2126,12 @@ async def _render_question(
     ui["active_brick_id"] = field.brick_id
     ui["active_source"] = "question"
     ui["editing"] = editing
+    _nav_enter(
+        ui,
+        NAV_QUESTION,
+        index=index,
+        brick_id=field.brick_id,
+    )
     # Poster 2.0 S3 п.2: сначала настоящий анонс сверху, затем служебный
     # экран. Порядок в чате фиксирован хронологией сообщений, поэтому
     # верхний блок синхронизируется ДО отрисовки нижнего вопроса.
@@ -1952,30 +2186,12 @@ async def _render_question(
             )
         )
 
-    if field.status in {FIELD_STATUS_VALID, FIELD_STATUS_SKIPPED}:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.wizard.dalee"),
-                    callback_data=(
-                        f"aw_qnext:{details.draft_id}:"
-                        f"{details.revision}:{field.brick_id}"
-                    ),
-                )
-            ]
-        )
-    if field.status == FIELD_STATUS_VALID and not editing:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.wizard.izmenit_otvet"),
-                    callback_data=(
-                        f"aw_qedit:{details.draft_id}:"
-                        f"{details.revision}:{field.brick_id}"
-                    ),
-                )
-            ]
-        )
+    # Poster 2.4 (P2, требование VI): на вопросе остаются только «◀️ Назад» и
+    # «⏭ Пропустить» (плюс спецкнопки дат/времени/выбора). «➡️ Далее» и
+    # «✏️ Изменить ответ» убраны: сохранение значения само ведёт дальше, а
+    # повторный ввод на том же экране заменяет значение. «Готово» у
+    # множественного выбора — это выбор вариантов (`aw_choice_done`), а не
+    # навигация, поэтому остаётся.
     skip_button = InlineKeyboardButton(
         tr("buttons.wizard.skip"),
         callback_data=(
@@ -1988,13 +2204,9 @@ async def _render_question(
             f"aw_qback:{details.draft_id}:{details.revision}:{field.brick_id}"
         ),
     )
-    if field.value_type == BRICK_TYPE_DATE:
-        # U2a: внизу первого экрана даты — ровно одна строка навигации.
-        # U3a №13: пара собирается общим шаблоном «Назад | Пропустить».
-        rows += keyboard_layouts.pair(back_button, skip_button)
-    else:
-        rows.append([skip_button])
-        rows.append([back_button])
+    # U3a №13: пара «Назад | Пропустить» — общий шаблон компоновки, одинаковый
+    # для всех типов поля.
+    rows += keyboard_layouts.pair(back_button, skip_button)
     keyboard = InlineKeyboardMarkup(rows)
     # S5 §5.7: шутка подставляется в текст ТОЛЬКО после того, как собраны
     # `callback_data` и клавиатура, — повлиять на действия она не может.
@@ -2240,6 +2452,27 @@ async def _skip_question(
     field: AnnouncementFieldState,
     index: int,
 ) -> int:
+    """
+    «⏭ Пропустить» НЕ очищает значение (Poster 2.4, требование VI).
+
+    Уже заполненное поле сохраняется как есть: строка значения не трогается,
+    ревизия не растёт, лишних сообщений и копий анонса нет — мастер просто
+    идёт дальше. Пустое/пропущенное поле остаётся пустым (`empty_optional`
+    — осознанный пропуск, а не записанный поверх valid).
+    """
+    if field.status == FIELD_STATUS_VALID:
+        ui = _ui(context)
+        _clear_active(ui)
+        return await _advance_question(
+            update,
+            context,
+            details,
+            index + 1,
+            notice=tr(
+                "wizard.skip_question.znachenie_ostavleno",
+                title=_short(field.title, 50),
+            ),
+        )
     return await _save_question_value(update, context, details, field, "", index=index)
 
 
@@ -2256,6 +2489,7 @@ async def _render_question_manager(
     fields = await _question_fields_for(update, context, details)
     if not fields:
         return await _enter_extras(update, context, details, notice=notice)
+    _nav_enter(ui, NAV_MANAGER)
     lines = [
         tr("wizard.render_question_manager.polya_anonsa"),
         "",
@@ -2284,8 +2518,15 @@ async def _render_question_manager(
     return AW_QUESTIONS
 
 
-def _extra_field_state(details, extra, definition) -> AnnouncementFieldState:
-    value = details.value_for(extra.brick_id)
+def _extra_field_state(details, definition) -> AnnouncementFieldState:
+    """
+    Состояние значения кирпичика для экрана доп. полей.
+
+    `definition` — определение кирпичика (`BrickDefinition`) из payload
+    рендера: экран показывает и незаполненные кирпичики, поэтому для
+    «нет строки» возвращается MISSING, а не ошибка.
+    """
+    value = details.value_for(definition.id)
     status = FIELD_STATUS_MISSING
     raw: object | None = None
     raw_html: str | None = None
@@ -2303,10 +2544,10 @@ def _extra_field_state(details, extra, definition) -> AnnouncementFieldState:
     elif value is not None and value.status is BrickValueStatus.EMPTY_OPTIONAL:
         status = FIELD_STATUS_SKIPPED
     return AnnouncementFieldState(
-        brick_id=extra.brick_id,
-        code=extra.code,
-        title=extra.title,
-        value_type=extra.value_type,
+        brick_id=definition.id,
+        code=definition.code,
+        title=definition.title,
+        value_type=definition.value_type,
         status=status,
         raw_value=raw,
         rules=dict(definition.rules),
@@ -2353,7 +2594,7 @@ def _choice_context(
         if extra is None:
             return None
         definition = _extra_definition(details, extra, _user_id(update))
-        field = _extra_field_state(details, extra, definition)
+        field = _extra_field_state(details, definition)
         index = -1
     else:
         return None
@@ -2495,7 +2736,7 @@ def _active_field(
         if extra is None:
             return None
         definition = _extra_definition(details, extra, _user_id(update))
-        field = _extra_field_state(details, extra, definition)
+        field = _extra_field_state(details, definition)
         index = -1
     else:
         return None
@@ -2800,6 +3041,14 @@ def _ensure_stage(
     return updated
 
 
+def _extras_candidates(details) -> list[int]:
+    """Кирпичики расширенного текста снимка, которые уже можно заполнить."""
+    snapshot = details.template_snapshot
+    if snapshot is None:
+        return []
+    return list(extra_candidate_brick_ids(snapshot))
+
+
 def _extras_with_definitions(details, telegram_user_id: int):
     with SessionLocal() as session:
         payload = build_announcement_render_payload(
@@ -2812,28 +3061,102 @@ def _extras_with_definitions(details, telegram_user_id: int):
     ]
 
 
+def _extras_entries(details, telegram_user_id: int):
+    """
+    Все доп. кирпичики экрана «🧱 Дополнительные поля» в порядке текста.
+
+    Poster 2.4 (P2, требование IV): экран открывается сразу полным списком
+    кирпичиков расширенной версии снимка — расширенные токены минус
+    канонические (`extra_candidate_brick_ids`), включая незаполненные.
+    Уже выбранные доп. поля помечены значением и получают корзину; их
+    удаление убирает только значение/выбор, определение кирпичика остаётся.
+
+    Устаревшие выбранные поля (снимок без `extended_content` или кирпичик
+    вне расширенного текста) показываются после списка, чтобы значение можно
+    было увидеть и удалить: ничего не дописывается в анонс молча.
+    """
+    snapshot = details.template_snapshot
+    if snapshot is None:
+        return [], False
+    with SessionLocal() as session:
+        payload = build_announcement_render_payload(
+            session,
+            actor_telegram_user_id=telegram_user_id,
+            draft_id=details.draft_id,
+        )
+    candidates = list(extra_candidate_brick_ids(snapshot))
+    chosen = {extra.brick_id: extra for extra in details.extras}
+    order = list(candidates)
+    order.extend(
+        extra.brick_id for extra in details.extras if extra.brick_id not in candidates
+    )
+    entries: list[dict[str, Any]] = []
+    for brick_id in order:
+        definition = payload.definitions_by_id.get(brick_id)
+        if definition is None:
+            continue
+        extra = chosen.get(brick_id)
+        entries.append(
+            {
+                "brick_id": brick_id,
+                "extra_id": extra.extra_id if extra is not None else None,
+                "title": definition.title,
+                "field": _extra_field_state(details, definition),
+            }
+        )
+    return entries, bool(candidates)
+
+
 async def _render_extras(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     details,
     *,
     notice: str | None = None,
+    page: int | None = None,
 ) -> int:
+    """
+    Экран «🧱 Дополнительные поля»: сразу список, внизу ровно «◀️ Назад».
+
+    Требование IV: «➕ Добавить поле» и «🏠 В меню» здесь запрещены —
+    добавление и правка идут одной кнопкой кирпичика, а пагинация
+    появляется только если полей больше страницы.
+    """
     ui = _ui(context)
     _set_details(ui, details)
     _clear_active(ui)
     await _ensure_service_screen_below(update, context, details.delivered_message_ids)
     await _sync_live(update, context, details)
-    items = _extras_with_definitions(details, _user_id(update))
+    try:
+        entries, has_extended = _extras_entries(details, _user_id(update))
+    except AnnouncementError as exc:
+        # Снимок старого черновика может ссылаться на удалённое определение
+        # (P1: «адрес_места»). Экран не должен падать «внутренней ошибкой»:
+        # показываем честный текст и безопасный возврат.
+        logger.warning("Доп. поля анонса #%s недоступны: %s", details.draft_id, exc)
+        entries, has_extended = [], False
+        notice = notice or tr("wizard.extras.no_extended")
+    current_page = ui.get("extras_page") if page is None else page
+    current_page = _clamped_page(
+        max(0, int(current_page or 0)), len(entries), EXTRA_PAGE_SIZE
+    )
+    ui["extras_page"] = current_page
+    _nav_enter(ui, NAV_EXTRAS, page=current_page)
+    shown = entries[
+        current_page * EXTRA_PAGE_SIZE : (current_page + 1) * EXTRA_PAGE_SIZE
+    ]
     # H3: заголовок, вступление и пустое состояние — из каталога текстов.
     header = tr("wizard.extras.title")
     intro = tr("wizard.extras.intro")
 
     def build(limits: list[int]) -> str:
         lines = [header, "", intro]
-        if items:
-            for number, (extra, definition) in enumerate(items, start=1):
-                field = _extra_field_state(details, extra, definition)
+        if not has_extended:
+            lines.extend(["", tr("wizard.extras.no_extended")])
+        if shown:
+            for offset, entry in enumerate(shown, start=1):
+                number = current_page * EXTRA_PAGE_SIZE + offset
+                field = entry["field"]
                 value = _full_value_text(field)
                 if field.status == FIELD_STATUS_MISSING:
                     value_text = tr("wizard.build.znachenie_zadano")
@@ -2844,59 +3167,89 @@ async def _render_extras(
                 # H3 (требование D): строка списка — тоже показ значения.
                 # Раньше огромное значение обрывалось «…» без пометки; теперь
                 # у него бюджет на весь экран и честная пометка о сокращении.
-                shown = current_value.clip_html(
-                    escape_html(value_text), limit=limits[number - 1]
+                shown_value = current_value.clip_html(
+                    escape_html(value_text), limit=limits[offset - 1]
                 )
                 lines.append(
                     tr_safe(
                         "wizard.build.znachenie",
                         number=number,
-                        title=_h(extra.title),
-                        shown=shown,
+                        title=_h(entry["title"]),
+                        shown=shown_value,
                     )
                 )
-        else:
+        if not shown and has_extended:
             lines.extend(["", tr("wizard.extras.empty")])
         return "\n".join(lines)
 
-    screen_text = current_value.fit_screen(build, blocks=max(len(items), 1))
+    screen_text = current_value.fit_screen(build, blocks=max(len(shown), 1))
 
-    rows: list[list[InlineKeyboardButton]] = []
-    for number, (extra, _definition) in enumerate(items, start=1):
-        rows.append(
-            [
+    rows: list[list[InlineKeyboardButton]] = keyboard_layouts.list_rows(
+        (
+            InlineKeyboardButton(
+                _short(
+                    tr(
+                        "buttons.extras.edit",
+                        number=current_page * EXTRA_PAGE_SIZE + offset,
+                        title=entry["title"],
+                    ),
+                    60,
+                ),
+                callback_data=(
+                    f"aw_exedit:{details.draft_id}:"
+                    f"{details.revision}:{entry['brick_id']}"
+                ),
+            ),
+            (
                 InlineKeyboardButton(
                     _short(
-                        tr("buttons.extras.edit", number=number, title=extra.title),
-                        60,
+                        tr(
+                            "buttons.extras.delete",
+                            number=current_page * EXTRA_PAGE_SIZE + offset,
+                        ),
+                        8,
                     ),
-                    callback_data=(
-                        f"aw_exedit:{details.draft_id}:"
-                        f"{details.revision}:{extra.brick_id}"
-                    ),
-                ),
-                InlineKeyboardButton(
-                    _short(tr("buttons.extras.delete", number=number), 8),
                     callback_data=(
                         f"aw_exdel:{details.draft_id}:"
-                        f"{details.revision}:{extra.extra_id}"
+                        f"{details.revision}:{entry['extra_id']}"
                     ),
-                ),
-            ]
-        )
-    if _available_extra_bricks(details, _user_id(update)):
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.extras.add"),
-                    callback_data=(f"aw_exadd:{details.draft_id}:{details.revision}"),
                 )
-            ]
+                if entry["extra_id"] is not None
+                else None
+            ),
+        )
+        for offset, entry in enumerate(shown, start=1)
+    )
+    if len(entries) > EXTRA_PAGE_SIZE:
+        rows += keyboard_layouts.nav_row(
+            (
+                InlineKeyboardButton(
+                    "◀️",
+                    callback_data=(
+                        f"aw_exbpage:{details.draft_id}:"
+                        f"{details.revision}:{current_page - 1}"
+                    ),
+                )
+                if current_page > 0
+                else None
+            ),
+            (
+                InlineKeyboardButton(
+                    "▶️",
+                    callback_data=(
+                        f"aw_exbpage:{details.draft_id}:"
+                        f"{details.revision}:{current_page + 1}"
+                    ),
+                )
+                if (current_page + 1) * EXTRA_PAGE_SIZE < len(entries)
+                else None
+            ),
         )
     rows.append(
         [
             InlineKeyboardButton(
-                tr("buttons.admin.glavnoe_menyu"), callback_data="main_menu"
+                tr("buttons.nav.back"),
+                callback_data=(f"aw_exback:{details.draft_id}:{details.revision}"),
             )
         ]
     )
@@ -2920,115 +3273,29 @@ async def _enter_extras(
     return await _render_extras(update, context, updated, notice=notice)
 
 
-def _available_extra_bricks(details, telegram_user_id: int):
-    """
-    Кирпичики, которые ещё можно добавить как дополнительное поле анонса.
-
-    Poster 2.3.1 (E1): список строго по расширенному шаблону — brick_id
-    `extended_content` снимка минус brick_id канонического `content`, минус
-    уже выбранные, в порядке первого появления в расширенном тексте.
-    Никаких других кирпичиков список не предлагает: доп. поле живёт только
-    там, где для него есть место в тексте. Без `extended_content` список
-    пуст.
-    """
-    snapshot = details.template_snapshot
-    if snapshot is None:
-        return []
-    chosen = {extra.brick_id for extra in details.extras}
-    candidates = [
-        brick_id
-        for brick_id in extra_candidate_brick_ids(snapshot)
-        if brick_id not in chosen
-    ]
-    if not candidates:
-        return []
-    with SessionLocal() as session:
-        available = list_available_bricks(
-            session,
-            viewer_telegram_user_id=telegram_user_id,
-            place_id=details.place_id,
-        )
-    available_by_id = {brick.id: brick for brick in available}
-    return [
-        available_by_id[brick_id]
-        for brick_id in candidates
-        if brick_id in available_by_id
-    ]
-
-
-async def _render_available_bricks(
+async def _back_from_extras(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     details,
-    *,
-    page: int = 0,
-    notice: str | None = None,
 ) -> int:
-    ui = _ui(context)
-    _set_details(ui, details)
-    _clear_active(ui)
-    bricks = _available_extra_bricks(details, _user_id(update))
-    page = _clamped_page(max(0, page), len(bricks), EXTRA_PAGE_SIZE)
-    ui["extras_page"] = page
-    shown = bricks[page * EXTRA_PAGE_SIZE : (page + 1) * EXTRA_PAGE_SIZE]
-    lines = [
-        tr("buttons.wizard.dopolnitelnyy_kirpichik"),
-        "",
-        tr("wizard.render_available_bricks.vyberite_dostupnoe_opredelenie"),
-    ]
-    if shown:
-        for number, brick in enumerate(shown, start=page * EXTRA_PAGE_SIZE + 1):
-            lines.append(
-                f"{number}. {_h(brick.title)} — "
-                f"{BRICK_TYPE_TITLES.get(brick.value_type, brick.value_type)}, "
-                f"{SCOPE_LABELS.get(brick.scope, brick.scope)}"
-            )
-    else:
-        lines.extend(["", tr("wizard.render_available_bricks.dostupnyh_dopolnitelnyh")])
-    rows: list[list[InlineKeyboardButton]] = [
-        [
-            InlineKeyboardButton(
-                _short(f"➕ {brick.title}", 60),
-                callback_data=(
-                    f"aw_exbrick:{details.draft_id}:" f"{details.revision}:{brick.id}"
-                ),
-            )
-        ]
-        for brick in shown
-    ]
-    nav: list[InlineKeyboardButton] = []
-    if page > 0:
-        nav.append(
-            InlineKeyboardButton(
-                "◀️",
-                callback_data=(
-                    f"aw_exbpage:{details.draft_id}:" f"{details.revision}:{page - 1}"
-                ),
-            )
-        )
-    if (page + 1) * EXTRA_PAGE_SIZE < len(bricks):
-        nav.append(
-            InlineKeyboardButton(
-                "▶️",
-                callback_data=(
-                    f"aw_exbpage:{details.draft_id}:" f"{details.revision}:{page + 1}"
-                ),
-            )
-        )
-    if nav:
-        rows.append(nav)
-    rows.append(
-        [
-            InlineKeyboardButton(
-                tr("buttons.nav.back"),
-                callback_data=(f"aw_extras:{details.draft_id}:{details.revision}"),
-            )
-        ]
-    )
-    text = "\n".join(lines)
-    body = f"{notice}\n\n{text}" if notice else text
-    await _render(update, context, body, InlineKeyboardMarkup(rows))
-    return AW_EXTRAS
+    """
+    «◀️ Назад» со списка доп. полей — на экран, с которого пришли.
+
+    Требование V (Poster 2.4 P2b): настоящий путь важнее индекса. Экран
+    открывают из разных мест («✏️ Изменить» готового анонса, обзор, вопросы,
+    шаг фото), поэтому возврат берётся из навигационного стека. Пустой стек
+    (рестарт службы, старый экран) не выдумывает переход: показывается
+    безопасный экран текущего этапа черновика.
+    """
+    previous = _nav_pop_from(_ui(context), NAV_EXTRAS)
+    rendered = await _nav_render(update, context, details, previous)
+    if rendered is not None:
+        return rendered
+    if details.publication_sent:
+        return await _render_delivered_edit(update, context, details)
+    # Живой черновик: предыдущий шаг мастера (список открывают из вопросов
+    # или шага фото), а не главное меню.
+    return await _render_template_screen(update, context, details)
 
 
 EXTRA_DESCRIPTION_LIMIT = 800
@@ -3133,10 +3400,11 @@ async def _render_extra_value_prompt(
     ui = _ui(context)
     _set_details(ui, details)
     definition = _extra_definition(details, extra, _user_id(update))
-    field = _extra_field_state(details, extra, definition)
+    field = _extra_field_state(details, definition)
     ui["active_brick_id"] = field.brick_id
     ui["active_source"] = "extra"
     ui["editing"] = editing
+    _nav_enter(ui, NAV_EXTRA_VALUE, brick_id=field.brick_id)
 
     def build(limits: list[int]) -> str:
         lines = [_extra_value_text(extra, field, description_limit=limits[0])]
@@ -3186,25 +3454,18 @@ async def _render_extra_value_prompt(
                 field, f"{details.draft_id}:{details.revision}:{field.brick_id}"
             )
         )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                tr("buttons.wizard.skip"),
-                callback_data=(
-                    f"aw_exskip:{details.draft_id}:{details.revision}:"
-                    f"{field.brick_id}"
-                ),
-            )
-        ]
+    skip_button = InlineKeyboardButton(
+        tr("buttons.wizard.skip"),
+        callback_data=(
+            f"aw_exskip:{details.draft_id}:{details.revision}:{field.brick_id}"
+        ),
     )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                tr("buttons.wizard.k_dopolnitelnym_polyam"),
-                callback_data=(f"aw_exbackval:{details.draft_id}:{details.revision}"),
-            )
-        ]
+    back_button = InlineKeyboardButton(
+        tr("buttons.nav.back"),
+        callback_data=(f"aw_exbackval:{details.draft_id}:{details.revision}"),
     )
+    # Требование VI: на экране значения — та же пара «◀️ Назад | ⏭ Пропустить».
+    rows += keyboard_layouts.pair(back_button, skip_button)
     await _render(update, context, text, InlineKeyboardMarkup(rows))
     return AW_EXTRAS
 
@@ -3440,7 +3701,7 @@ def _preview_summary_lines(
     if extras:
         lines.extend(["", tr("wizard.preview_summary_lines.dopolnitelnye_kirpichiki")])
         for extra, definition in extras[:MAX_PREVIEW_EXTRAS]:
-            field = _extra_field_state(details, extra, definition)
+            field = _extra_field_state(details, definition)
             if field.status == FIELD_STATUS_VALID:
                 value = _short(_field_value_text(field), FIELD_DISPLAY_LIMIT)
                 value_text = tr_safe(
@@ -3639,6 +3900,7 @@ async def _render_preview(
             update, context, details, notice=notice, pending=pending
         )
     updated = details
+    _nav_enter(ui, NAV_PREVIEW)
     try:
         if not details.publication_sent:
             # Обзор доставленного анонса не возвращает его на этап правки:
@@ -3993,6 +4255,7 @@ async def _render_photos(
     pages = max(1, (total + PHOTO_PAGE_SIZE - 1) // PHOTO_PAGE_SIZE)
     page = max(0, min(int(page), pages - 1))
     ui["photos_page"] = page
+    _nav_enter(ui, NAV_PHOTOS, page=page)
 
     lines = [
         tr("wizard.photos.title"),
@@ -4834,6 +5097,7 @@ async def _render_delivered(
     ui = _ui(context)
     _set_details(ui, details)
     _clear_active(ui)
+    _nav_enter(ui, NAV_DELIVERED)
     # U2b: обязательный инвариант «пост выше экрана». При замене версии
     # сообщение поста отправляется уже после служебного экрана, поэтому
     # экран пересоздаётся ниже — до отрисовки нового экрана.
@@ -4867,6 +5131,7 @@ async def _render_delivered_edit(
     ui = _ui(context)
     _set_details(ui, details)
     _clear_active(ui)
+    _nav_enter(ui, NAV_DELIVERED_EDIT)
     text = tr("wizard.finished.edit_text")
     if notice:
         text = f"{notice}\n\n{text}"
@@ -4877,9 +5142,7 @@ async def _render_delivered_edit(
         text,
         _delivered_edit_keyboard(
             details,
-            extras_available=bool(
-                _available_extra_bricks(details, _user_id(update)) or details.extras
-            ),
+            extras_available=bool(_extras_candidates(details) or details.extras),
         ),
     )
     return AW_PREVIEW
@@ -5235,7 +5498,7 @@ async def _handle_active_text(
     if extra is None:
         return await _stale(update, context)
     definition = _extra_definition(details, extra, _user_id(update))
-    field = _extra_field_state(details, extra, definition)
+    field = _extra_field_state(details, definition)
     await _reanchor(update, context)
     if field.value_type == BRICK_TYPE_CHOICE:
         return await _reject_choice_text(update, context, details, field, -1, "extra")
@@ -6029,7 +6292,7 @@ async def handle_question_callback(
         ui["active_source"] = "question"
         await _answer(update)
         return await _render_question(update, context, updated, fields, index)
-    if action in {"aw_qback", "aw_qnext", "aw_qedit", "aw_qskip"} and len(parts) == 4:
+    if action in {"aw_qback", "aw_qskip"} and len(parts) == 4:
         if not all(item.isdigit() for item in parts[1:]):
             return await _stale(update, context)
         found = await _question_from_callback(
@@ -6044,15 +6307,18 @@ async def handle_question_callback(
         _ui_data, details, fields, index, field = found
         await _answer(update)
         if action == "aw_qback":
+            # Требование V: сначала реальный путь. Со стека возвращаемся на
+            # тот экран, с которого пришли (список полей, «Изменить»);
+            # фолбэк без стека — прежний шаг по индексу, а с первого
+            # вопроса — экран шаблона.
+            ui_stack = _ui(context)
+            previous = _nav_pop_from(ui_stack, NAV_QUESTION)
+            rendered = await _nav_render(update, context, details, previous)
+            if rendered is not None:
+                return rendered
             if index <= 0:
                 return await _render_template_screen(update, context, details)
             return await _render_question(update, context, details, fields, index - 1)
-        if action == "aw_qnext":
-            return await _advance_question(update, context, details, index + 1)
-        if action == "aw_qedit":
-            return await _render_question(
-                update, context, details, fields, index, editing=True
-            )
         return await _skip_question(update, context, details, field, index)
     if action == "aw_manage_back":
         draft_id = ui.get("draft_id")
@@ -6064,6 +6330,13 @@ async def handle_question_callback(
             return await _stale(update, context)
         _ui_data, details = guarded
         await _answer(update)
+        # Требование V: «Поля анонса» возвращают на экран, с которого их
+        # открыли (например, «✏️ Изменить» готового анонса), а не к выбору
+        # шаблона. Без стека — безопасный экран текущего этапа.
+        previous = _nav_pop_from(_ui(context), NAV_MANAGER)
+        rendered = await _nav_render(update, context, details, previous)
+        if rendered is not None:
+            return rendered
         if details.stage == WizardStage.PREVIEW:
             return await _render_preview(update, context, details)
         if details.stage == WizardStage.EXTRAS:
@@ -6122,52 +6395,6 @@ async def handle_extras_callback(
         _ui_data, details = guarded
         await _answer(update)
         return await _enter_extras(update, context, details)
-    if action == "aw_exadd" and len(parts) == 3:
-        if not all(item.isdigit() for item in parts[1:]):
-            return await _stale(update, context)
-        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
-        if guarded is None:
-            return await _stale(update, context)
-        _ui_data, details = guarded
-        try:
-            updated = _ensure_stage(update, context, details, WizardStage.EXTRAS)
-        except AnnouncementError as exc:
-            await _answer(update, str(exc), alert=True)
-            return await _resume_current(update, context, notice=str(exc))
-        await _answer(update)
-        return await _render_available_bricks(update, context, updated)
-    if action == "aw_exbpage" and len(parts) == 4:
-        if not all(item.isdigit() for item in parts[1:]):
-            return await _stale(update, context)
-        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
-        if guarded is None:
-            return await _stale(update, context)
-        _ui_data, details = guarded
-        await _answer(update)
-        return await _render_available_bricks(
-            update, context, details, page=int(parts[3])
-        )
-    if action == "aw_exbrick" and len(parts) == 4:
-        if not all(item.isdigit() for item in parts[1:]):
-            return await _stale(update, context)
-        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
-        if guarded is None:
-            return await _stale(update, context)
-        _ui_data, details = guarded
-        brick_id = int(parts[3])
-        if not any(
-            brick.id == brick_id
-            for brick in _available_extra_bricks(details, _user_id(update))
-        ):
-            return await _stale(
-                update,
-                context,
-                tr("wizard.handle_extras_callback.etot_kirpichik_nedostupen_vyberi"),
-            )
-        await _answer(update)
-        # Poster 2.3 H2: выбор секции/позиции из интерфейса удалён —
-        # кирпичик сразу добавляется в конец текста анонса.
-        return await _add_extra(update, context, details, brick_id)
     if action == "aw_exback" and len(parts) == 3:
         if not all(item.isdigit() for item in parts[1:]):
             return await _stale(update, context)
@@ -6176,7 +6403,16 @@ async def handle_extras_callback(
             return await _stale(update, context)
         _ui_data, details = guarded
         await _answer(update)
-        return await _render_extras(update, context, details)
+        return await _back_from_extras(update, context, details)
+    if action == "aw_exbpage" and len(parts) == 4:
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
+        if guarded is None:
+            return await _stale(update, context)
+        _ui_data, details = guarded
+        await _answer(update)
+        return await _render_extras(update, context, details, page=int(parts[3]))
     if action == "aw_exdel" and len(parts) == 4:
         if not all(item.isdigit() for item in parts[1:]):
             return await _stale(update, context)
@@ -6223,14 +6459,18 @@ async def handle_extras_callback(
             return await _stale(update, context)
         _ui_data, details = guarded
         brick_id = int(parts[3])
+        await _answer(update)
+        # Требование IV: кирпичик списка открывается одним маршрутом —
+        # незаполненный сначала становится выбранным (значение попадает на
+        # место токена в расширенном тексте), затем сразу открывается экран
+        # значения. Заполненный открывается без лишней записи.
         extra = next(
             (item for item in details.extras if item.brick_id == brick_id),
             None,
         )
-        if extra is None:
-            return await _stale(update, context)
-        await _answer(update)
-        return await _render_extra_value_prompt(update, context, details, extra)
+        if extra is not None:
+            return await _render_extra_value_prompt(update, context, details, extra)
+        return await _add_extra(update, context, details, brick_id)
     if action == "aw_exskip" and len(parts) == 4:
         if not all(item.isdigit() for item in parts[1:]):
             return await _stale(update, context)
@@ -6245,7 +6485,22 @@ async def handle_extras_callback(
         )
         if extra is None or ui.get("active_brick_id") != brick_id:
             return await _stale(update, context)
+        definition = _extra_definition(details, extra, _user_id(update))
+        field = _extra_field_state(details, definition)
         await _answer(update)
+        if field.status == FIELD_STATUS_VALID:
+            # Требование VI: «Пропустить» не очищает значение и не
+            # пересобирает анонс — просто возвращаемся к списку.
+            _clear_active(ui)
+            return await _render_extras(
+                update,
+                context,
+                details,
+                notice=tr(
+                    "wizard.handle_extras_callback.znachenie_ostavleno",
+                    title=_short(extra.title, 50),
+                ),
+            )
         return await _save_extra_value(
             update,
             context,
@@ -6263,6 +6518,13 @@ async def handle_extras_callback(
         _ui_data, details = guarded
         _clear_active(ui)
         await _answer(update)
+        # Требование V: экран значения доп. поля возвращает туда, откуда его
+        # открыли (в реальном пути это всегда список доп. полей); без стека —
+        # сам список как безопасный экран этого шага.
+        previous = _nav_pop_from(ui, NAV_EXTRA_VALUE)
+        rendered = await _nav_render(update, context, details, previous)
+        if rendered is not None:
+            return rendered
         return await _render_extras(update, context, details)
     if action == "aw_qmanage" and len(parts) == 3:
         return await handle_question_callback(update, context)
