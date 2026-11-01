@@ -38,3 +38,33 @@
   боте (`./botctl.sh stop`) — `make db-maintain-clean PYTHON=.venv/bin/python`;
   подтверждение результата: `user_counts_after` — все нули, кроме
   `bricks = каталог кода`, `integrity_after: ok`, путь `replaced_to`.
+
+## 2026-11-01 — Релиз 2.4 завершён: rebuild-очистка рабочей БД выполнена (Manager)
+
+- Коммит Build-механизма: `651bd8f` (db_maintenance.py rebuild-архитектура,
+  Makefile REAL_DB, tests/test_db_maintenance_rebuild.py 7 тестов, state.md,
+  opencode.jsonc — allow db-maintain-report для build) — pushed в origin/main.
+  Целевой тест механизма зелёный (unittest tests.test_db_maintenance_rebuild).
+- Релизная очистка рабочей базы (утверждена владельцем, протокол п. 11):
+  служба остановлена штатно (inactive, PID-файла нет) → `make db-maintain-clean`
+  → полный rebuild: бэкап
+  `Poster/post_bot.db.backup-20261101T140954950730Z-p719644` (проверен),
+  bootstrap новой базы, верификация (миграции 1..25, системные кирпичики ровно
+  каталог brick_types — 10 кодов, все пользовательские счётчики нулевые),
+  атомарная замена. Прежняя база сохранена:
+  `post_bot.db.replaced-20261101T140955345908Z`. Контракт выполнен полностью:
+  в базе не осталось ни одной тестовой записи (users/places/templates/
+  versions/snapshots/proposals/анонсы/состояния — 0), единственная ненулевая
+  таблица `bricks` = 10 системных. Независимая пост-проверка: integrity ok,
+  foreign_key_check пуст, миграции 1..25, sys_codes = каталог.
+- Суперадмин: конфигурационный (.env), rebuild файл конфигурации не читает и
+  не изменяет; подтверждено косвенно — бот стартовал без ConfigError.
+- Служба запущена: active/running, NRestarts=0, «Запуск бота» — 1 (нет
+  restart-loop), Traceback/ERROR 0 за 2+ минуты наблюдения, polling жив
+  (63 ESTAB), конфликтов нет, автоочистка анонсов зарегистрирована.
+  Telegram-сообщения механизм не трогает (Telegram API не вызывает).
+- Незакоммиченный остаток (намеренно): ui_texts.yaml.before-text-edit.bak,
+  untracked orchestra_protocol.md, 5 бэкапов + replaced-файл прежней базы
+  (в .gitignore, архивировать при следующей операции с базой).
+- **Poster 2.4: разработка, приёмка, коммиты, очистка БД, деплой — завершены.**
+  Живая визуальная приёмка в реальном Telegram — за владельцем.
