@@ -9,11 +9,9 @@
   // качество. Сжатие истории выполняет та же бесплатная модель, даже если
   // сессия явно переключена на платную.
   "agents": {
-    "build": {
-      "model": "opencode/deepseek-v4.1-flash-free#max"
-    },
+    "build": {},
     "compaction": {
-      "model": "opencode/deepseek-v4.1-flash-free#max"
+      "model": "routerai/deepseek/deepseek-v4.1-flash-1017"
     }
   },
 
@@ -55,6 +53,9 @@
     //    решения владельца.
     { "action": "shell", "resource": "rm *.db*", "effect": "deny" },
     { "action": "shell", "resource": "rm *backups*", "effect": "deny" },
+    // Прямой доступ к рабочей базе минуя штатный механизм обслуживания
+    // (Poster/db_maintenance.py): любое чтение/копирование/запись запрещено.
+    { "action": "shell", "resource": "*post_bot.db*", "effect": "deny" },
 
     // 4. Секреты: не читать, не менять, не выводить. Шаблоны путевые,
     //    чтобы обычный текст (например, сообщение коммита со словом .env)
@@ -72,6 +73,41 @@
     { "action": "read", "resource": "*.env.example", "effect": "allow" },
     { "action": "shell", "resource": "*/.env.example*", "effect": "allow" },
     { "action": "shell", "resource": "* .env.example*", "effect": "allow" },
-    { "action": "edit", "resource": "*.env.example", "effect": "allow" }
+    { "action": "edit", "resource": "*.env.example", "effect": "allow" },
+
+    // 6. Штатные безопасные операции без подтверждений: чтение истории,
+    //    утверждённые проверки и целевые тесты. Эти команды не пишут код и
+    //    не касаются секретов. В профилях агентов (.opencode/agents/*.md)
+    //    запреты на чтение секретов и запись в код стоят ПОСЛЕ глобальных
+    //    правил, поэтому здесь ничего не ослабляется. Приложение
+    //    (Poster/post_bot.db) и каталог backups по-прежнему закрыты
+    //    правилами 3–4 и повторными deny в профилях агентов.
+    { "action": "shell", "resource": "git status*", "effect": "allow" },
+    { "action": "shell", "resource": "git diff*", "effect": "allow" },
+    { "action": "shell", "resource": "git log*", "effect": "allow" },
+    { "action": "shell", "resource": "git show --stat*", "effect": "allow" },
+    { "action": "shell", "resource": "make check*", "effect": "allow" },
+    { "action": "shell", "resource": "make accept*", "effect": "allow" },
+    { "action": "shell", "resource": "make lint*", "effect": "allow" },
+    { "action": "shell", "resource": "make test*", "effect": "allow" },
+    { "action": "shell", "resource": ".venv/bin/python -m unittest*", "effect": "allow" },
+    { "action": "shell", "resource": "ruff --check*", "effect": "allow" },
+    { "action": "shell", "resource": ".venv/bin/ruff --check*", "effect": "allow" },
+    { "action": "shell", "resource": "black --check*", "effect": "allow" },
+    { "action": "shell", "resource": ".venv/bin/black --check*", "effect": "allow" },
+    { "action": "shell", "resource": "mypy*", "effect": "allow" },
+    { "action": "shell", "resource": ".venv/bin/mypy*", "effect": "allow" },
+
+    // 7. Штатное обслуживание тестовой БД после релиза (утверждено
+    //    владельцем: очистка тестовых данных после каждого релиза до
+    //    первого публичного выпуска Poster). Разрешена одна команда
+    //    (Poster/db_maintenance.py через make) — не набор shell-команд:
+    //    без проверенного бэкапа очистка не выполняется. Agent-профили
+    //    дописываются ПОСЛЕ проектных правил, поэтому точные allow
+    //    для конкретных ролей (менеджер, tester на /tmp-базе) стоят
+    //    в конце каждого профиля и выигрывают у deny выше; остальные
+    //    роли не имеют исключений и наследуют этот deny.
+    { "action": "shell", "resource": "make db-maintain-report*", "effect": "deny" },
+    { "action": "shell", "resource": "make db-maintain-clean*", "effect": "deny" }
   ]
 }
