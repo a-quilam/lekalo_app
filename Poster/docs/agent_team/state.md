@@ -287,6 +287,40 @@ test_poster2_r3_conflicts_tester.py:1473.
 на bk_open (bricks.py, подтверждение, in_use/protected), S6/S7/S8 зелёные,
 правки LATEST_VERSION, полный make check.
 
+**P1 принят (2026-11-01, коммит c1ee52a, pushed, CI).** Домен+UI+тексты:
+миграция 25 (один [адрес], удаление адрес_места id=6, пересоздание
+approval_link/reserve_codes триггеров — same-id promotion для system);
+_promote_source_brick (атомарно, конфликт кода до записи, CAS);
+update_brick_description/delete_brick/brick_references (права в
+_brick_for_write; 8 FK-колонок; protected/in_use/deleted);
+handlers/admin.py adm_bedit* (brick_list/card/description_input, права по
+строке БД, до ^adm_ fallback); handlers/bricks.py bk_delete* (обязательное
+подтверждение, in_use/protected). Тесты: p1_model_tester 13 OK,
+p1_migrations 11 OK (fresh vs upgrade побайтово), make check → Ran 1992
+OK, ruff/black/mypy чисто. Ревизор: APPROVED (блокирующих нет; миноры:
+аномальный brick_conflicts может безопасно уронить миграцию rollback'ом —
+недостижимо через сервис; черновики со снимком адрес_места дадут явный
+AnnouncementSnapshotError — учесть в P2 дружелюбный текст; гоночный тест
+пинит "conflict"). Незакоммиченные .opencode/AGENTS.md/opencode.jsonc —
+вне продуктовых коммитов, не трогать.
+
+**P2 принят (2026-11-01, коммит 5dbd078, pushed).** Конструктор и навигация:
+aw_extras сразу полный список (пагинация, корзина, единственный «◀️ Назад»);
+aw_exadd/aw_exbrick/aw_qnext/aw_qedit/_render_available_bricks/_available_extra_bricks
+удалены; legacy append-fallback удалён; «Пропустить» = сохранить значение
+(не очищает); экраны вопросов — только «◀️ Назад | ⏭ Пропустить»; стек
+навигации (user_data, NAV_STACK_LIMIT=32, _nav_enter/_nav_pop/_nav_pop_from/
+_nav_render/_nav_identity, nav_current-гейт) на home/template/question/
+manager/extras/extra value/photos/preview/delivered экранах, рестарт-устойчив.
+Каталог синхронизирован (keys=1114). Полный make check: Ran 2012 tests OK,
+ruff/black/mypy чисто. Ревизор: APPROVED (миноры: устаревшая строка
+docs/ui_texts.md:139 про buttons.extras.add; мёртвая SCOPE_LABELS
+announcement_wizard.py:180; неточная формулировка ошибки _render_extras —
+закрыть в P4-чистке). Тест-контракт: test_poster2_24_p2_wizard_tester.py
+(19, не менять). Известное следствие: старые черновики со снимком
+[адрес_места] дают дружелюбный текст вместо алиаса (решение владельца).
+Коммиты: c1ee52a (P1), 5dbd078 (P2). Push: выполнен, оба.
+
 ## Шаблон записи
 
 ```
