@@ -873,8 +873,13 @@ DEFAULTS: dict[str, str] = {
     "alerts.templates.standartnyy_shablon_udalit_nelzya": "Стандартный шаблон удалить нельзя: место не может остаться без шаблона.",
     "alerts.templates.u_mesta_net_standartnogo": "У места нет стандартного шаблона.",
     "alerts.templates.u_shablona_net_rasshirennogo": "В этом шаблоне нет расширенного текста.",
-    "alerts.wizard.chernovik_nayden_nedostupen": "Черновик не найден или недоступен.",
     "alerts.wizard.chernovik_sohranen": "Черновик сохранён.",
+    "alerts.wizard.anons_bolshe_ne_hranitsya": (
+        "Анонс больше не хранится: он не найден или недоступен — удалён "
+        "или очищен по сроку хранения."
+    ),
+    "alerts.wizard.anons_udalen": "Анонс удалён.",
+    "alerts.wizard.udalenie_anonsa_otmeneno": "Удаление отменено.",
     "alerts.wizard.dopolnitelnyy_kirpichik_udalen": "Дополнительное поле удалено.",
     "alerts.wizard.foto_udaleno": "Фото удалено.",
     "alerts.wizard.kalendar_obnovlen": "Календарь обновлён.",
@@ -1214,7 +1219,6 @@ DEFAULTS: dict[str, str] = {
     "buttons.wizard.k_upravleniyu": "◀️ К управлению",
     "buttons.wizard.mesyacy": "📅 Месяцы",
     "buttons.wizard.moi_anonsy": "📝 Мои анонсы",
-    "buttons.wizard.novyy_anons": "➕ Новый анонс",
     "buttons.wizard.obnovit": "🔄 Обновить",
     "buttons.wizard.obzor_anonsa": "👁 Обзор анонса",
     "buttons.wizard.otpravit_etot_chat": "📨 Отправить в этот чат",
@@ -1227,6 +1231,10 @@ DEFAULTS: dict[str, str] = {
     "buttons.wizard.stranica_2": "Следующая страница ▶️",
     "buttons.wizard.udalit_foto": "🗑 Удалить фото {value}",
     "buttons.wizard.udalit_vse_foto": "🗑 Удалить все фото",
+    # Poster 2.4 P3: строка списка «Мои анонсы» — открытие|🗑 и экран
+    # подтверждения удаления («Удалить» / «Отмена»).
+    "buttons.wizard.udalit_anons": "🗑",
+    "buttons.wizard.otmena_udaleniya": "Отмена",
     "buttons.wizard.vernutsya_redaktirovaniyu": "↩️ К редактированию",
     "buttons.wizard.vybrat_nazvanie": "🔤 Выбрать название",
     # --- Места и площадки ----------------------------------------------
@@ -1479,6 +1487,11 @@ DEFAULTS: dict[str, str] = {
         "Готовый анонс приходит отдельным сообщением в этот личный чат. В каналы и другим людям бот его не отправляет."
     ),
     "wizard.home.vashi_anonsy": "Ваши анонсы:",
+    "wizard.home.podtverdite_udalenie_anonsa": (
+        "🗑 Удалить анонс «{name}» ({status})?\n\n"
+        "Запись исчезнет из списка. Отправленный в чат анонс и сообщения "
+        "бота остаются как есть."
+    ),
     "wizard.module.chernovik_sohranen_no_izmeneniya": "⚠️ Черновик сохранён, но обновить анонс в чате не удалось. Внесите изменение ещё раз или нажмите «Повторить отправку», когда эта кнопка появится.",
     "wizard.module.dop_polya": "доп. поля",
     "wizard.module.lichnyy": "личный",

@@ -20,9 +20,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import delete, select
@@ -102,6 +103,8 @@ from utils.tg_html import escape_html, sanitize_html
 
 _UNSET = object()
 
+logger = logging.getLogger(__name__)
+
 # Разумный предел коллекции: защищает сообщение/БД от бесконечного набора.
 # Отправка при этом всё равно режется на медиагруппы по лимиту Telegram.
 # Решение владельца от 2026-10-27 (S4 §5.3): максимум ровно 10 фото на
@@ -125,6 +128,17 @@ PUBLICATION_FROZEN_STATUSES = PUBLICATION_STATUSES
 ORIGIN_PLACE = "place"
 ORIGIN_PERSONAL = "personal"
 ORIGINS = (ORIGIN_PLACE, ORIGIN_PERSONAL)
+
+# Poster 2.4 P3: лимиты хранения анонсов (решение владельца). Черновики и
+# готовые записи считаются НЕЗАВИСИМО: готовый анонс — `publication_status =
+# 'sent'`, всё остальное — черновик. Пятая запись в своей категории тихо
+# вытесняет самую старую по `created_at` (не по id): пользователь не видит
+# ошибки, а Telegram-сообщения не трогаются.
+MAX_ANNOUNCEMENT_DRAFTS = 4
+MAX_ANNOUNCEMENT_SENT = 4
+
+# Автоочистка: записи с возрастом >= 30 суток удаляются, 29 суток остаются.
+ANNOUNCEMENT_RETENTION_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -1067,6 +1081,18 @@ def _start_place_announcement(
     )
     session.add(row)
     try:
+        # P3: лимит черновиков соблюдается в той же транзакции, что и
+        # создание: пятый черновик тихо вытесняет самый старый по created_at.
+        # `flush` обязателен ДО подсчёта лимита: прод-сессия создаётся с
+        # `autoflush=False` (database.SessionLocal), и без явного flush
+        # (1) `row.id` остался бы None — защищаемый черновик выпал бы из
+        # `protect_ids`, (2) незакоммиченный INSERT был бы невидим SELECT'у
+        # внутри вытеснения (`excess=0`), так что пятый черновик не вытеснил
+        # бы самый старый и лимит нарушался бы устойчиво. Так же поступает
+        # личный путь (`_start_personal_announcement`).
+        session.flush()
+        assert row.id is not None
+        enforce_announcement_limits(session, actor=actor, protect_ids=(row.id,))
         session.commit()
     except (IntegrityError, OperationalError) as exc:
         session.rollback()
@@ -1161,6 +1187,8 @@ def _start_personal_announcement(
                 "stage": WizardStage.QUESTIONS.value,
             },
         )
+        # P3: лимит черновиков — в той же транзакции, что и создание.
+        enforce_announcement_limits(session, actor=actor, protect_ids=(row.id,))
         session.commit()
     except AnnouncementError:
         session.rollback()
@@ -1200,6 +1228,192 @@ def _draft_by_key(
             AnnouncementDraft.idempotency_key == idempotency_key,
         )
     )
+
+
+# --- Poster 2.4 P3: лимиты, удаление и автоочистка --------------------------
+
+
+def _sent_condition():
+    """Готовый анонс: `publication_status = 'sent'` (как в остальном коде)."""
+    return AnnouncementDraft.publication_status == PUBLICATION_STATUS_SENT
+
+
+def _draft_category_condition(*, sent: bool):
+    """Условие категории: готовые записи либо всё остальное (черновики)."""
+    if sent:
+        return _sent_condition()
+    # SQLite: `IS NOT 'sent'` истинно и для NULL — так черновик без статуса
+    # попадает в свою категорию, а готовый анонс в неё не входит.
+    return AnnouncementDraft.publication_status.isnot(PUBLICATION_STATUS_SENT)
+
+
+def _delete_draft_rows(session: Session, rows: Sequence[AnnouncementDraft]) -> int:
+    """
+    Физически удаляет записи анонсов вместе с их значениями и доп. полями.
+
+    Удаляется только строка БД: Telegram-сообщения (живой блок, готовый
+    пост) остаются в чате — их адреса хранятся в прогрессе публикации и
+    уходят вместе с записью, но сами сообщения не трогаются. Снимок
+    шаблона НЕ удаляется: на него могут ссылаться другие записи, а история
+    шаблонов — отдельная сущность.
+
+    Вызывающий слой отвечает за транзакцию: функция не коммитит.
+    """
+    ids = [row.id for row in rows]
+    if not ids:
+        return 0
+    session.execute(
+        delete(AnnouncementValue).where(AnnouncementValue.draft_id.in_(ids))
+    )
+    session.execute(
+        delete(AnnouncementExtra).where(AnnouncementExtra.draft_id.in_(ids))
+    )
+    session.execute(
+        delete(AnnouncementDraft)
+        .where(AnnouncementDraft.id.in_(ids))
+        .execution_options(synchronize_session=False)
+    )
+    return len(ids)
+
+
+def _evict_oldest(
+    session: Session,
+    actor: User,
+    *,
+    sent: bool,
+    keep: int,
+    protect_ids: Sequence[int] = (),
+) -> int:
+    """
+    Вытесняет лишние записи категории: самые старые по `created_at`.
+
+    `keep` — сколько записей категории должно остаться. Тихое вытеснение:
+    никаких сообщений пользователю, только физическое удаление из БД.
+    `protect_ids` — записи, которые нельзя вытеснять (только что созданная
+    или только что опубликованная): иначе анонс исчез бы сразу после
+    действия пользователя. Вызывающий слой отвечает за транзакцию: функция
+    не коммитит.
+    """
+    protected = {
+        int(item) for item in protect_ids if isinstance(item, int) and item > 0
+    }
+    rows = list(
+        session.scalars(
+            select(AnnouncementDraft)
+            .where(
+                AnnouncementDraft.author_user_id == actor.id,
+                _draft_category_condition(sent=sent),
+            )
+            .order_by(AnnouncementDraft.created_at, AnnouncementDraft.id)
+        ).all()
+    )
+    excess = len(rows) - max(0, keep)
+    if excess <= 0:
+        return 0
+    victims: list[AnnouncementDraft] = []
+    for row in rows:
+        if len(victims) >= excess:
+            break
+        if row.id in protected:
+            continue
+        victims.append(row)
+    return _delete_draft_rows(session, victims)
+
+
+def enforce_announcement_limits(
+    session: Session,
+    *,
+    actor: User,
+    protect_ids: Sequence[int] = (),
+) -> int:
+    """
+    Приводит количество анонсов автора к лимитам P3 (черновики и готовые).
+
+    Ничего не коммитит: вызывающий сервис включает вытеснение в свою
+    транзакцию, чтобы лимит соблюдался атомарно с созданием/финализацией.
+    Возвращает число вытесненных записей (0 — лимиты не превышены).
+    """
+    removed = _evict_oldest(
+        session,
+        actor,
+        sent=False,
+        keep=MAX_ANNOUNCEMENT_DRAFTS,
+        protect_ids=protect_ids,
+    )
+    removed += _evict_oldest(
+        session,
+        actor,
+        sent=True,
+        keep=MAX_ANNOUNCEMENT_SENT,
+        protect_ids=protect_ids,
+    )
+    return removed
+
+
+def delete_announcement(
+    session: Session,
+    *,
+    actor_telegram_user_id: int | None,
+    draft_id: int,
+) -> int:
+    """
+    Удаляет анонс автора (и черновик, и готовый) из БД.
+
+    Доступ проверяется владельцем: чужой или несуществующий `draft_id`
+    неотличим от отсутствующего (`AnnouncementNotFoundError`). Telegram-
+    сообщения не удаляются — в чате остаются и живой блок, и готовый пост.
+    Возвращает id удалённой записи.
+    """
+    actor = _require_actor(session, actor_telegram_user_id)
+    row = _load_owned_draft(session, actor, draft_id)
+    removed_id = row.id
+    try:
+        _delete_draft_rows(session, [row])
+        _commit(session)
+    except Exception:
+        session.rollback()
+        raise
+    logger.info("Анонс #%s удалён автором (user_id=%s).", removed_id, actor.id)
+    return removed_id
+
+
+def cleanup_old_announcements(
+    session: Session,
+    *,
+    now: datetime,
+    days: int = ANNOUNCEMENT_RETENTION_DAYS,
+) -> int:
+    """
+    Удаляет анонсы старше срока хранения (Poster 2.4 P3, 30 суток).
+
+    Граница строгая по требованию владельца: запись возрастом ровно 30
+    суток удаляется, 29 суток 23:59 остаётся. Возраст считается по
+    `created_at`, а не по последней правке. Удаляются и черновики, и
+    готовые записи; Telegram-сообщения не трогаются.
+    Возвращает количество удалённых записей.
+    """
+    if not isinstance(now, datetime):
+        raise AnnouncementError("Дата очистки должна быть моментом времени.")
+    if days <= 0:
+        raise AnnouncementError("Срок хранения должен быть положительным.")
+    cutoff = now - timedelta(days=days)
+    rows = list(
+        session.scalars(
+            select(AnnouncementDraft).where(AnnouncementDraft.created_at <= cutoff)
+        ).all()
+    )
+    if not rows:
+        return 0
+    try:
+        removed = _delete_draft_rows(session, rows)
+        _commit(session)
+    except Exception:
+        session.rollback()
+        raise
+    logger.info(
+        "Автоочистка анонсов: удалено %s записей старше %s суток.", removed, days
+    )
+    return removed
 
 
 def confirm_announcement_place(
@@ -2177,6 +2391,10 @@ def mark_announcement_publication_sent(
                 "stage": WizardStage.COMPLETED.value,
             },
         )
+        # P3: лимит готовых анонсов — в той же транзакции, что и фиксация
+        # доставки: пятый готовый вытесняет самый старый по created_at.
+        # Только что отправленный анонс не вытесняется никогда.
+        enforce_announcement_limits(session, actor=actor, protect_ids=(draft_id,))
         _commit(session)
     except Exception:
         session.rollback()

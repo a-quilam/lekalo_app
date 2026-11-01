@@ -68,6 +68,7 @@ from announcement_store import (
     choose_announcement_template,
     clear_announcement_photos,
     confirm_announcement_place,
+    delete_announcement,
     get_announcement_draft,
     list_announcement_drafts,
     mark_announcement_publication_failed,
@@ -1145,6 +1146,20 @@ def _draft_display_name(draft) -> str:
     return str(name)
 
 
+def _entry_label(index: int, draft) -> str:
+    """
+    Подпись строки списка «Мои анонсы»: номер, название и статус.
+
+    Название берётся из снимка/места, статус — из `publication_status`/
+    этапа. Подпись кнопки — обычный текст, поэтому HTML не экранируется.
+    """
+    label = f"▶️ {index}. {_short(_draft_display_name(draft), 38)}"
+    stage = _draft_status_label(draft)
+    if stage:
+        label += f" — {stage}"
+    return _short(label, 62)
+
+
 def _home_content(user_id: int, page: int) -> tuple[str, InlineKeyboardMarkup, int]:
     try:
         with SessionLocal() as session:
@@ -1179,21 +1194,20 @@ def _home_content(user_id: int, page: int) -> tuple[str, InlineKeyboardMarkup, i
             ]
         )
 
-    buttons: list[list[InlineKeyboardButton]] = [
-        [InlineKeyboardButton(tr("buttons.wizard.novyy_anons"), callback_data="aw_new")]
-    ]
-    for index, draft in enumerate(shown):
-        stage = _draft_status_label(draft)
-        label = f"▶️ {index + 1}. {_short(_draft_display_name(draft), 38)}"
-        if stage:
-            label += f" — {stage}"
-        buttons.append(
-            [
-                InlineKeyboardButton(
-                    _short(label, 62), callback_data=f"aw_open:{draft.draft_id}"
-                )
-            ]
+    # P3: кнопки создания анонса на экране списка НЕТ — создание живёт в
+    # главном меню. У каждой записи (черновик и готовый) ровно одна строка:
+    # открытие + «🗑» удаление.
+    buttons: list[list[InlineKeyboardButton]] = keyboard_layouts.list_rows(
+        (
+            keyboard_layouts.button(
+                _entry_label(index + 1, draft), f"aw_open:{draft.draft_id}"
+            ),
+            keyboard_layouts.button(
+                tr("buttons.wizard.udalit_anons"), f"aw_del:{draft.draft_id}"
+            ),
         )
+        for index, draft in enumerate(shown)
+    )
     nav: list[InlineKeyboardButton] = []
     if page > 0:
         nav.append(
@@ -1237,6 +1251,60 @@ async def _render_home(
     ui["home_page"] = page
     body = f"{notice}\n\n{text}" if notice else text
     await _render(update, context, body, keyboard)
+    return AW_PLACE
+
+
+def _delete_confirm_content(draft) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Отдельный экран подтверждения удаления записи списка (P3).
+
+    Подтверждение нельзя ставить рядом с «Открыть»: удаление необратимо.
+    Поэтому у экрана собственная клавиатура — «Удалить» и «Отмена», а
+    «Отмена» возвращает в список без изменений.
+    """
+    text = tr(
+        "wizard.home.podtverdite_udalenie_anonsa",
+        name=_draft_display_name(draft),
+        status=_draft_status_label(draft),
+    )
+    keyboard = InlineKeyboardMarkup(
+        keyboard_layouts.pair(
+            keyboard_layouts.button(
+                tr("buttons.wizard.udalit_anons"), f"aw_del_yes:{draft.draft_id}"
+            ),
+            keyboard_layouts.button(
+                tr("buttons.wizard.otmena_udaleniya"), f"aw_del_no:{draft.draft_id}"
+            ),
+        )
+    )
+    return text, keyboard
+
+
+async def _render_delete_confirm(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    draft_id: int,
+) -> int:
+    """
+    Показывает подтверждение удаления (P3, «🗑» в «Мои анонсы»).
+
+    Ничего не удаляет: только экран. Чужой/удалённый id — понятный ответ и
+    возврат к списку, без внутренней ошибки.
+    """
+    user_id = _user_id(update)
+    try:
+        details = _session_details(user_id, draft_id)
+    except (AnnouncementNotFoundError, AnnouncementActorError, AnnouncementError):
+        gone = tr("alerts.wizard.anons_bolshe_ne_hranitsya")
+        await _answer(update, gone, alert=True)
+        return await _render_my_announcements(update, context, notice=gone)
+    ui = _ui(context)
+    ui["draft_id"] = None
+    ui["revision"] = None
+    _clear_active(ui)
+    _nav_enter(ui, NAV_HOME)
+    text, keyboard = _delete_confirm_content(details)
+    await _render(update, context, text, keyboard)
     return AW_PLACE
 
 
@@ -1693,14 +1761,14 @@ async def _open_draft(
     try:
         details = _session_details(user_id, draft_id)
     except (AnnouncementNotFoundError, AnnouncementActorError, AnnouncementError):
+        # P3: запись могла быть удалена (вручную, вытеснением или очисткой),
+        # а кнопка «открыть» осталась в чате. Пользователь видит понятный
+        # ответ, а не внутреннюю ошибку; экран — актуальный список.
         ui = _fresh_ui()
         ctx.data(context)["announcement_ui"] = ui
-        await _answer(
-            update, tr("alerts.wizard.chernovik_nayden_nedostupen"), alert=True
-        )
-        return await _render_home(
-            update, context, notice=tr("alerts.wizard.chernovik_nayden_nedostupen")
-        )
+        gone = tr("alerts.wizard.anons_bolshe_ne_hranitsya")
+        await _answer(update, gone, alert=True)
+        return await _render_home(update, context, notice=gone)
 
     ui = _fresh_ui()
     _set_details(ui, details)
@@ -5972,6 +6040,25 @@ async def handle_place_state_callback(
             return await _stale(update, context)
         return await _open_draft(update, context, draft_id)
 
+    # P3: удаление записи «Мои анонсы» — только с подтверждением. Telegram-
+    # сообщения (экран, готовый пост) при этом не удаляются никогда.
+    if action == "aw_del" and len(parts) == 2:
+        await _answer(update)
+        try:
+            draft_id = int(parts[1])
+        except ValueError:
+            return await _stale(update, context)
+        return await _render_delete_confirm(update, context, draft_id)
+    if action == "aw_del_no" and len(parts) == 2:
+        await _answer(update, tr("alerts.wizard.udalenie_anonsa_otmeneno"))
+        return await _render_my_announcements(update, context)
+    if action == "aw_del_yes" and len(parts) == 2:
+        try:
+            draft_id = int(parts[1])
+        except ValueError:
+            return await _stale(update, context)
+        return await _delete_announcement_entry(update, context, draft_id)
+
     if action == "aw_place_search":
         await _answer(update)
         return await _render_search_prompt(update, context)
@@ -7118,6 +7205,43 @@ async def _render_my_announcements(
     notice: str | None = None,
 ) -> int:
     return await _render_home(update, context, notice=notice)
+
+
+async def _delete_announcement_entry(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    draft_id: int,
+) -> int:
+    """
+    Подтверждённое удаление записи из «Мои анонсы» (Poster 2.4 P3).
+
+    Удаляется только строка БД (черновик или готовый анонс): Telegram-
+    сообщения — экран и доставленный пост — остаются в чате. Владелец
+    проверяется доменным сервисом: чужой/уже удалённый анонс неотличим от
+    несуществующего и даёт понятный ответ вместо ошибки.
+    """
+    user_id = _user_id(update)
+    try:
+        with SessionLocal() as session:
+            delete_announcement(
+                session,
+                actor_telegram_user_id=user_id,
+                draft_id=draft_id,
+            )
+    except (AnnouncementNotFoundError, AnnouncementActorError):
+        await _answer(update, tr("alerts.wizard.anons_bolshe_ne_hranitsya"), alert=True)
+        return await _render_my_announcements(update, context)
+    except AnnouncementError as exc:
+        await _answer(update, _short(exc, 300), alert=True)
+        return await _render_my_announcements(update, context)
+    # Удалённая запись больше не может быть активным черновиком диалога.
+    ui = _ui(context)
+    if ui.get("draft_id") == draft_id:
+        ui["draft_id"] = None
+        ui["revision"] = None
+    _clear_active(ui)
+    await _answer(update, tr("alerts.wizard.anons_udalen"))
+    return await _render_my_announcements(update, context)
 
 
 async def _command_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

@@ -68,30 +68,32 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     """
     Inline-клавиатура главного меню Poster 2.0 — ровно пять кнопок.
 
-    Callback-данные: pick_place — выбор зарегистрированной площадки и
-    немедленный старт конструктора, pick_template — выбор личного шаблона,
-    my_announcements — история анонсов, manage — раздел управления,
-    help — справка.
+    Poster 2.4 P3: меню — три строки (решение владельца). Создание двумя
+    способами стоит одной парой, навигация «Управление»/«Помощь» — второй.
+    Callback-данные прежние: pick_place — выбор зарегистрированной площадки
+    и немедленный старт конструктора, pick_template — выбор личного
+    шаблона, my_announcements — история анонсов, manage — раздел
+    управления, help — справка.
     """
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
                     tr("buttons.main.create_place"), callback_data="pick_place"
-                )
-            ],
-            [
+                ),
                 InlineKeyboardButton(
                     tr("buttons.main.create_template"), callback_data="pick_template"
-                )
+                ),
             ],
             [
                 InlineKeyboardButton(
                     tr("buttons.main.announcements"), callback_data="my_announcements"
                 )
             ],
-            [InlineKeyboardButton(tr("buttons.main.manage"), callback_data="manage")],
-            [InlineKeyboardButton(tr("buttons.main.help"), callback_data="help")],
+            [
+                InlineKeyboardButton(tr("buttons.main.manage"), callback_data="manage"),
+                InlineKeyboardButton(tr("buttons.main.help"), callback_data="help"),
+            ],
         ]
     )
 
