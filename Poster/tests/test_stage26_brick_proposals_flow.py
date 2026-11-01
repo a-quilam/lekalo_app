@@ -30,6 +30,7 @@ from brick_store import (
     create_personal_brick,
     create_place_brick,
     list_available_bricks,
+    update_brick_description,
     update_personal_brick,
 )
 from models import (
@@ -1088,26 +1089,57 @@ class BrickProposalFlowTests(unittest.TestCase):
         self.assertIn("Одобрено", h.screen_text())
 
     @scenario_test
-    async def test_35_global_promotion_keeps_source_editable_and_blocks_new_duplicate(
+    async def test_35_global_promotion_promotes_source_and_blocks_new_duplicate(
         self, h: Harness
     ) -> None:
+        """
+        Poster 2.4 P1: глобальное одобрение повышает ИСХОДНЫЙ кирпичик.
+
+        Тот же id становится системным (`owner_user_id=NULL`), поэтому автор
+        больше не редактирует его как личный, а описание системного кирпичика
+        меняет суперадмин. Второго носителя кода не появляется: новый дубль
+        запрещён и в личной, и в системной области.
+        """
         source = self.make_personal(h, OWNER_TG, code="промо_ui_26", title="Промо")
         proposal_id = self.direct_proposal(h, OWNER_TG, source.id, scope="system")
         await self.open_global_queue(h)
         await h.callback(f"adm_bprop_open:{proposal_id}", user_id=SUPER_TG)
         await h.callback(f"adm_bprop_approve:{proposal_id}", user_id=SUPER_TG)
         await h.callback(f"adm_bprop_approve_yes:{proposal_id}", user_id=SUPER_TG)
+        self.assertEqual(self.proposal_status(h, proposal_id), "approved")
+
+        promoted = self.source_row(h, source.id)
+        self.assertEqual(promoted.scope, "system")
+        self.assertIsNone(promoted.owner_user_id)
+        self.assertEqual(promoted.id, source.id)
+        self.assertIsNone(self.brick_by_code(h, "промо_ui_26", scope="personal"))
+
+        # Автор больше не владелец строки: личный редактор её не находит.
         with h.session_factory() as session:
-            updated = update_personal_brick(
+            as_author = update_personal_brick(
                 session,
                 actor_telegram_user_id=OWNER_TG,
                 brick_id=source.id,
-                expected_revision=source.revision,
+                expected_revision=promoted.revision,
                 code="промо_ui_26",
                 title="Изменённый источник",
                 rules=None,
             )
-            self.assertEqual(updated.status, "updated")
+            self.assertEqual(as_author.status, "not_found")
+        # Описание системного кирпичика меняет суперадмин.
+        with h.session_factory() as session:
+            as_super = update_brick_description(
+                session,
+                actor_telegram_user_id=SUPER_TG,
+                brick_id=source.id,
+                description="Системное описание",
+            )
+            self.assertEqual(as_super.status, "updated")
+        self.assertEqual(
+            self.source_row(h, source.id).description, "Системное описание"
+        )
+
+        # Новый дубль кода запрещён: код занят системным определением.
         self.ensure_user(h, OTHER_TG)
         with h.session_factory() as session, self.assertRaises(BrickConflictError):
             create_personal_brick(
@@ -1117,6 +1149,16 @@ class BrickProposalFlowTests(unittest.TestCase):
                 title="Новый дубль",
                 value_type="short_text",
             )
+        with h.session_factory() as session:
+            duplicates = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(Brick)
+                    .where(Brick.code == "промо_ui_26")
+                )
+                or 0
+            )
+        self.assertEqual(duplicates, 1, "второго носителя кода быть не должно")
 
     @scenario_test
     async def test_36_notification_failure_does_not_rollback_decision(

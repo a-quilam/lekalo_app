@@ -1283,8 +1283,8 @@ class R3RaceApprovalTests(R3Base):
             statuses = [future.result() for future in futures]
         self.assertEqual(
             sorted(statuses),
-            [PROPOSAL_STATUS_APPROVED, "error"],
-            f"ровно одно одобрение, второе — явный отказ: {statuses}",
+            [PROPOSAL_STATUS_APPROVED, "conflict"],
+            f"ровно одно одобрение, второе — явный отказ без записи: {statuses}",
         )
         session = self.Session()
         try:
@@ -1469,8 +1469,8 @@ class R3MigrationTests(unittest.TestCase):
         ).fetchone()
         return None if row is None else str(row[0])
 
-    def test_latest_version_is_19(self) -> None:
-        self.assertEqual(LATEST_VERSION, 24)
+    def test_latest_version_is_twenty_five(self) -> None:
+        self.assertEqual(LATEST_VERSION, 25)
 
     def test_fresh_database_has_conflict_tables_and_integrity(self) -> None:
         from migrations import run_migrations
@@ -1664,7 +1664,9 @@ class R3MigrationTests(unittest.TestCase):
                 description_column[4], "без DEFAULT: старые строки — NULL"
             )
             # Прежние кирпичики не тронуты; миграция 21 добавляет системный
-            # «город» отдельной строкой.
+            # «город» отдельной строкой. Единственное исключение — легаси-
+            # определение `адрес_места` (id 6): миграция 25 устраняет его,
+            # оставляя один адресный кирпичик `[адрес]` (Poster 2.4 P1).
             brick_columns = (
                 "id, code, title, type, scope, source, status, place_id, "
                 "created_by_user_id, created_at, updated_at, revision"
@@ -1672,9 +1674,18 @@ class R3MigrationTests(unittest.TestCase):
             self.assertEqual(
                 self._rows(
                     connection,
-                    f"SELECT {brick_columns} FROM bricks WHERE id < 501 ORDER BY id",
+                    f"SELECT {brick_columns} FROM bricks "
+                    "WHERE id < 501 AND code <> 'адрес_места' ORDER BY id",
                 ),
-                bricks_before,
+                [row for row in bricks_before if row[1] != "адрес_места"],
+            )
+            self.assertEqual(
+                self._rows(
+                    connection,
+                    "SELECT id, code FROM bricks WHERE code = 'адрес_места'",
+                ),
+                [],
+                "миграция 25 устраняет легаси-определение адреса",
             )
             self.assertEqual(
                 self._rows(

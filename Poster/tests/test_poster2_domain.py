@@ -52,7 +52,6 @@ from brick_store import (
     list_system_bricks,
     update_personal_brick,
 )
-from brick_types import SYSTEM_BRICKS_BY_CODE
 from migrations import DEFAULT_MIGRATIONS, LATEST_VERSION, run_migrations
 from models import Brick, Place
 from template_store import (
@@ -174,7 +173,7 @@ class MigrationFifteenAndSixteenTests(_MigrationTestCase):
     """Миграции 15–17 на заполненной временной БД версии 13."""
 
     def test_migration_keeps_rows_links_checks_and_passes_integrity(self) -> None:
-        self.assertEqual(LATEST_VERSION, 24)
+        self.assertEqual(LATEST_VERSION, 25)
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
 
         connection = sqlite3.connect(self.path)
@@ -616,15 +615,10 @@ class PersonalOneOffPlaceTests(AnnouncementDatabaseTestCase):
         without = self.start_at_questions()
         without_ids = snapshot_brick_ids_by_code(without.template_snapshot)
         self.assertNotIn("адрес", without_ids)
-        self.assertNotIn("адрес_места", without_ids)
         without_payload = build_announcement_render_payload(
             self.session, actor_telegram_user_id=OWNER_TG, draft_id=without.draft_id
         )
         self.assertNotIn(self.brick_ids["адрес"], without_payload.values_by_id)
-        self.assertNotIn(
-            SYSTEM_BRICKS_BY_CODE["адрес_места"].id,
-            without_payload.values_by_id,
-        )
 
 
 class InitialPersonalTemplateTests(AnnouncementDatabaseTestCase):
@@ -923,11 +917,12 @@ class AddressBrickAndDescriptionTests(AnnouncementDatabaseTestCase):
 
     def test_address_brick_is_system_and_renders_from_place_card(self) -> None:
         codes = [brick.code for brick in list_system_bricks(self.session)]
-        self.assertEqual(len(codes), 11)
+        # Poster 2.4 P1: адресный кирпичик ОДИН — легаси `адрес_места`
+        # устранён миграцией 25, поэтому системных определения 10, а не 11.
+        self.assertEqual(len(codes), 10)
         self.assertIn("адрес", codes)
         self.assertIn("город", codes)
-        # Старый код не переименован: сохранённые снимки продолжают работать.
-        self.assertIn("адрес_места", codes)
+        self.assertNotIn("адрес_места", codes)
         address = get_system_brick(self.session, "адрес")
         assert address is not None
         self.assertEqual(address.title, "Адрес")

@@ -399,7 +399,12 @@ class GlobalApprovalTests(BrickDatabaseTestCase):
         return int(value or 0)
 
     def test_personal_only_holder_is_approved(self) -> None:
-        """Кейс «личный кирпичик» — единственный несистемный носитель."""
+        """
+        Кейс «личный кирпичик» — единственный несистемный носитель.
+
+        Poster 2.4 P1: глобальное одобрение повышает ИСХОДНЫЙ кирпичик. Тот
+        же id становится системным и теряет владельца; второй строки нет.
+        """
         author, personal = self._author_with_personal(tg=3_910_001, code="цена_личная")
         self.make_user(self.SUPERADMIN_TG, username="boss")
         proposal_id = self._system_proposal(author, personal)
@@ -414,11 +419,16 @@ class GlobalApprovalTests(BrickDatabaseTestCase):
         assert result.brick is not None
         self.assertEqual(result.brick.scope, "system")
         self.assertEqual(result.brick.code, "цена_личная")
+        self.assertEqual(result.brick.id, personal.id, "повышен тот же кирпичик")
         self.assertIsNotNone(get_system_brick(self.session, "цена_личная"))
-        # Исходный личный кирпичик не переписан.
+        # Исходный кирпичик повышен на месте: тот же id, системная область,
+        # владельца больше нет.
         source_row = self.session.get(Brick, personal.id)
         assert source_row is not None
-        self.assertEqual(source_row.scope, "personal")
+        self.assertEqual(source_row.id, personal.id)
+        self.assertEqual(source_row.scope, "system")
+        self.assertIsNone(source_row.owner_user_id)
+        self.assertEqual(self._system_code_count("цена_личная"), 1)
 
     def test_place_holder_with_different_code_does_not_block_approval(self) -> None:
         """Кирпичик места с другим кодом не мешает глобальному одобрению."""
@@ -552,13 +562,15 @@ class GlobalApprovalTests(BrickDatabaseTestCase):
     def test_proposal_creation_rejects_system_duplicate(self) -> None:
         """
         Повторное предложение того же кода после глобального одобрения
-        отклоняется уже на создании снимка (код занят в системе).
+        отклоняется уже на создании снимка.
 
-        Это реальный путь: исходный личный кирпичик сохраняет свой код и
-        остаётся активным после одобрения, поэтому второе предложение из него
-        технически возможно — и должно получить явный конфликт.
+        Poster 2.4 P1: глобальное одобрение повышает ИСХОДНЫЙ кирпичик — он
+        перестаёт быть личным (`scope='system'`, `owner_user_id=NULL`), поэтому
+        повторное предложение из него невозможно: источник больше не личный
+        кирпичик автора (`ProposalNotFoundError`). Дубля кода в системе при
+        этом не появляется.
         """
-        from brick_proposal_store import ProposalConflictError
+        from brick_proposal_store import ProposalNotFoundError
 
         author, personal = self._author_with_personal(tg=3_910_005, code="карточка")
         self.make_user(self.SUPERADMIN_TG, username="boss")
@@ -570,8 +582,11 @@ class GlobalApprovalTests(BrickDatabaseTestCase):
         )
         self.assertEqual(first.status, PROPOSAL_STATUS_APPROVED, first.message)
         self.assertIsNotNone(get_system_brick(self.session, "карточка"))
+        promoted = self.session.get(Brick, personal.id)
+        assert promoted is not None
+        self.assertEqual(promoted.scope, "system")
 
-        with self.assertRaises(ProposalConflictError):
+        with self.assertRaises(ProposalNotFoundError):
             create_brick_proposal(
                 self.session,
                 actor_telegram_user_id=author.telegram_user_id,
@@ -580,6 +595,18 @@ class GlobalApprovalTests(BrickDatabaseTestCase):
             )
         # Второго системного кирпичика не появилось.
         self.assertEqual(self._system_code_count("карточка"), 1)
+
+        # Новый личный кирпичик с тем же кодом тоже запрещён: код занят
+        # системным определением.
+        with self.assertRaises(BrickConflictError):
+            create_personal_brick(
+                self.session,
+                actor_telegram_user_id=author.telegram_user_id,
+                code="карточка",
+                title="Новый дубль",
+                value_type="short_text",
+                rules={},
+            )
 
 
 # --- пользовательский сценарий: одобрение через кабинет --------------------

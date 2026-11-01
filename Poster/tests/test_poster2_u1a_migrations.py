@@ -195,15 +195,14 @@ class PlaceCityMigrationTests(_Base):
             "'2026-01-01 00:00:00', '2026-01-01 00:00:00')",
         )
 
-    def test_latest_version_is_twenty_four(self) -> None:
-        self.assertEqual(LATEST_VERSION, 24)
+    def test_latest_version_is_twenty_five(self) -> None:
+        self.assertEqual(LATEST_VERSION, 25)
         self.assertEqual(self.migrate(), LATEST_VERSION)
         journal = self.journal()
         self.assertIn((21, "place_city"), journal)
         self.assertIn((22, "builtin_templates_v4"), journal)
-        self.assertEqual(
-            journal[-1], (24, "template_content_and_extras_without_sections")
-        )
+        self.assertIn((24, "template_content_and_extras_without_sections"), journal)
+        self.assertEqual(journal[-1], (25, "single_address_brick"))
 
     def test_columns_are_added_nullable_and_rows_keep_null_city(self) -> None:
         self.migrate()

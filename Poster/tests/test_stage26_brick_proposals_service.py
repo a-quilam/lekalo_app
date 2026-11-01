@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import unittest
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from brick_proposal_store import (
     PROPOSAL_STATUS_APPROVED,
@@ -430,7 +430,7 @@ class BrickProposalServiceTests(TemplateDatabaseTestCase):
         self.assertEqual(stored.status, "approved")
         self.assertEqual(stored.approved_brick_id, result.brick.id)
 
-    def test_approve_system_creates_system_brick_same_code(self) -> None:
+    def test_approve_system_promotes_source_brick_same_code(self) -> None:
         owner = self.make_owner()
         source = self.make_source(owner, code="промо_26", title="Промо")
         snapshot = self.make_proposal(owner, source, scope="system")
@@ -445,6 +445,14 @@ class BrickProposalServiceTests(TemplateDatabaseTestCase):
         self.assertIsNone(result.brick.place_id)
         self.assertIsNone(result.brick.owner_user_id)
         self.assertEqual(result.brick.code, "промо_26")
+        # Poster 2.4 P1: повышается ИСХОДНЫЙ кирпичик, второй строки нет.
+        self.assertEqual(result.brick.id, source.id)
+        self.assertEqual(
+            self.session.execute(
+                text("SELECT count(*) FROM bricks WHERE code='промо_26'")
+            ).scalar_one(),
+            1,
+        )
         self.assertIn(
             "промо_26",
             {
@@ -455,6 +463,8 @@ class BrickProposalServiceTests(TemplateDatabaseTestCase):
                 )
             },
         )
+        # Личного кирпичика с этим id больше нет: он стал системным, поэтому
+        # автор не может редактировать его как личный.
         updated = update_personal_brick(
             self.session,
             actor_telegram_user_id=owner.telegram_user_id,
@@ -464,7 +474,7 @@ class BrickProposalServiceTests(TemplateDatabaseTestCase):
             title="Обновлённый источник",
             rules=None,
         )
-        self.assertEqual(updated.status, "updated")
+        self.assertEqual(updated.status, "not_found")
 
     def test_approve_permissions_are_checked_again(self) -> None:
         owner = self.make_owner()

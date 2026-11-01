@@ -61,6 +61,7 @@ from brick_store import (
     check_code_availability,
     count_personal_bricks,
     create_personal_brick,
+    delete_brick,
     get_personal_brick,
     list_personal_bricks,
     restore_personal_brick,
@@ -169,6 +170,7 @@ PHASES = frozenset(
         "archive",
         "card",
         "archive_confirm",
+        "delete_confirm",
         *_WIZARD_PHASES,
         *_PROPOSAL_PHASES,
     }
@@ -181,6 +183,7 @@ SCREEN_PHASES = frozenset(
         "archive",
         "card",
         "archive_confirm",
+        "delete_confirm",
         *_PROPOSAL_PHASES,
     }
 )
@@ -661,6 +664,15 @@ def _card_content(brick):
                     tr("buttons.bricks.v_arhiv"), callback_data="bk_archive"
                 )
             ],
+            # Poster 2.4 P1: окончательное удаление — отдельной строкой и
+            # всегда через подтверждение. Тип/код/название по-прежнему
+            # меняются только через «✏️ Изменить» (мастер автора).
+            [
+                InlineKeyboardButton(
+                    tr("buttons.bricks.udalit"),
+                    callback_data=f"bk_delete:{brick.id}",
+                )
+            ],
         ]
     else:
         rows = [
@@ -692,6 +704,35 @@ def _archive_confirm_content(brick):
                     tr("buttons.admin.net_nazad"), callback_data="bk_back"
                 )
             ],
+        ]
+    )
+
+
+def _delete_confirm_content(brick):
+    """
+    Подтверждение окончательного удаления личного кирпичика (Poster 2.4 P1).
+
+    Пара «🗑 Удалить | Отмена» — требование владельца: необратимое действие
+    стоит один и подтверждается отдельно от безопасного «Назад». Если
+    кирпичик уже используется, отказ объяснит это после нажатия «Удалить»:
+    проверку ссылок делает доменный слой, а не экран.
+    """
+    text = tr_safe(
+        "bricks.delete_confirm.udalit_kirpichik_navsegda_html",
+        title=_h(brick.title),
+        code=_h(brick.code),
+    )
+    return text, InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    tr("buttons.bricks.udalit"),
+                    callback_data=f"bk_delete_yes:{brick.id}",
+                ),
+                InlineKeyboardButton(
+                    tr("buttons.bricks.otmena"), callback_data="bk_back"
+                ),
+            ]
         ]
     )
 
@@ -1761,6 +1802,26 @@ async def _render_phase(
             else:
                 state["revision"] = brick.revision
                 text, keyboard = _archive_confirm_content(brick)
+        elif phase == "delete_confirm":
+            brick = get_personal_brick(
+                session,
+                user.telegram_user_id,
+                int(state.get("brick_id") or 0),
+            )
+            if brick is None:
+                page, archive_page = _saved_page(state)
+                state.clear()
+                state.update(_new_hub(page=page, archive_page=archive_page))
+                text, keyboard = _hub_content(session, user, state)
+                notice = notice or tr("bricks.render_phase.kirpichik_nayden")
+            elif brick.status != BRICK_STATUS_ACTIVE:
+                state["phase"] = "card"
+                state["revision"] = brick.revision
+                text, keyboard = _card_content(brick)
+                notice = notice or tr("bricks.render_phase.kirpichik_aktiven")
+            else:
+                state["revision"] = brick.revision
+                text, keyboard = _delete_confirm_content(brick)
         elif phase == "edit_menu":
             text, keyboard = _edit_menu_content(state)
         elif phase == "title_input":
@@ -2484,6 +2545,9 @@ async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             state.clear()
             state.update(_new_hub(page=page, archive_page=archive_page))
     elif phase == "archive_confirm":
+        state["phase"] = "card"
+    elif phase == "delete_confirm":
+        # Отмена подтверждения возвращает в карточку, ничего не удаляя.
         state["phase"] = "card"
     elif phase == "title_input":
         if state.get("mode") == "edit":
@@ -3421,6 +3485,122 @@ async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     )
 
 
+async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """«🗑 Удалить» на карточке личного кирпичика → подтверждение."""
+    state = load_brick_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "card":
+        await _stale(update)
+        return
+    await ctx.query(update).answer()
+    session = SessionLocal()
+    try:
+        user = _ensure_user(session, update)
+        brick = get_personal_brick(
+            session, user.telegram_user_id, int(state.get("brick_id") or 0)
+        )
+    finally:
+        session.close()
+    if brick is None:
+        await _render_phase(
+            update,
+            context,
+            state,
+            notice=tr("bricks.handle_edit.kirpichik_nayden_obnovite_spisok"),
+            cleanup_ids=_failed_take(state),
+        )
+        return
+    if brick.status != BRICK_STATUS_ACTIVE:
+        state["revision"] = brick.revision
+        await _render_phase(
+            update,
+            context,
+            state,
+            notice=tr("bricks.handle_delete.kirpichik_arhive_udalit"),
+            cleanup_ids=_failed_take(state),
+        )
+        return
+    state["revision"] = brick.revision
+    state["phase"] = "delete_confirm"
+    await _render_phase(update, context, state, cleanup_ids=_failed_take(state))
+
+
+async def handle_delete_confirm(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    «🗑 Удалить» на подтверждении: окончательное удаление через доменный слой.
+
+    Права, ссылки и защиту системных кирпичиков проверяет `delete_brick`;
+    экран только показывает понятный результат. Используемый кирпичик
+    остаётся целым и возвращает человека на его карточку с объяснением.
+    """
+    state = load_brick_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "delete_confirm":
+        await _stale(update)
+        return
+    await ctx.query(update).answer()
+    brick_id = int(state.get("brick_id") or 0)
+    session = SessionLocal()
+    try:
+        user = _ensure_user(session, update)
+        try:
+            result = delete_brick(
+                session,
+                actor_telegram_user_id=user.telegram_user_id,
+                brick_id=brick_id,
+            )
+        except (BrickActorError, BrickConflictError):
+            session.rollback()
+            logger.exception("Не удалось удалить личный кирпичик.")
+            result = None
+        except Exception:  # noqa: BLE001 — экран не должен падать
+            session.rollback()
+            logger.exception("Не удалось удалить личный кирпичик.")
+            result = None
+    finally:
+        session.close()
+
+    page, archive_page = _saved_page(state)
+    if result is not None and result.status == "deleted":
+        # Кирпичика больше нет: карточка и подтверждение бессмысленны,
+        # возвращаемся в хаб со списком и плашкой об успехе.
+        state.clear()
+        state.update(_new_hub(page=page, archive_page=archive_page))
+        await _render_phase(
+            update,
+            context,
+            state,
+            notice=result.message or tr("bricks.handle_delete.kirpichik_udalen"),
+            cleanup_ids=_failed_take(state),
+        )
+        return
+    if result is not None and result.brick is not None:
+        # Отказ (используется / защищён / изменился): данные целы, показываем
+        # карточку с актуальной ревизией и объяснением.
+        state["revision"] = result.brick.revision
+        state["brick_id"] = result.brick.id
+        state["origin"] = "hub"
+        state["phase"] = "card"
+        await _render_phase(
+            update,
+            context,
+            state,
+            notice=result.message or tr("bricks.handle_delete.kirpichik_udalit"),
+            cleanup_ids=_failed_take(state),
+        )
+        return
+    # Кирпичик исчез между шагами (или упал доменный вызов): в хаб.
+    state.clear()
+    state.update(_new_hub(page=page, archive_page=archive_page))
+    await _render_phase(
+        update,
+        context,
+        state,
+        notice=tr("bricks.handle_delete.kirpichik_udalit"),
+        cleanup_ids=_failed_take(state),
+    )
+
+
 # --- Обработчики -----------------------------------------------------------
 
 
@@ -3544,6 +3724,10 @@ def bricks_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(handle_archive, pattern=r"^bk_archive$"),
         CallbackQueryHandler(handle_archive_confirm, pattern=r"^bk_archive_confirm$"),
         CallbackQueryHandler(handle_restore, pattern=r"^bk_restore$"),
+        # Poster 2.4 P1: окончательное удаление личного кирпичика — экран
+        # подтверждения, затем доменный `delete_brick` с проверкой ссылок.
+        CallbackQueryHandler(handle_delete, pattern=r"^bk_delete:\d+$"),
+        CallbackQueryHandler(handle_delete_confirm, pattern=r"^bk_delete_yes:\d+$"),
         CallbackQueryHandler(handle_proposal_start, pattern=r"^bp_start(?::\d+)?$"),
         CallbackQueryHandler(handle_proposal_mine, pattern=r"^bp_mine$"),
         CallbackQueryHandler(handle_proposal_source, pattern=r"^bp_source:\d+$"),

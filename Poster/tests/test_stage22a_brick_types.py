@@ -61,11 +61,16 @@ class BrickTypeCatalogTests(unittest.TestCase):
             with self.assertRaises(BrickValidationError):
                 ensure_brick_type(forbidden)
 
-    def test_system_registry_has_eleven_stable_ids_and_codes(self) -> None:
+    def test_system_registry_has_ten_stable_ids_and_codes(self) -> None:
         # 9 кирпичиков миграции 6 + `[адрес]` миграции 15 (Poster 2.0 S1)
-        # + `[город]` миграции 21 (Poster 2.0 U1a).
-        self.assertEqual(len(SYSTEM_BRICKS), 11)
-        self.assertEqual([item.id for item in SYSTEM_BRICKS], list(range(1, 12)))
+        # + `[город]` миграции 21 (Poster 2.0 U1a) − `адрес_места`,
+        # устранённый миграцией 25 (Poster 2.4 P1). Номер 6 не
+        # переиспользуется: ID системных кирпичиков стабильны.
+        self.assertEqual(len(SYSTEM_BRICKS), 10)
+        self.assertEqual(
+            [item.id for item in SYSTEM_BRICKS],
+            [1, 2, 3, 4, 5, 7, 8, 9, 10, 11],
+        )
         self.assertEqual(
             [item.code for item in SYSTEM_BRICKS],
             [
@@ -74,7 +79,6 @@ class BrickTypeCatalogTests(unittest.TestCase):
                 "время_начала",
                 "время_окончания",
                 "место",
-                "адрес_места",
                 "ссылка_места",
                 "описание",
                 "контакт",
@@ -89,7 +93,11 @@ class BrickTypeCatalogTests(unittest.TestCase):
         self.assertEqual(by_code["время_начала"].value_type, BRICK_TYPE_TIME)
         self.assertEqual(by_code["время_окончания"].value_type, BRICK_TYPE_TIME)
         self.assertEqual(by_code["место"].source, BRICK_SOURCE_PLACE)
-        self.assertEqual(by_code["адрес_места"].source, BRICK_SOURCE_PLACE)
+        self.assertNotIn(
+            "адрес_места",
+            by_code,
+            "Poster 2.4 P1: легаси-определение адреса устранено",
+        )
         # Poster 2.0 S1: пользовательский код эталона берёт адрес площадки.
         self.assertEqual(by_code["адрес"].source, BRICK_SOURCE_PLACE)
         self.assertEqual(by_code["адрес"].value_type, BRICK_TYPE_SHORT_TEXT)

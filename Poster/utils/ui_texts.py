@@ -408,6 +408,49 @@ DEFAULTS: dict[str, str] = {
         "Если получатель ещё не открывал бота по этой ссылке, попросите его открыть Poster и отправить /start."
     ),
     "admin.assign_search.zameny_administratora": "замены администратора",
+    # Poster 2.4 P1: административный редактор ОПИСАНИЯ кирпичика. Меняются
+    # только слова описания; название, код и тип остаются прежними.
+    "admin.brick_card.kartochka_kirpichika_html": (
+        "🧱 <b>{title}</b>\n\n"
+        "Код: <code>[{code}]</code>\n"
+        "Тип: {type_title}\n"
+        "Область: {scope_label}\n"
+        "Статус: {status_label}\n"
+        "Описание: {description_block}\n\n"
+        "Здесь меняется только описание — подсказка автору анонса. Название, "
+        "код и тип кирпичика остаются прежними."
+    ),
+    "admin.brick_card.mesto_bez_nazvaniya": "Без названия",
+    "admin.brick_card.oblast_lichno": "Личный",
+    "admin.brick_card.oblast_mesto": "Площадка «{place}»",
+    "admin.brick_card.oblast_sistema": "Системный",
+    "admin.brick_card.opisaniya_net": "—",
+    "admin.brick_card.status_aktivnyy": "Активен",
+    "admin.brick_card.status_arxiv": "В архиве",
+    "admin.brick_description_input.opisanie_kirpichika_html": (
+        "✏️ Описание кирпичика [{code}]\n\n"
+        "Отправьте новый текст описания. Меняются только слова описания — "
+        "название, код и тип кирпичика остаются прежними."
+    ),
+    "admin.brick_description_input.arhivnyy_kirpichik": (
+        "Архивный кирпичик нельзя редактировать. Сначала восстановите его."
+    ),
+    "admin.brick_description_input.ne_udalos_sohranit": (
+        "Из-за ошибки описание не сохранено. Кирпичик остался прежним. "
+        "Попробуйте ещё раз."
+    ),
+    "admin.brick_description_input.sohraneno": "✅ Описание сохранено.",
+    "admin.brick_list.kirpichik_nedostupen": (
+        "Кирпичик не найден или больше недоступен."
+    ),
+    "admin.brick_list.kirpichiki_html": (
+        "🧱 <b>Кирпичики</b>\n\n{scope_line}\n\n"
+        "Выберите кирпичик: здесь меняется только описание. Название, код и "
+        "тип кирпичика остаются прежними."
+    ),
+    "admin.brick_list.mesto_line": "Место: {place}.",
+    "admin.brick_list.net_kirpichikov": "Кирпичиков пока нет.",
+    "admin.brick_list.sistema_line": "Системные кирпичики: общий каталог.",
     "admin.build.izmenenie_adresa_tekuschiy_adres": (
         "🏠 Изменить адрес\n\n📍 {canonical_name}\n"
         "Текущий адрес: {current}\n\n"
@@ -731,6 +774,7 @@ DEFAULTS: dict[str, str] = {
     "admin.render_phase.aktivnoy_peredachi_net_vvedite": "Сейчас нет предложения передачи прав. Введите @username, чтобы создать новое.",
     "admin.render_phase.deystvie_dostupno_tolko": "Действие доступно только суперадминистратору.",
     "admin.render_phase.dostup_etomu_mestu_podtverzhden": "Не удалось подтвердить ваш доступ к этому месту.",
+    "admin.render_phase.kirpichik_nedostupen_roley": "Редактор описания кирпичика доступен суперадминистратору и администратору этого места.",
     "admin.render_phase.mesto_suschestvuet_bylo_udaleno": "Место не найдено. Возможно, его удалили.",
     "admin.render_phase.peredat_adminku_mozhet_tolko": "Передать права может только текущий администратор этого места.",
     "admin.render_phase.poluchatel_bolshe_izvesten_botu": "Не удалось найти получателя в Poster.",
@@ -892,6 +936,11 @@ DEFAULTS: dict[str, str] = {
     "bricks.cancel_preview.sozdanie_otmeneno_baze_nichego": "Создание отменено. Кирпичик не сохранён.",
     "bricks.card.aktivnyy": "🟢 Активный",
     "bricks.card.v_arhive": "🗄 В архиве",
+    "bricks.delete_confirm.udalit_kirpichik_navsegda_html": (
+        "🗑 <b>Удалить кирпичик «{title}»?</b>\n\n"
+        "Код: <code>[{code}]</code>\n\n"
+        "Это действие необратимо."
+    ),
     "bricks.choice_settings.dobavte_hotya_by_odin": "Добавьте хотя бы один вариант.",
     "bricks.choice_settings.nazhmite_variant_klaviature_chtoby": "Чтобы удалить вариант, нажмите кнопку с его названием.",
     "bricks.choice_settings.spisok_variantov_poka_pust": "Список вариантов пока пуст.",
@@ -918,6 +967,11 @@ DEFAULTS: dict[str, str] = {
     "bricks.handle_choice_settings.dobavte_hotya_by_odin": "Добавьте хотя бы один вариант выбора.",
     "bricks.handle_create_save.kirpichik_sozdan_oboznachenie_html": "Кирпичик «{title}» создан. Обозначение: <code>[{code}]</code>.",
     "bricks.handle_create_save.ne_udalos_sohranit_kirpichik": "Из-за ошибки кирпичик не сохранён. Попробуйте сохранить ещё раз.",
+    # Poster 2.4 P1: окончательное удаление личного кирпичика и отказ, если
+    # кирпичик уже в архиве (архивный экран удаления не показывает).
+    "bricks.handle_delete.kirpichik_arhive_udalit": "Кирпичик уже в архиве — удалять нечего. Сначала восстановите его, если он нужен.",
+    "bricks.handle_delete.kirpichik_udalen": "Кирпичик удалён.",
+    "bricks.handle_delete.kirpichik_udalit": "Кирпичик не удалён: он используется или уже недоступен.",
     "bricks.handle_edit.arhivnyy_kirpichik_nelzya": "Чтобы изменить кирпичик из архива, сначала восстановите его.",
     "bricks.handle_edit.kirpichik_nayden_obnovite_spisok": "Кирпичик не найден. Обновите список.",
     "bricks.handle_edit_save.izmeneniya_sohraneny": "Изменения сохранены.",
@@ -1037,6 +1091,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.globalnye_predlozheniya": "🌍 Глобальные предложения ({system_pending})",
     "buttons.admin.izmenit_gorod": "🏙 Изменить город",
     "buttons.admin.izmenit_nazvanie": "🏷 Изменить название",
+    "buttons.admin.kirpichiki": "🧱 Кирпичики",
     "buttons.admin.k_konfliktam": "◀️ К конфликтам",
     "buttons.admin.k_ocheredi": "◀️ К очереди",
     "buttons.admin.k_spisku_mest": "◀️ К списку мест",
@@ -1045,6 +1100,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.net_nazad": "◀️ Нет, назад",
     "buttons.admin.obnovit_status": "🔄 Обновить статус",
     "buttons.admin.odobrit": "✅ Одобрить",
+    "buttons.admin.opisanie": "✏️ Описание",
     "buttons.admin.otklonit": "❌ Отклонить",
     "buttons.admin.otkryt_kabinet": "🛡 Открыть кабинет",
     "buttons.admin.otmena": "❌ Отмена",
@@ -1091,6 +1147,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.bricks.podpis_2": "✖️ Убрать подпись",
     "buttons.bricks.sohranit": "💾 Сохранить",
     "buttons.bricks.tolko_celye": "🔢 Только целые: {integer}",
+    "buttons.bricks.udalit": "🗑 Удалить",
     "buttons.bricks.v_arhiv": "📦 В архив",
     "buttons.bricks.vosstanovit": "♻️ Восстановить",
     "buttons.places.administratory": "👥 Администраторы",

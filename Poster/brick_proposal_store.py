@@ -12,9 +12,14 @@ Callback-данные не являются источником ролей.
   которую можно переписать позднее;
 - `pending` не имеет срока действия и не удаляется автоматически;
 - решение принимается ровно один раз и только из `pending`;
-- одобрение создаёт ОТДЕЛЬНЫЙ `Brick` с новым `brick_id` в целевой области;
-- исходный личный кирпичик, его владелец и шаблонные привязки не меняются;
-- создание кирпичика и запись решения выполняются одной SQLite-транзакцией;
+- одобрение в область места создаёт ОТДЕЛЬНЫЙ `Brick` с новым `brick_id`:
+  независимая локальная копия, личный кирпичик остаётся у автора;
+- одобрение в СИСТЕМУ повышает ИСХОДНЫЙ кирпичик (Poster 2.4 P1): тот же
+  `brick_id`, `scope='system'`, `owner_user_id=NULL`, `revision+1`; второй
+  строки не создаётся, а история предложения ссылается на тот же id;
+- отклонение и отзыв не меняют исходный личный кирпичик;
+- создание/повышение кирпичика и запись решения выполняются одной
+  SQLite-транзакцией;
 - конфликт технического кода не переименовывается молча и не создаёт дубль;
 - права проверяются заново внутри транзакции решения, а не по состоянию
   открытой карточки.
@@ -39,6 +44,7 @@ from brick_store import (
 )
 from brick_types import (
     BRICK_SCOPE_PERSONAL,
+    BRICK_SCOPE_SYSTEM,
     BRICK_STATUS_ACTIVE,
     BrickValidationError,
     clean_brick_title,
@@ -753,6 +759,87 @@ def _decision_note(note: str | None) -> str | None:
     return cleaned or None
 
 
+def _promote_source_brick(
+    session: Session,
+    *,
+    proposal: BrickProposal,
+    code: str,
+    title: str,
+    value_type: str,
+    source_kind: str,
+    rules_json: str | None,
+    now: datetime,
+) -> Brick | None:
+    """
+    Повышает ИСХОДНЫЙ личный кирпичик до системного (Poster 2.4 P1).
+
+    Второй строки `bricks` не появляется: тот же `id` меняет `scope` на
+    `system`, теряет владельца и получает `revision+1`. Снимок предложения
+    становится определением, поэтому код/название/тип/источник/правила
+    исходного кирпичика обязаны совпадать со снимком. Если исходный кирпичик
+    удалён, архивирован, передан другому владельцу или отредактирован после
+    отправки, повышение невозможно: возвращается `None`, вызывающий отвечает
+    `conflict` и НИЧЕГО не записывает.
+
+    Описание: у предложений, отправленных до миграции 20, в снимке его нет;
+    тогда сохраняется текущее описание автора, чтобы инструкция не потерялась.
+    """
+    source = session.get(Brick, proposal.source_brick_id)
+    if (
+        source is None
+        or source.scope != BRICK_SCOPE_PERSONAL
+        or source.owner_user_id != proposal.author_user_id
+        or source.status != BRICK_STATUS_ACTIVE
+    ):
+        return None
+    if (
+        source.code != code
+        or source.title != title
+        or source.value_type != value_type
+        or source.source != source_kind
+    ):
+        return None
+    try:
+        # Правила сравниваются в каноническом виде: снимок предложения и
+        # строка БД могут отличаться порядком ключей, но не содержимым.
+        current_rules = rules_to_json(value_type, source.rules_json)
+    except BrickValidationError:
+        # Повреждённые правила источника не дают повысить кирпичик молча.
+        return None
+    if current_rules != rules_json:
+        return None
+    description = proposal.description
+    if description is None:
+        description = source.description
+    changed = session.execute(
+        sqlalchemy_update(Brick)
+        .where(
+            Brick.id == source.id,
+            Brick.scope == BRICK_SCOPE_PERSONAL,
+            Brick.owner_user_id == proposal.author_user_id,
+            Brick.status == BRICK_STATUS_ACTIVE,
+            Brick.revision == source.revision,
+        )
+        .values(
+            code=code,
+            title=title,
+            value_type=value_type,
+            source=source_kind,
+            rules_json=rules_json,
+            description=description,
+            scope=BRICK_SCOPE_SYSTEM,
+            place_id=None,
+            owner_user_id=None,
+            revision=source.revision + 1,
+            updated_at=now,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if getattr(changed, "rowcount", 0) != 1:
+        return None
+    return session.get(Brick, source.id, populate_existing=True)
+
+
 def approve_brick_proposal(
     session: Session,
     *,
@@ -760,11 +847,21 @@ def approve_brick_proposal(
     proposal_id: int,
 ) -> ProposalDecisionResult:
     """
-    Одобряет pending-предложение и создаёт отдельный кирпичик.
+    Одобряет pending-предложение.
+
+    Два разных исхода (Poster 2.4 P1):
+
+    - `scope='place'` — создаётся ОТДЕЛЬНЫЙ `Brick` в области места
+      (независимая локальная копия); личный кирпичик автора остаётся прежним;
+    - `scope='system'` — повышается ИСХОДНЫЙ кирпичик: тот же `brick_id`,
+      `scope='system'`, `owner_user_id=NULL`, `revision+1`; второй строки не
+      появляется, а `approved_brick_id` указывает на тот же id. Авторство
+      (`created_by_user_id`) сохраняется.
 
     Вся операция — одна транзакция: проверка актора/прав/статуса/области,
-    проверка кода и правил, INSERT `bricks`, условный UPDATE предложения,
-    COMMIT. Любая ошибка откатывает INSERT и не оставляет `approved`.
+    проверка кода и правил, создание или повышение `bricks`, условный UPDATE
+    предложения, COMMIT. Любая ошибка откатывает изменения и не оставляет
+    `approved`.
     """
     actor = _require_actor(session, actor_telegram_user_id)
     if isinstance(proposal_id, bool) or not isinstance(proposal_id, int):
@@ -835,26 +932,57 @@ def approve_brick_proposal(
             )
 
         now = utcnow()
-        brick = Brick(
-            code=code,
-            title=title,
-            value_type=value_type,
-            scope=proposal.scope,
-            source=source_kind,
-            place_id=target_place_id,
-            owner_user_id=None,
-            rules_json=rules_json,
-            # Описание из снимка переносится в созданный кирпичик: инструкция
-            # автору анонса не должна теряться при одобрении (R4 №29).
-            description=proposal.description,
-            status=BRICK_STATUS_ACTIVE,
-            revision=1,
-            created_by_user_id=actor.id,
-            created_at=now,
-            updated_at=now,
-        )
-        session.add(brick)
-        session.flush()
+        if proposal.scope == PROPOSAL_SCOPE_SYSTEM:
+            # Poster 2.4 P1: повышение ИСХОДНОГО кирпичика. Тот же id, тот же
+            # код и авторство; меняются только область, владелец и ревизия.
+            # Второй строки `bricks` не создаётся, поэтому `approved_brick_id`
+            # указывает на сам источник (`ck_brick_proposals_decision_shape`
+            # требует непустую ссылку и соблюдается без миграции).
+            promoted = _promote_source_brick(
+                session,
+                proposal=proposal,
+                code=code,
+                title=title,
+                value_type=value_type,
+                source_kind=source_kind,
+                rules_json=rules_json,
+                now=now,
+            )
+            if promoted is None:
+                session.rollback()
+                return _result(
+                    session,
+                    proposal_id,
+                    status="conflict",
+                    message=(
+                        "Исходный кирпичик изменился или больше не может стать "
+                        "системным. Предложение не изменено; обновите личный "
+                        "кирпичик и отправьте новое предложение."
+                    ),
+                )
+            brick = promoted
+        else:
+            brick = Brick(
+                code=code,
+                title=title,
+                value_type=value_type,
+                scope=proposal.scope,
+                source=source_kind,
+                place_id=target_place_id,
+                owner_user_id=None,
+                rules_json=rules_json,
+                # Описание из снимка переносится в созданный кирпичик:
+                # инструкция автору анонса не должна теряться при одобрении
+                # (R4 №29).
+                description=proposal.description,
+                status=BRICK_STATUS_ACTIVE,
+                revision=1,
+                created_by_user_id=actor.id,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(brick)
+            session.flush()
         conflicts = (
             create_code_conflicts(
                 session,
@@ -908,7 +1036,11 @@ def approve_brick_proposal(
         raise
 
     brick_row = session.get(Brick, brick.id)
-    message = "Предложение одобрено; создан отдельный кирпичик."
+    message = (
+        "Предложение одобрено; кирпичик повышен до системного."
+        if proposal.scope == PROPOSAL_SCOPE_SYSTEM
+        else "Предложение одобрено; создан отдельный кирпичик."
+    )
     if conflicts:
         places = len({view.place_id for view in conflicts})
         message += (

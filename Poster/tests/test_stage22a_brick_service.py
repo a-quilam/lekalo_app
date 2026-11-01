@@ -46,8 +46,9 @@ class BrickServiceTests(BrickDatabaseTestCase):
 
     def test_system_reads_exclude_archived_but_keep_reserved_code(self) -> None:
         # 9 кирпичиков миграции 6 + `[адрес]` миграции 15 + `[город]`
-        # миграции 21 (Poster 2.0 U1a).
-        self.assertEqual(len(list_system_bricks(self.session)), 11)
+        # миграции 21 (Poster 2.0 U1a) − `адрес_места`, устранённый
+        # миграцией 25 (Poster 2.4 P1).
+        self.assertEqual(len(list_system_bricks(self.session)), 10)
         title = get_system_brick(self.session, " НАЗВАНИЕ ")
         self.assertIsNotNone(title)
         assert title is not None
@@ -63,7 +64,7 @@ class BrickServiceTests(BrickDatabaseTestCase):
         self.assertIsNotNone(archived)
         assert archived is not None
         self.assertFalse(archived.is_active)
-        self.assertEqual(len(list_system_bricks(self.session)), 10)
+        self.assertEqual(len(list_system_bricks(self.session)), 9)
         self.assertIsNone(resolve_brick_by_code(self.session, "название"))
 
     def test_personal_creation_normalizes_code_and_never_accepts_foreign_owner(
@@ -173,7 +174,7 @@ class BrickServiceTests(BrickDatabaseTestCase):
         )
         self.assertEqual(created.scope, "system")
         self.assertGreater(created.id, 11)
-        self.assertEqual(len(list_system_bricks(self.session)), 12)
+        self.assertEqual(len(list_system_bricks(self.session)), 11)
         with self.assertRaises(BrickConflictError):
             create_personal_brick(
                 self.session,
@@ -709,7 +710,9 @@ class BrickServiceTests(BrickDatabaseTestCase):
         )
         self.assertEqual(alternative.status, "created")
         name_brick = get_system_brick(self.session, "место")
-        address_brick = get_system_brick(self.session, "адрес_места")
+        # Poster 2.4 P1: адресный код один — `адрес` (легаси `адрес_места`
+        # устранён миграцией 25).
+        address_brick = get_system_brick(self.session, "адрес")
         url_brick = get_system_brick(self.session, "ссылка_места")
         assert name_brick and address_brick and url_brick
         self.assertEqual(

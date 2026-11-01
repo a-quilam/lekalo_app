@@ -3584,6 +3584,262 @@ MIGRATION_24_TEMPLATE_CONTENT = Migration(
 )
 
 
+MIGRATION_25_SINGLE_ADDRESS_BRICK = Migration(
+    version=25,
+    name="single_address_brick",
+    statements=(
+        # Poster 2.4 P1: в модели остаётся ОДИН адресный кирпичик — `[адрес]`
+        # (id вырастает из системного реестра миграции 15). Легаси-определение
+        # `адрес_места` (id 6, миграция 6) устраняется полностью: строка
+        # `bricks`, привязки версий/снимков, значения черновиков, доп.
+        # кирпичики, конфликтные записи и ссылки предложений. Алиасов и
+        # переименования не сохраняется: требование владельца 2.4 — один код.
+        #
+        # Порядок важен: сначала зависимые строки (FK RESTRICT), затем сама
+        # строка `bricks`. Четыре группы триггеров снимаются на время DML и
+        # восстанавливаются дословно в той же транзакции `run_migrations`,
+        # поэтому окна без защиты для других писателей нет:
+        #   * `trg_bricks_system_no_delete` — системную строку нельзя было
+        #     удалить никогда; это единственное исключение, выполняемое самой
+        #     миграцией;
+        #   * `trg_template_version_bricks_no_delete` и
+        #     `trg_template_snapshot_bricks_no_delete` — привязки шаблонов
+        #     неизменяемы для сервиса, но миграция обязана убрать ссылку на
+        #     устранённое определение;
+        #   * `trg_brick_conflicts_no_delete`, `trg_brick_proposals_no_delete`
+        #     и `trg_brick_proposals_decision_immutable` — история решений не
+        #     удаляется сервисом; миграция убирает только строки, которые
+        #     ссылаются на устраняемое определение;
+        #   * `trg_bricks_reserve_codes_insert/update` пересоздаются в конце:
+        #     исключение Stage 26/R3 для повышения личного кирпичика в
+        #     системный больше не нужно (Poster 2.4 P1 повышает тот же ряд и
+        #     не создаёт второй носитель кода).
+        "DROP TRIGGER IF EXISTS trg_bricks_system_no_delete",
+        "DROP TRIGGER IF EXISTS trg_template_version_bricks_no_delete",
+        "DROP TRIGGER IF EXISTS trg_template_snapshot_bricks_no_delete",
+        "DROP TRIGGER IF EXISTS trg_brick_conflicts_no_delete",
+        "DROP TRIGGER IF EXISTS trg_brick_proposals_no_delete",
+        "DROP TRIGGER IF EXISTS trg_brick_proposals_decision_immutable",
+        "DROP TRIGGER IF EXISTS trg_brick_proposals_approval_link",
+        # Значения черновиков ссылаются на определение по brick_id. Легаси-
+        # значение адреса дублировало `[адрес]`; автоподстановка Poster 2.4
+        # пишет только в `[адрес]`, поэтому строка не нужна.
+        """
+        DELETE FROM announcement_values
+        WHERE brick_id IN (
+            SELECT id FROM bricks WHERE code = 'адрес_места'
+        )
+        """,
+        """
+        DELETE FROM announcement_extras
+        WHERE brick_id IN (
+            SELECT id FROM bricks WHERE code = 'адрес_места'
+        )
+        """,
+        # `code` в привязке — мост «сохранённый текст → brick_id», поэтому
+        # удаляются и строки с устаревшим кодом, и строки по brick_id.
+        """
+        DELETE FROM template_version_bricks
+        WHERE code = 'адрес_места'
+           OR brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
+        """,
+        """
+        DELETE FROM template_snapshot_bricks
+        WHERE code = 'адрес_места'
+           OR brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
+        """,
+        # Задача разрешения конфликта ссылается на оба носителя кода
+        # (RESTRICT). Носителя `адрес_места` больше нет, поэтому задача
+        # теряет смысл: удаляется вместе с очередью уведомлений (CASCADE).
+        """
+        DELETE FROM brick_conflicts
+        WHERE system_brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
+           OR local_brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
+        """,
+        # Предложения хранят снимок определения и ссылки на исходный и
+        # одобренный кирпичик (FK RESTRICT). Ссылку на системный
+        # `адрес_места` штатно создать нельзя: триггеры миграции 11 требуют
+        # активный ЛИЧНЫЙ источник и совпадение снимка с созданным
+        # кирпичиком, а системный код зарезервирован. Поэтому здесь только
+        # страховка от «ручных»/аномальных строк: такая история ссылается на
+        # устраняемое определение и без него не восстанавливается, а FK
+        # RESTRICT не дал бы удалить строку `bricks`. Обнулить ссылку нельзя:
+        # форма решения (`ck_brick_proposals_decision_shape`) и триггер
+        # неизменяемости решения запрещают правку после решения. Удаляется
+        # ровно эта аномальная история; остальные предложения не трогаются.
+        """
+        DELETE FROM brick_proposals
+        WHERE source_brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
+           OR approved_brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
+        """,
+        # Сама строка определения. Несистемных носителей кода `адрес_места`
+        # быть не может (код системный с миграции 6), поэтому условие по коду
+        # удаляет ровно легаси-определение.
+        "DELETE FROM bricks WHERE code = 'адрес_места'",
+        # Триггеры возвращаются дословно: системная строка снова защищена, а
+        # привязки шаблонов снова неизменяемы для сервиса.
+        """
+        CREATE TRIGGER trg_bricks_system_no_delete
+        BEFORE DELETE ON bricks
+        FOR EACH ROW
+        WHEN OLD.scope = 'system'
+        BEGIN
+            SELECT RAISE(ABORT, 'system brick cannot be deleted');
+        END
+        """,
+        """
+        CREATE TRIGGER trg_template_version_bricks_no_delete
+        BEFORE DELETE ON template_version_bricks
+        FOR EACH ROW
+        WHEN EXISTS (
+            SELECT 1 FROM template_versions
+            WHERE id = OLD.template_version_id
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'template bindings cannot be deleted');
+        END
+        """,
+        """
+        CREATE TRIGGER trg_template_snapshot_bricks_no_delete
+        BEFORE DELETE ON template_snapshot_bricks
+        FOR EACH ROW
+        BEGIN
+            SELECT RAISE(ABORT, 'snapshot bindings cannot be deleted');
+        END
+        """,
+        """
+        CREATE TRIGGER trg_brick_conflicts_no_delete
+        BEFORE DELETE ON brick_conflicts
+        FOR EACH ROW
+        BEGIN
+            SELECT RAISE(ABORT, 'brick conflict history cannot be deleted');
+        END
+        """,
+        # История предложений снова неизменяема и неудаляема для сервиса.
+        """
+        CREATE TRIGGER trg_brick_proposals_no_delete
+        BEFORE DELETE ON brick_proposals
+        FOR EACH ROW
+        BEGIN
+            SELECT RAISE(ABORT, 'brick proposal history cannot be deleted');
+        END
+        """,
+        """
+        CREATE TRIGGER trg_brick_proposals_decision_immutable
+        BEFORE UPDATE ON brick_proposals
+        FOR EACH ROW
+        WHEN OLD.status <> 'pending'
+            AND (
+                NEW.status IS NOT OLD.status
+                OR NEW.decided_at IS NOT OLD.decided_at
+                OR NEW.decided_by_user_id IS NOT OLD.decided_by_user_id
+                OR NEW.approved_brick_id IS NOT OLD.approved_brick_id
+                OR NEW.decision_note IS NOT OLD.decision_note
+            )
+        BEGIN
+            SELECT RAISE(ABORT, 'brick proposal decision is immutable');
+        END
+        """,
+        # Poster 2.4 P1: проверка ссылки одобрения снова описывает два исхода.
+        # `place` — по-прежнему ОТДЕЛЬНЫЙ кирпичик (`b.id <> OLD.source_brick_id`),
+        # `system` — повышение ТОГО ЖЕ ряда: `approved_brick_id =
+        # source_brick_id`, строка уже системная и совпадает со снимком.
+        # Обе ветви требуют активного кирпичика, точного совпадения
+        # область/место/владелец/код/название/тип/источник/правила, поэтому
+        # подмена на посторонний кирпичик по-прежнему невозможна.
+        """
+        CREATE TRIGGER trg_brick_proposals_approval_link
+        BEFORE UPDATE OF status, approved_brick_id ON brick_proposals
+        FOR EACH ROW
+        WHEN NEW.status = 'approved' AND NOT EXISTS (
+            SELECT 1 FROM bricks b
+            WHERE b.id = NEW.approved_brick_id
+              AND b.status = 'active'
+              AND b.scope = NEW.scope
+              AND b.place_id IS NEW.place_id
+              AND b.owner_user_id IS NULL
+              AND b.code = NEW.code
+              AND b.title = NEW.title
+              AND b.type = NEW.type
+              AND b.source = NEW.source
+              AND b.rules_json IS NEW.rules_json
+              AND (
+                  (
+                      NEW.scope = 'system'
+                      AND b.id = OLD.source_brick_id
+                  )
+                  OR (
+                      NEW.scope <> 'system'
+                      AND b.id <> OLD.source_brick_id
+                  )
+              )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'approved brick does not match proposal');
+        END
+        """,
+        # Poster 2.4 P1: повышение личного кирпичика в системный больше не
+        # создаёт второй носитель кода (тот же id меняет `scope`), поэтому
+        # исключение Stage 26/R3 для одобрения глобального предложения
+        # устранено. Правило снова безусловно: системный и несистемный код не
+        # сосуществуют. Триггер UPDATE разрешает неизменный код при смене
+        # области personal → system: это и есть повышение того же ряда без
+        # дубля кода.
+        "DROP TRIGGER IF EXISTS trg_bricks_reserve_codes_insert",
+        """
+        CREATE TRIGGER trg_bricks_reserve_codes_insert
+        BEFORE INSERT ON bricks
+        FOR EACH ROW
+        WHEN EXISTS (
+            SELECT 1 FROM bricks b
+            WHERE b.code = NEW.code
+              AND (
+                  (NEW.scope = 'system' AND b.scope <> 'system')
+                  OR (NEW.scope <> 'system' AND b.scope = 'system')
+              )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'system brick code is reserved');
+        END
+        """,
+        "DROP TRIGGER IF EXISTS trg_bricks_reserve_codes_update",
+        """
+        CREATE TRIGGER trg_bricks_reserve_codes_update
+        BEFORE UPDATE OF code, scope ON bricks
+        FOR EACH ROW
+        WHEN EXISTS (
+            SELECT 1 FROM bricks b
+            WHERE b.id <> OLD.id
+              AND b.code = NEW.code
+              AND (
+                  (NEW.scope = 'system' AND b.scope <> 'system')
+                  OR (NEW.scope <> 'system' AND b.scope = 'system')
+              )
+        )
+        AND NOT (
+            NEW.code = OLD.code
+            AND (
+                NEW.scope = OLD.scope
+                OR (OLD.scope = 'personal' AND NEW.scope = 'system')
+            )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'system brick code is reserved');
+        END
+        """,
+    ),
+    requires_tables=(
+        "bricks",
+        "announcement_values",
+        "announcement_extras",
+        "template_version_bricks",
+        "template_snapshot_bricks",
+        "brick_conflicts",
+        "brick_proposals",
+    ),
+)
+
+
 DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_1_USERS_PLACES,
     MIGRATION_2_PLACE_CONTACTS_UI,
@@ -3609,6 +3865,7 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_22_BUILTIN_TEMPLATES_V4,
     MIGRATION_23_PLACE_INVITE_LINKS,
     MIGRATION_24_TEMPLATE_CONTENT,
+    MIGRATION_25_SINGLE_ADDRESS_BRICK,
 )
 
 LATEST_VERSION = DEFAULT_MIGRATIONS[-1].version if DEFAULT_MIGRATIONS else 0

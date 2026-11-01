@@ -83,13 +83,13 @@ class BrickProposalSchemaTests(BrickDatabaseTestCase):
             )
 
     def test_migration_12_follows_brick_proposals_and_has_constraints(self) -> None:
-        self.assertEqual(LATEST_VERSION, 24)
+        self.assertEqual(LATEST_VERSION, 25)
         # Миграция 11 остаётся на своём месте; 15/16 добавлены Poster 2.0 S1,
         # 17 — S5, 18 — Poster 2.1 R2, 19 — Poster 2.1 R3, 20 — R4,
-        # 21/22 — Poster 2.0 U1a, 23 — U4b, 24 — Poster 2.3 H2; порядок
-        # журнала не переставлен.
+        # 21/22 — Poster 2.0 U1a, 23 — U4b, 24 — Poster 2.3 H2,
+        # 25 — Poster 2.4 P1; порядок журнала не переставлен.
         self.assertEqual(
-            self.journal()[-14:],
+            self.journal()[-15:],
             [
                 (11, "brick_proposals"),
                 (12, "announcement_wizard"),
@@ -105,6 +105,7 @@ class BrickProposalSchemaTests(BrickDatabaseTestCase):
                 (22, "builtin_templates_v4"),
                 (23, "place_invite_links"),
                 (24, "template_content_and_extras_without_sections"),
+                (25, "single_address_brick"),
             ],
         )
         connection = connect(self.path)
@@ -390,9 +391,16 @@ class BrickProposalSchemaTests(BrickDatabaseTestCase):
                 {"code": code, "title": title},
             )
 
-    def test_system_reservation_exception_requires_matching_pending_proposal(
+    def test_system_reservation_has_no_insert_exception_for_pending_proposal(
         self,
     ) -> None:
+        """
+        Poster 2.4 P1: исключение Stage 26/R3 снято.
+
+        Глобальное одобрение больше не вставляет второй системный кирпичик, а
+        повышает тот же ряд, поэтому INSERT системного кода поверх личного
+        запрещён ВСЕГДА — наличие pending-предложения его не разрешает.
+        """
         user, brick = self.make_source(code="промо26")
         with self.assertRaises(IntegrityError):
             self.insert_system_raw("промо26", "Прямой системный")
@@ -403,11 +411,20 @@ class BrickProposalSchemaTests(BrickDatabaseTestCase):
             scope="system",
         )
         self.assertEqual(proposal.scope, "system")
-        self.insert_system_raw("промо26", "Личный кирпичик")
+        with self.assertRaises(IntegrityError):
+            self.insert_system_raw("промо26", "Личный кирпичик")
         system = self.session.execute(
             text("SELECT id FROM bricks WHERE scope='system' AND code='промо26'")
         ).first()
-        self.assertIsNotNone(system)
+        self.assertIsNone(system, "второго носителя системного кода быть не должно")
+        # Личный источник остался единственным носителем кода.
+        with self.engine.begin() as connection:
+            holders = connection.execute(
+                text("SELECT id, scope FROM bricks WHERE code='промо26'")
+            ).fetchall()
+        self.assertEqual(
+            [(row[0], row[1]) for row in holders], [(brick.id, "personal")]
+        )
 
     def test_promoted_source_stays_editable_but_new_duplicate_is_blocked(self) -> None:
         user, source = self.make_source(code="промо27")

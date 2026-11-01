@@ -138,13 +138,15 @@ class QuestionOrderTests(unittest.TestCase):
         self.assertEqual([item.brick_id for item in questions], [20])
 
     def test_known_valid_place_values_are_not_asked(self) -> None:
+        # Poster 2.4 P1: адресный код один — `адрес` (id 10), легаси
+        # `адрес_места` устранён миграцией 25.
         view = snapshot(
-            content="[место] [адрес_места] [ссылка_места]",
-            bindings={"место": 5, "адрес_места": 6, "ссылка_места": 7},
+            content="[место] [адрес] [ссылка_места]",
+            bindings={"место": 5, "адрес": 10, "ссылка_места": 7},
         )
         definitions = {
             5: definition(5, "место", source="place"),
-            6: definition(6, "адрес_места", source="place"),
+            10: definition(10, "адрес", source="place"),
             7: definition(7, "ссылка_места", BRICK_TYPE_URL, source="place"),
         }
         values = place_context_values(
@@ -165,7 +167,7 @@ class QuestionOrderTests(unittest.TestCase):
                     view, definitions, place_values=without_contacts
                 )
             ],
-            [6, 7],
+            [10, 7],
         )
 
     def test_invalid_known_value_is_explained_in_question(self) -> None:

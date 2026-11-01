@@ -1186,10 +1186,12 @@ class ConflictMigrationTests(unittest.TestCase):
         self.addCleanup(self.engine.dispose)
         self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
 
-    def test_latest_version_is_twenty_three(self) -> None:
+    def test_latest_version_is_twenty_five(self) -> None:
         # U1a добавил 21 (`place_city`) и 22 (`builtin_templates_v4`)
-        # поверх R4-овской 20; все применяются штатно.
-        self.assertEqual(LATEST_VERSION, 24)
+        # поверх R4-овской 20, H2 — 24 (`template_content_and_extras...
+        # _without_sections`), Poster 2.4 P1 — 25 (`single_address_brick`);
+        # все применяются штатно.
+        self.assertEqual(LATEST_VERSION, 25)
 
     def test_migration_19_on_filled_database_keeps_data(self) -> None:
         from sqlalchemy import text

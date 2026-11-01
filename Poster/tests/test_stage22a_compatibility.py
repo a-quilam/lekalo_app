@@ -297,7 +297,7 @@ class Stage22ACompatibilityTests(unittest.TestCase):
         self.assertIn((18, "builtin_templates_v3"), journal(self.path))
         self.assertEqual(
             journal(self.path)[-1],
-            (LATEST_VERSION, "template_content_and_extras_without_sections"),
+            (LATEST_VERSION, "single_address_brick"),
         )
         # Миграция 17 переименовала легаси-таблицу: строки прежнего черновика
         # читаются из архива как есть, `drafts` в рабочей схеме нет.
@@ -339,8 +339,9 @@ class Stage22ACompatibilityTests(unittest.TestCase):
                 "SELECT count(*) FROM bricks WHERE scope='system'",
             ),
             # 9 кирпичиков миграции 6 + `[адрес]` миграции 15
-            # + `[город]` миграции 21.
-            (11,),
+            # + `[город]` миграции 21 − `адрес_места`, устранённый
+            # миграцией 25 (Poster 2.4 P1).
+            (10,),
         )
         self.assertIsNone(
             scalar(

@@ -26,11 +26,13 @@ import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Any
 
 from sqlalchemy import ColumnElement, and_, func, or_, select
+from sqlalchemy import delete as sqlalchemy_delete
 from sqlalchemy import update as sqlalchemy_update
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from brick_types import (
     BRICK_SCOPE_PERSONAL,
@@ -61,13 +63,17 @@ from brick_types import (
     validate_brick_value,
 )
 from models import (
+    AnnouncementExtra,
+    AnnouncementValue,
     Brick,
     BrickConflict,
     BrickConflictNotification,
+    BrickProposal,
     Place,
     PlaceAdmin,
     PlaceName,
     Template,
+    TemplateSnapshotBrick,
     TemplateVersion,
     TemplateVersionBrick,
     User,
@@ -82,9 +88,11 @@ _SCOPE_ORDER = {
     BRICK_SCOPE_PERSONAL: 2,
 }
 
+# Поля карточки места, доступные кирпичикам с `source='place'`. Poster 2.4 P1:
+# адресный код один — `адрес`; легаси `адрес_места` устранён миграцией 25.
 _PLACE_FIELDS = {
     "место": "name",
-    "адрес_места": "address",
+    "адрес": "address",
     "ссылка_места": "url",
 }
 
@@ -168,10 +176,12 @@ class BrickMutationResult:
     def ok(self) -> bool:
         return self.status in {
             "updated",
+            "unchanged",
             "archived",
             "restored",
             "already_active",
             "already_archived",
+            "deleted",
         }
 
 
@@ -1277,6 +1287,237 @@ def restore_personal_brick(
     return _mutation("restored", current, "Кирпичик восстановлен.")
 
 
+# --- Единое редактирование описания и окончательное удаление (Poster 2.4 P1) --
+#
+# Владелец потребовал ОДИН редактор описания для любой области: описание —
+# инструкция автору анонса, а не часть шаблона, поэтому менять его можно без
+# нового предложения. Название, код и тип остаются неизменяемыми везде, кроме
+# карточки личного кирпичика (`update_personal_brick`), где автор настраивает
+# собственное определение.
+#
+# Права (проверяются по актуальной роли, как во всех операциях записи):
+# - personal — только автор кирпичика;
+# - place — действующий администратор этого места или суперадмин;
+# - system — только суперадмин.
+
+# Пары «модель → колонка внешнего ключа на `bricks.id`». Тип описан явно,
+# чтобы mypy видел и таблицу (`select_from`), и колонку (`where`); имя
+# таблицы берётся из модели для сообщений карточки.
+_BRICK_REFERENCE_COLUMNS: tuple[tuple[type[Any], InstrumentedAttribute[Any]], ...] = (
+    (TemplateVersionBrick, TemplateVersionBrick.brick_id),
+    (TemplateSnapshotBrick, TemplateSnapshotBrick.brick_id),
+    (AnnouncementValue, AnnouncementValue.brick_id),
+    (AnnouncementExtra, AnnouncementExtra.brick_id),
+    (BrickProposal, BrickProposal.source_brick_id),
+    (BrickProposal, BrickProposal.approved_brick_id),
+    (BrickConflict, BrickConflict.system_brick_id),
+    (BrickConflict, BrickConflict.local_brick_id),
+)
+
+
+def _brick_for_write(session: Session, actor: User, brick_id: int) -> Brick:
+    """
+    Строка для записи описания/удаления, если актор вправе её видеть.
+
+    Чужой личный кирпичик не раскрывается (`BrickNotFoundError`), а недостаток
+    полномочий на месте/системной области — явный `BrickPermissionError`.
+    """
+    if isinstance(brick_id, bool) or not isinstance(brick_id, int) or brick_id <= 0:
+        raise BrickNotFoundError("Кирпичик не найден.")
+    row = session.get(Brick, brick_id)
+    if row is None:
+        raise BrickNotFoundError("Кирпичик не найден или уже удалён.")
+    if row.scope == BRICK_SCOPE_PERSONAL:
+        if row.owner_user_id != actor.id:
+            raise BrickNotFoundError("Кирпичик не найден или принадлежит другому.")
+        return row
+    if row.scope == BRICK_SCOPE_PLACE:
+        if row.place_id is None or not can_manage_place(
+            session, actor.telegram_user_id, row.place_id
+        ):
+            raise BrickPermissionError(
+                "Изменять этот кирпичик может только администратор его места "
+                "или суперадминистратор."
+            )
+        return row
+    if row.scope == BRICK_SCOPE_SYSTEM:
+        if not is_superadmin(actor.telegram_user_id):
+            raise BrickPermissionError(
+                "Системный кирпичик изменяет только суперадминистратор."
+            )
+        return row
+    raise BrickNotFoundError("Кирпичик не найден.")  # pragma: no cover — CHECK БД
+
+
+def update_brick_description(
+    session: Session,
+    *,
+    actor_telegram_user_id: int,
+    brick_id: int,
+    description: object | None = None,
+    expected_revision: int | None = None,
+) -> BrickMutationResult:
+    """
+    Меняет ТОЛЬКО описание кирпичика в пределах прав актора.
+
+    Название, код, тип, область и настройки не являются параметрами и не
+    могут измениться этим вызовом: административный редактор не переписывает
+    чужое определение. Пустая строка сохраняется как `NULL` («описания нет»).
+    Ревизия увеличивается, чтобы оптимистичная блокировка не теряла чужую
+    правку; `brick_id` и код остаются прежними.
+
+    `expected_revision` — оптимистичная блокировка экрана: карточка передаёт
+    ту ревизию, которую показала человеку. Если за это время определение
+    изменилось, возвращается `stale` без записи. `None` — проверять только
+    актуальную строку (доменный вызов без экрана).
+    """
+    actor = _require_actor_user(session, actor_telegram_user_id)
+    row = _brick_for_write(session, actor, brick_id)
+    if row.status != BRICK_STATUS_ACTIVE:
+        return _mutation(
+            "archived",
+            row,
+            "Архивный кирпичик нельзя редактировать. Сначала восстановите его.",
+        )
+    if expected_revision is not None and (
+        isinstance(expected_revision, bool)
+        or not isinstance(expected_revision, int)
+        or expected_revision <= 0
+        or expected_revision != row.revision
+    ):
+        return _mutation(
+            "stale",
+            row,
+            "Кирпичик уже изменился в другом окне. Откройте его заново.",
+        )
+    cleaned = clean_brick_description(description)
+    if cleaned == row.description:
+        return _mutation("unchanged", row, "Описание не изменилось.")
+    try:
+        changed = session.execute(
+            sqlalchemy_update(Brick)
+            .where(
+                Brick.id == row.id,
+                Brick.revision == row.revision,
+                Brick.status == BRICK_STATUS_ACTIVE,
+            )
+            .values(
+                description=cleaned,
+                revision=row.revision + 1,
+                updated_at=utcnow(),
+            )
+            .execution_options(synchronize_session=False)
+        )
+        if getattr(changed, "rowcount", 0) != 1:
+            session.rollback()
+            current = _reload_brick(session, row.id)
+            return _mutation(
+                "stale",
+                current,
+                "Кирпичик уже изменился в другом окне. Откройте его заново.",
+            )
+        session.commit()
+    except (IntegrityError, OperationalError):
+        session.rollback()
+        return _mutation(
+            "conflict",
+            _reload_brick(session, brick_id),
+            "Не удалось сохранить описание из-за ошибки базы. Повторите попытку.",
+        )
+    except Exception:
+        session.rollback()
+        raise
+    current = _reload_brick(session, brick_id)
+    return _mutation("updated", current, "Описание сохранено.")
+
+
+def brick_references(session: Session, brick_id: int) -> dict[str, int]:
+    """
+    Где определение реально используется: таблица → число строк.
+
+    Нужен карточке и удалению: удалять определение, которое уже входит в
+    версию/снимок шаблона, черновик анонса, историю предложений или задач
+    конфликтов, нельзя — иначе шаблон и история станут неоднозначными.
+    """
+    counts: dict[str, int] = {}
+    for model, column in _BRICK_REFERENCE_COLUMNS:
+        count = int(
+            session.scalar(
+                select(func.count()).select_from(model).where(column == brick_id)
+            )
+            or 0
+        )
+        if count:
+            counts[model.__tablename__] = counts.get(model.__tablename__, 0) + count
+    return counts
+
+
+def delete_brick(
+    session: Session,
+    *,
+    actor_telegram_user_id: int,
+    brick_id: int,
+) -> BrickMutationResult:
+    """
+    Окончательно удаляет НЕИСПОЛЬЗУЕМЫЙ кирпичик (Poster 2.4 P1).
+
+    Раньше личный кирпичик только архивировался и оставался в списке. Теперь
+    автор может удалить его физически, но лишь пока определение нигде не
+    используется: привязки версий/снимков шаблонов, значения черновиков,
+    история предложений и задачи конфликтов ссылаются на `bricks.id` через
+    `ON DELETE RESTRICT`. Используемый кирпичик получает статус `in_use` и
+    понятное объяснение, данные не меняются.
+
+    Системные кирпичики защищены всегда: запись остаётся (её нельзя удалить
+    даже прямым DELETE — триггер `trg_bricks_system_no_delete`), поэтому
+    возвращается `protected`. Чужой личный кирпичик не раскрывается
+    (`BrickNotFoundError`), недостаток роли — `BrickPermissionError`.
+    """
+    actor = _require_actor_user(session, actor_telegram_user_id)
+    row = _brick_for_write(session, actor, brick_id)
+    if row.scope == BRICK_SCOPE_SYSTEM:
+        return _mutation(
+            "protected",
+            row,
+            "Системный кирпичик удалить нельзя: он входит в общий каталог. "
+            "Его можно только архивировать.",
+        )
+    references = brick_references(session, row.id)
+    if references:
+        return _mutation(
+            "in_use",
+            row,
+            "Кирпичик используется (шаблон, анонс или история рассмотрения), "
+            "поэтому удалить его нельзя. Уберите его из шаблона и повторите.",
+        )
+    try:
+        deleted = session.execute(
+            sqlalchemy_delete(Brick).where(
+                Brick.id == row.id,
+                Brick.revision == row.revision,
+            )
+        )
+        if getattr(deleted, "rowcount", 0) != 1:
+            session.rollback()
+            return _mutation(
+                "stale",
+                _reload_brick(session, brick_id),
+                "Кирпичик уже изменился в другом окне. Откройте его заново.",
+            )
+        session.commit()
+    except (IntegrityError, OperationalError):
+        session.rollback()
+        return _mutation(
+            "in_use",
+            _reload_brick(session, brick_id),
+            "Кирпичик уже используется и не может быть удалён.",
+        )
+    except Exception:
+        session.rollback()
+        raise
+    return _mutation("deleted", None, "Кирпичик удалён.")
+
+
 # --- Источник значения и пять состояний -------------------------------------
 
 
@@ -1310,7 +1551,7 @@ def resolve_brick_value(
     - `context` берёт значение из словаря по коду; отсутствие — MISSING.
 
     Выбранное альтернативное название места используется для кода `место` при
-    сохранении того же `place_id`. Для `адрес_места` и `ссылка_места` данные
+    сохранении того же `place_id`. Для `адрес` и `ссылка_места` данные
     берутся из справочника. Фотографии к этому контракту не относятся.
     """
     if raw_value is not _UNSET:

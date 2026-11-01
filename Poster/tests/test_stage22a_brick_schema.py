@@ -103,14 +103,18 @@ class BrickSchemaTests(BrickDatabaseTestCase):
                 (22, "builtin_templates_v4"),
                 (23, "place_invite_links"),
                 (24, "template_content_and_extras_without_sections"),
+                (25, "single_address_brick"),
             ],
         )
         # 9 кирпичиков миграции 6 + системный `[адрес]` миграции 15
-        # (Poster 2.0 S1) + `[город]` миграции 21 (Poster 2.0 U1a).
+        # (Poster 2.0 S1) + `[город]` миграции 21 (Poster 2.0 U1a) −
+        # `адрес_места`, устранённый миграцией 25 (Poster 2.4 P1).
         # Каталог и БД обязаны совпадать по коду и порядку.
         definitions = list_system_bricks(self.session)
-        self.assertEqual(len(definitions), 11)
-        self.assertEqual([item.id for item in definitions], list(range(1, 12)))
+        self.assertEqual(len(definitions), 10)
+        self.assertEqual(
+            [item.id for item in definitions], [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]
+        )
         self.assertEqual(
             [item.code for item in definitions],
             [item.code for item in SYSTEM_BRICKS],
@@ -148,7 +152,7 @@ class BrickSchemaTests(BrickDatabaseTestCase):
                     text("SELECT count(*) FROM bricks WHERE scope='system'")
                 ).scalar_one()
             )
-        self.assertEqual(count, 11)
+        self.assertEqual(count, 10)
         self.assertEqual(len(self.journal()), LATEST_VERSION)
 
     def test_restart_does_not_overwrite_a_controlled_system_definition(self) -> None:
