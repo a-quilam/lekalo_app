@@ -369,6 +369,38 @@ keys=1118, humor ok phrases=8. Независимая приёмка Tester: ю�
 инварианты P2+P3 — pass. Коммиты программы 2.4: c1ee52a (P1), 5dbd078 (P2),
 bf4b4a5 (P3), 1bc5100 (P4) — все pushed.
 
+**Релиз 2.4 выполнен (2026-11-01, операционная фаза).** Механизм
+обслуживания БД (Build: db_maintenance.py + make db-maintain-* + права
+агентов + протокол п.11) проверен: db-maintain-report и db-maintain-clean
+на временной базе /tmp/opencode — все 4 фазы ок (integrity, проверенный
+бэкап, очистка с якорями, smoke init_db; осталось 10 системных кирпичиков,
+пользовательских данных 0). Релизная очистка рабочей базы (утверждена
+владельцем, протокол п.11): бот остановлен (inactive, PID завершён),
+make db-maintain-clean → бэкап
+Poster/post_bot.db.backup-20261101T114218746686Z-p704249 (450 560 B,
+integrity ok; копирование в backups/ вне Poster заблокировано правами —
+по решению владельца оставлен в Poster/, в git не попадает); удалено:
+announcement_drafts 5, values 27, extras 1, place_edit_log 2, user_states 1,
+place_names 1; якоря (системные объекты/неизменяемые журналы): bricks 12
+(10 system + цена personal, удерживаемая журналом proposals + система),
+places 1 / users 1 / templates 2 / template_versions 5 (RESTRICT-цепочка
+неизменяемых журналов template_snapshots/brick_proposals + триггеры
+standard_no_delete/versions_no_delete — документированное поведение
+механизма). Повторная проверка: integrity ok, FK 0, smoke ok, schema
+max=25. Суперадмин: конфигурационный (.env), механизм его не читает;
+косвенное подтверждение — бот стартовал без ConfigError (принято
+владельцем). Служба запущена: active/running, NRestarts=0, «Запуск бота» 1
+(нет restart-loop), Traceback/ERROR 0 за 3+ минуты наблюдения, polling
+жив (56 ESTAB), «Автоочистка анонсов: фоновая задача, раз в час.» в логе.
+Telegram-сообщения не удалялись (механизм очистки Telegram не вызывает).
+Коммит настроек: effb502 (db_maintenance.py, Makefile, .opencode/agents/*,
+AGENTS.md, opencode.jsonc) — pushed. Незакоммиченный остаток (не обходить):
+Poster/config/ui_texts.yaml.before-text-edit.bak (бэкап правок владельца),
+Poster/docs/agent_team/orchestra_protocol.md (untracked-копия протокола),
+два старых post_bot.db.backup-* (архивировать при следующей операции с
+базой). **Poster 2.4 завершён.** Живая визуальная приёмка в реальном
+Telegram — за владельцем (FakeBot-приёмка её не заменяет).
+
 ## Шаблон записи
 
 ```
