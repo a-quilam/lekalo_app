@@ -5,29 +5,48 @@
 Зачем: команда poster-* получает утверждённую владельцем задачу «завершить
 релиз с очисткой тестовых данных», но произвольные shell-команды к рабочей
 базе запрещены правилами разрешений. Вместо набора `rm`/`sqlite3` здесь
-одна безопасная команда с фиксированными фазами:
+одна безопасная команда с фиксированными фазами.
 
-1. Проверка целостности исходной базы (`PRAGMA integrity_check`);
-2. Согласованный WAL-бэкап штатным `create_database_backup` (Backup API,
-   временный файл, `integrity_check`, атомарный rename) + повторное
-   открытие копии с новой проверкой целостности;
-3. Очистка тестовых данных: состояния, места, шаблоны, кирпичики, анонсы;
-   системные объекты (`schema_migrations`) и журналы истории, защищённые
-   триггерами схемы, не затрагиваются. Суперадминистратор — конфигурационный
-   (`SUPERADMIN_USER_IDS` в `.env`), в БД строк не имеет: сохранение
-   суперадминистратора = не трогать конфиг (этот механизм его не читает).
-4. Контроль записи: перед каждой записью — `BEGIN IMMEDIATE` (см.
-   `_writing_transaction`), чтобы очистка не пересекалась с параллельной
-   записью; на старте проверяется отсутствие `BEGIN IMMEDIATE`-захвата;
-5. Повторная проверка результата: `integrity_check` + smoke-запуск
-   `init_db` на той же базе в отдельном процессе (как старт бота, без
-   Telegram).
+Утверждённый контракт владельца (после каждого релиза до первого
+публичного выпуска Poster): в базе не остаётся НИ ОДНОЙ тестовой записи —
+площадки, пользователи, администраторы, личные и локальные кирпичики,
+пользовательские шаблоны, предложения, анонсы, состояния. Сохраняются
+только: актуальная схема (все миграции), системные кирпичики (каталог
+`brick_types.SYSTEM_BRICKS`), встроенный стандартный шаблон (эталон
+`template_types.BUILTIN_TEMPLATE`; строка появляется вместе с первым
+местом), системные настройки (в БД их нет — конфигурация `.env`) и права
+суперадминистратора (конфигурационные, `SUPERADMIN_USER_IDS` в `.env`).
 
-Бэкап — обязательное условие очистки: фазы 3+ не выполняются, если фаза 2
-не создала и не проверила копию этой базы (см. `_VERIFIED_BACKUPS`).
+Архитектура очистки — «бэкап → bootstrap → верификация → атомарная
+замена» (rebuild), а не построчное вычёсывание:
+
+- прежний построчный DELETE принципиально не мог достичь контракта:
+  строки-якоря неизменяемых журналов (`brick_proposals`,
+  `template_snapshots` и др.) защищены триггерами `no_delete` и FK
+  RESTRICT, поэтому пользователи/места/шаблоны/кирпичики «оставались»;
+- rebuild устраняет саму проблему: новая база создаётся штатным
+  bootstrap (`init_db`: все миграции + `create_all` + сидирование
+  системных кирпичиков) в НОВОМ файле, где тестовых записей нет по
+  построению; защита FK (`PRAGMA foreign_keys=ON`) и триггеров не
+  отключается ни на секунду;
+- результат проверяется ДО замены: integrity_check, полный журнал
+  миграций 1..N, каталог системных кирпичиков по кодам из кода продукта,
+  нулевые счётчики всех пользовательских таблиц; при любой неудаче
+  рабочая база не изменяется;
+- замена атомарна (`os.replace` в одном каталоге) и выполняется при
+  остановленной службе (PID-файл + тестовая `BEGIN IMMEDIATE` над
+  рабочей базой), поэтому бот не увидит «половину» замены.
+
+Восстановление при неудаче: рабочая база не изменяется до успешной
+верификации; сама замена атомарна; прежняя база не удаляется, а
+переименовывается в `<база>.replaced-<метка>` рядом (проверяемый след
+очистки и точка восстановления). Бэкап фазы 2 — согласование WAL (Backup
+API), полный независимый снимок на момент очистки.
 
 Запуск (Makefile, каталог `Poster`):
-    make db-maintain-report          # фазы 1–2: целостность + бэкап рабочей БД
+    make db-maintain-report          # фазы 1–2: целостность + проверенный
+                                     # WAL-бэкап + счётчики пользовательских
+                                     # таблиц (read-only, без очистки)
     make db-maintain-clean           # полный цикл на рабочей БД (релизная
                                      # очистка, утверждена владельцем)
     make db-maintain-clean DB=path   # полный цикл на указанной базе
@@ -40,87 +59,84 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from migrations import BUSY_TIMEOUT_MS, create_database_backup
+from brick_types import SYSTEM_BRICK_CODES
+from migrations import BUSY_TIMEOUT_MS, DEFAULT_MIGRATIONS, create_database_backup
 
 APP_DIR = Path(__file__).resolve().parent
 REAL_DB_PATH = APP_DIR / "post_bot.db"
-
-# --- Системные и сохраняемые объекты -------------------------------------
+# PID-файл службы (botctl.sh): rebuild меняет файл базы, поэтому обязан
+# выполняться при остановленном боте. Каталог logs — рядом с модулем.
+SERVICE_PID_FILE = APP_DIR / "logs" / "post_bot.pid"
 
 # Журнал миграций: определяет совместимость схемы, чистке не подлежит.
 SYSTEM_TABLES = ("schema_migrations",)
-
-# Суперадминистратор в Poster — конфигурационный: источник — только
-# `SUPERADMIN_USER_IDS` в `.env` (см. permissions.py), строк в БД у него
-# нет. Поэтому сохранение суперадминистратора = не трогать `.env` и конфиг;
-# этот механизм их не читает и не изменяет.
-
-# Таблицы, которые схема защищает от очистки сама — журналы истории:
-# `trg_brick_proposals_no_delete`, `trg_brick_conflicts_no_delete`,
-# `trg_brick_conflict_notifications_no_delete`-семантика переходов,
-# `trg_template_snapshots_no_delete` и безусловный запрет на удаление
-# связок снимков `trg_template_snapshot_bricks_no_delete` (см. migrations.py).
-# Очистка их уважает. Строки, на которые они ссылаются через FK RESTRICT
-# (users, places, system-кирпичики, версии шаблонов), остаются якорями —
-# это «системные объекты» в смысле задания владельца.
-IMMUTABLE_JOURNAL_TABLES = (
-    "brick_proposals",
-    "brick_conflicts",
-    "brick_conflict_notifications",
-    "template_snapshots",
-    "template_snapshot_bricks",
-)
-
-# Порядок удаления: дочерние строки до родительских (FK), журналы до
-# защищаемых ими таблиц. Краткий журнал ограничений:
-# - template_snapshot_bricks: безусловный `no_delete` — раньше снимков;
-# - template_versions: `no_delete`, пока жива строка templates;
-# - bricks: system-строки защищены `trg_bricks_system_no_delete`;
-# - templates: standard защищён, пока существует место;
-# - users/places: могут остаться якорями неизменяемых журналов (FK RESTRICT).
-TEST_DATA_TABLES_CHILDREN_FIRST = (
-    # журналы и связки без условий на родителей
-    "brick_conflict_notifications",
-    "brick_conflicts",
-    "brick_proposals",
-    "template_snapshot_bricks",
-    # анонсы (drafts → values/extras → drafts)
-    "announcement_extras",
-    "announcement_values",
-    "announcement_drafts",
-    # версии шаблонов — до templates (триггер запрещает удаление при живой
-    # родительской строке)
-    "templates",
-    "template_versions",
-    "template_snapshots",
-    # кирпичики: персональные удаляются, system-строки защищены триггером —
-    # ожидаемо остаются, это системные объекты
-    "bricks",
-    "place_invite_links",
-    "place_edit_log",
-    "admin_transfers",
-    "admin_sessions",
-    "place_sessions",
-    "brick_sessions",
-    "template_sessions",
-    "user_states",
-    "place_names",
-    "place_admins",
-    # родители
-    "places",
-    "users",
-)
 
 
 # Ошибка, которую выбрасывают все фазы при невозможности безопасно работать.
 class MaintenanceError(RuntimeError):
     """Обслуживание прервано: база, бэкап или запись не прошли проверку."""
+
+
+# --- Счётчики пользовательских таблиц ------------------------------------
+
+
+def _table_names(connection: sqlite3.Connection) -> set[str]:
+    """Имена всех таблиц базы (без view/индексов)."""
+    return {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+
+
+def _count_all_tables(
+    connection: sqlite3.Connection, tables: "set[str] | list[str]"
+) -> dict[str, int]:
+    return {
+        table: int(
+            connection.execute(  # noqa: S608 — имя из sqlite_master
+                f'SELECT COUNT(*) FROM "{table}"'
+            ).fetchone()[0]
+        )
+        for table in sorted(tables)
+    }
+
+
+def user_table_counts(path: str | Path) -> dict[str, int]:
+    """
+    Счётчики строк всех пользовательских таблиц (read-only, для отчёта).
+
+    Пользовательская таблица — любая таблица базы, кроме системного
+    журнала миграций. Список берётся из фактической схемы базы, поэтому
+    новая таблица миграций автоматически попадает в контроль нулевых
+    счётчиков — ничего дублировать вручную не нужно. Используется фазой
+    отчёта (`--skip-clean`) и верификацией rebuild: после очистки каждый
+    счётчик обязан быть нулевым.
+    """
+    connection = _connect(path)
+    try:
+        return _count_all_tables(
+            connection, _table_names(connection) - set(SYSTEM_TABLES)
+        )
+    finally:
+        connection.close()
+
+
+def _format_counts(counts: dict[str, int]) -> str:
+    """Компактный текст счётчиков: только ненулевые, либо «все нулевые»."""
+    nonzero = {table: count for table, count in counts.items() if count}
+    if not nonzero:
+        return "все пользовательские таблицы пусты"
+    return json.dumps(nonzero, ensure_ascii=False, sort_keys=True)
 
 
 # --- Фаза 1: целостность -------------------------------------------------
@@ -142,8 +158,8 @@ def check_integrity(path: str | Path) -> str:
 # --- Фаза 2: согласованный WAL-бэкап с проверкой -------------------------
 
 # Пути баз, для которых фаза 2 уже создала и проверила копию. Ключ —
-# разрешённый абсолютный путь базы. Очистка (фаза 3) отказывается работать
-# без записи в этом множестве: бэкап обязателен.
+# абсолютный путь базы. Очистка (фазы 3–6) отказывается работать без записи
+# в этом множестве: бэкап обязателен.
 _VERIFIED_BACKUPS: set[str] = set()
 
 
@@ -165,11 +181,11 @@ def backup_database(path: str | Path) -> Path:
     backup_check = check_integrity(backup_path)
     assert backup_check == "ok"  # check_integrity иначе поднял исключение
     _VERIFIED_BACKUPS.add(str(resolved))
-    print(f"[2/4] Бэкап создан и проверен: {backup_path}")
+    print(f"[2/6] Бэкап создан и проверен: {backup_path}")
     return backup_path
 
 
-# --- Фаза 3: очистка тестовых данных -------------------------------------
+# --- Общие соединения и блокировки ---------------------------------------
 
 
 def _connect(path: str | Path) -> sqlite3.Connection:
@@ -216,33 +232,253 @@ def _guard_writable(path: str | Path) -> None:
         connection.close()
 
 
-def _missing_tables(
-    connection: sqlite3.Connection, names: tuple[str, ...]
-) -> list[str]:
-    missing: list[str] = []
-    for name in names:
-        row = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name = ?",
-            (name,),
-        ).fetchone()
-        if row is None:
-            missing.append(name)
-    return missing
+# --- Фаза 3: служба остановлена ------------------------------------------
 
 
-def clean_test_data(path: str | Path) -> dict[str, int]:
+def ensure_service_stopped(db_path: str | Path) -> None:
     """
-    Очистить тестовые данные, сохранив системные объекты.
+    Проверить, что служба Poster остановлена (rebuild меняет файл базы).
+
+    Два независимых признака, оба обязательны:
+    1. PID-файл `logs/post_bot.pid` (botctl.sh) отсутствует или процесс
+       уже мёртв;
+    2. над очищаемой базой берётся тестовая `BEGIN IMMEDIATE` (живой бот
+       удерживает WAL-блокировки при записи; успешный захват подтверждает
+       отсутствие активных писателей).
+
+    Любой отказ прерывает rebuild до бэкапа фаз 4+ и любых изменений
+    файлов. Замена файла базы под живым ботом дала бы рассинхрон кэшей
+    SQLAlchemy и потерю WAL-хвоста.
+    """
+    if SERVICE_PID_FILE.exists():
+        raw = SERVICE_PID_FILE.read_text(encoding="utf-8").strip()
+        if raw.isdigit():
+            pid = int(raw)
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                pass  # процесс мёртв, файл устарел — не блокируем
+            except OSError as exc:
+                raise MaintenanceError(
+                    f"Не удалось проверить PID {pid} службы Poster "
+                    f"({SERVICE_PID_FILE}): {exc}. Остановите службу "
+                    "командой ./botctl.sh stop."
+                ) from exc
+            else:
+                raise MaintenanceError(
+                    f"Служба Poster работает (PID {pid}, {SERVICE_PID_FILE}); "
+                    "остановите её командой ./botctl.sh stop перед очисткой."
+                )
+    _guard_writable(db_path)
+    print("[3/6] Служба остановлена: PID-файла нет, монопольный доступ есть.")
+
+
+# --- Фаза 4: bootstrap новой базы штатным init_db ------------------------
+
+
+def _run_init_db_subprocess(path: str | Path, *, timeout: int = 300) -> None:
+    """init_db в отдельном процессе на указанной базе (как старт бота)."""
+    env = os.environ.copy()
+    env["DATABASE_URL"] = "sqlite:///" + str(path)
+    env.setdefault(
+        "TELEGRAM_BOT_TOKEN", "123456789:FIXTUREFAKETOKENforTestsOnly00000000"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", "from database import init_db; init_db()"],
+        cwd=str(APP_DIR),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise MaintenanceError(
+            "Bootstrap init_db упал:\n"
+            f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+
+
+def bootstrap_fresh_database(target_path: str | Path) -> None:
+    """
+    Создать новую базу штатным bootstrap в файле `target_path`.
+
+    Никакого собственного DDL и никакого прямого доступа к данным: та же
+    функция `init_db` (миграции 1..N + create_all + сидирование системных
+    кирпичиков), что при старте бота. Новая база содержит ровно:
+    актуальную схему, системные кирпичики, встроенный стандартный шаблон
+    (его определения живут в коде `template_types.BUILTIN_TEMPLATE` и
+    материализуются вместе с первым местом), конфигурацию (`.env`, в БД
+    настроек нет) и ноль тестовых данных.
+    """
+    target = Path(target_path)
+    if target.exists():
+        raise MaintenanceError(
+            f"Целевой файл bootstrap уже существует: {target} (не перезаписывается)."
+        )
+    _run_init_db_subprocess(target)
+    if not target.exists() or target.stat().st_size == 0:
+        raise MaintenanceError(f"Bootstrap не создал базу: {target}")
+
+
+# --- Фаза 5: верификация rebuild-базы до замены --------------------------
+
+
+def verify_rebuilt_database(
+    path: str | Path,
+    *,
+    expected_version: int,
+    system_brick_codes: tuple[str, ...],
+) -> dict[str, object]:
+    """
+    Полная проверка новой базы ДО атомарной замены.
+
+    Проверяется:
+    - `PRAGMA integrity_check`;
+    - журнал миграций: ровно версии 1..N без пропусков, где N —
+      актуальная версия кода (`DEFAULT_MIGRATIONS`, не зашита);
+    - каталог системных кирпичиков: активные строки `scope='system'`
+      совпадают по кодам с `brick_types.SYSTEM_BRICKS` (источник —
+      каталог кода продукта, число не зашито);
+    - нулевые счётчики всех пользовательских таблиц.
+
+    При любой неудаче — исключение: рабочая база не будет заменена.
+    """
+    connection = _connect(path)
+    try:
+        row = connection.execute("PRAGMA integrity_check").fetchone()
+        integrity = str(row[0]) if row else "нет результата"
+        if integrity.lower() != "ok":
+            raise MaintenanceError(f"Новая база не прошла integrity_check: {integrity}")
+
+        applied = [
+            int(item[0])
+            for item in connection.execute(
+                "SELECT version FROM schema_migrations ORDER BY version"
+            )
+        ]
+        if applied != list(range(1, expected_version + 1)):
+            raise MaintenanceError(
+                "Новая база содержит не полный журнал миграций: "
+                f"{applied!r}, ожидалось 1..{expected_version}."
+            )
+
+        system_codes = [
+            str(item[0])
+            for item in connection.execute(
+                "SELECT code FROM bricks WHERE scope = 'system' "
+                "AND status = 'active' ORDER BY id"
+            )
+        ]
+        if tuple(system_codes) != tuple(system_brick_codes):
+            raise MaintenanceError(
+                "Каталог системных кирпичиков новой базы не совпадает с "
+                f"каталогом кода {system_brick_codes!r}: "
+                f"получено {system_codes!r}."
+            )
+
+        counts = _count_all_tables(
+            connection, _table_names(connection) - set(SYSTEM_TABLES)
+        )
+        # Системные кирпичики — НЕ тестовые данные: их счётчик сверяется с
+        # каталогом кода выше и исключается из требования «нулевые».
+        counts.pop("bricks", None)
+        nonzero = {table: count for table, count in counts.items() if count}
+        if nonzero:
+            raise MaintenanceError(
+                "Новая база содержит тестовые данные (ожидались нулевые "
+                f"счётчики): {json.dumps(nonzero, ensure_ascii=False)}"
+            )
+    finally:
+        connection.close()
+    return {
+        "integrity": integrity,
+        "migrations": applied,
+        "system_bricks": system_codes,
+        "nonzero_counts": {},
+    }
+
+
+# --- Фаза 6: атомарная замена --------------------------------------------
+
+# Прежняя база после успешной замены: сохраняется рядом для аудита и
+# восстановления при неудаче (никогда не удаляется автоматически).
+_REPLACED_SUFFIX = ".replaced-"
+_WAL_SUFFIXES = ("-wal", "-shm")
+
+
+def _utc_stamp() -> str:
+    """Метки файлов: UTC, читаемая сортировка (как у бэкапов миграций)."""
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+
+
+def _detach_sidecars(db_path: Path) -> None:
+    """
+    Убрать WAL-сателлиты очищаемой базы перед заменой файла.
+
+    Живой WAL старой базы поверх новой после замены дал бы конфликт
+    salt/страниц: SQLite мог бы признать его чужим (безопасно, но шумно)
+    или применить устаревшие страницы (потеря новых данных). Порядок
+    обеспечивает корректность:
+    1. служба остановлена (фаза 3) и `_guard_writable` подтвердил, что
+       активных писателей нет;
+    2. тестовая транзакция + `PRAGMA wal_checkpoint(TRUNCATE)` выгружают
+       содержимое WAL в основной файл и обрезают WAL до нуля;
+    3. пустые `-wal`/`-shm` переименовываются рядом с теми же метками
+       `.replaced-` — как и основной файл, они не удаляются.
+    """
+    connection = _connect(db_path)
+    try:
+        cursor = _writing_transaction(connection)
+        if cursor is None:
+            raise MaintenanceError(
+                "База занята другим процессом: блокировка записи не взята."
+            )
+        connection.execute("ROLLBACK")
+        # Checkpoint строго ВНЕ транзакции: активная транзакция на этом же
+        # соединении блокирует TRUNCATE (readers-барьер SQLite).
+        checkpointed = connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        if checkpointed is None or int(checkpointed[0]) != 0:
+            raise MaintenanceError(
+                "wal_checkpoint(TRUNCATE) не выполнен: база занята другим "
+                "процессом. Остановите службу и повторите очистку."
+            )
+    finally:
+        connection.close()
+    for suffix in _WAL_SUFFIXES:
+        sidecar = db_path.with_name(db_path.name + suffix)
+        if sidecar.exists():
+            os.replace(
+                sidecar,
+                sidecar.with_name(sidecar.name + _REPLACED_SUFFIX + _utc_stamp()),
+            )
+
+
+def _atomic_replace(old: Path, new: Path) -> Path:
+    """
+    Атомарная замена очищаемой базы новой: прежний файл сохраняется.
+
+    `os.replace(new, old)` в одном каталоге атомарен. ПРЕЖНЯЯ база при
+    этом не теряется: до замены она переименовывается в
+    `<база>.replaced-<метка>` (та же атомарная операция rename), поэтому
+    последовательность «rename старого → rename нового» не оставляет
+    окна без файла базы: в любой момент по пути `old` существует либо
+    старая, либо новая база. WAL-сателлиты старой базы убраны заранее
+    (`_detach_sidecars`), у новой базы их нет: bootstrap-процесс закрыт.
+    """
+    replaced = old.with_name(old.name + _REPLACED_SUFFIX + _utc_stamp())
+    os.replace(old, replaced)
+    os.replace(new, old)
+    return replaced
+
+
+def clean_test_data(path: str | Path) -> dict[str, object]:
+    """
+    Полный rebuild-цикл очистки на указанной базе (фазы 3–6).
 
     Условие: для этой базы уже прошёл проверенный бэкап (backup_database).
-    Записи идут в одной транзакции `BEGIN IMMEDIATE`; сбой = полный откат.
-    Возвращает таблицу → число удалённых строк.
-
-    Рабочая база проекта (Poster/post_bot.db) — та самая «тестовая БД»,
-    очистка которой утверждена владельцем ПОСЛЕ релиза; запуск с ней —
-    штатная релизная операция менеджера. Право на команду выдано только
-    менеджеру и тестировщику (последний — только с DB=/tmp/...); developer
-    и reviewer допуска к make db-maintain-* не имеют.
+    Рабочая база не изменяется до успешной верификации новой; замена
+    атомарна, прежний файл сохраняется рядом (`.replaced-<метка>`).
+    Возвращает отчёт фаз.
     """
     resolved = Path(path).resolve()
     if str(resolved) not in _VERIFIED_BACKUPS:
@@ -251,62 +487,49 @@ def clean_test_data(path: str | Path) -> dict[str, int]:
             "Сначала выполните фазу backup."
         )
 
-    _guard_writable(resolved)
-    connection = _connect(resolved)
-    deleted: dict[str, int] = {}
-    anchored: dict[str, int] = {}
+    ensure_service_stopped(resolved)
+
+    # Новая база — временный файл в том же каталоге (атомарный replace).
+    staging = resolved.with_name(resolved.name + ".rebuild-" + _utc_stamp())
     try:
-        cursor = _writing_transaction(connection)
-        if cursor is None:
-            raise MaintenanceError("База занята: блокировка записи не взята.")
-        try:
-            present = [
-                table
-                for table in TEST_DATA_TABLES_CHILDREN_FIRST
-                if not _missing_tables(connection, (table,))
-            ]
-            for table in present:
-                if table in IMMUTABLE_JOURNAL_TABLES:
-                    # Журналы истории схема запрещает очищать триггерами;
-                    # их строка-счётчик проверяется отдельно (см. ниже).
-                    continue
-                # Строки, на которые ссылаются неизменяемые журналы
-                # (FK RESTRICT), удаляем построчно, пропуская якорные.
-                # Триггер бизнес-логики (например, system-кирпичик) — тоже
-                # «якорная» строка: IntegrityError = строка остаётся.
-                remaining = 0
-                rows = connection.execute(
-                    f"SELECT rowid FROM {table}"  # noqa: S608 — имя из константы
-                ).fetchall()
-                for row in rows:
-                    try:
-                        connection.execute(
-                            f"DELETE FROM {table} WHERE rowid = ?",
-                            (row[0],),
-                        )
-                        deleted[table] = deleted.get(table, 0) + 1
-                    except sqlite3.IntegrityError:
-                        remaining += 1
-                if remaining:
-                    anchored[table] = remaining
-            # Системные таблицы (schema_migrations) не трогаем: совместимость
-            # схемы. Таблица users может остаться непустой: строки-якоря
-            # неизменяемых журналов (RESTRICT) защищают часть пользователей.
-            connection.execute("COMMIT")
-        except BaseException:
-            connection.execute("ROLLBACK")
-            raise
+        bootstrap_fresh_database(staging)
+        print("[4/6] Bootstrap новой базы завершён (init_db).")
+        verification = verify_rebuilt_database(
+            staging,
+            expected_version=DEFAULT_MIGRATIONS[-1].version,
+            system_brick_codes=SYSTEM_BRICK_CODES,
+        )
+        migrations_applied = verification["migrations"]
+        brick_codes = verification["system_bricks"]
+        assert isinstance(migrations_applied, list)  # узкий тип для отчёта
+        assert isinstance(brick_codes, list)  # узкий тип для отчёта
+        print(
+            f"[5/6] Верификация новой базы: миграции 1..{len(migrations_applied)}, "
+            f"системных кирпичиков {len(brick_codes)}, "
+            "пользовательские счётчики нулевые."
+        )
+        _detach_sidecars(resolved)
+        replaced = _atomic_replace(resolved, staging)
+        print(f"[6/6] Атомарная замена выполнена. Прежняя база: {replaced}")
+        return {
+            "mode": "rebuild",
+            "replaced_to": str(replaced),
+            "migrations": migrations_applied,
+            "system_bricks": brick_codes,
+        }
     finally:
-        connection.close()
-    if anchored:
-        print("[3/4] Якорные строки (системные объекты/журналы) оставлены:")
-        for table, count in sorted(anchored.items()):
-            print(f"      {table}: {count}")
-    print("[3/4] Тестовые данные очищены.")
-    return deleted
+        # staging удалён заменой; при сбое до замены файл остаётся только
+        # если bootstrap не успел его создать — удалять нечего. Файл,
+        # созданный bootstrap, при сбое верификации удаляется здесь:
+        # это артефакт этого запуска, не пользовательские данные.
+        if staging.exists():
+            try:
+                staging.unlink()
+            except OSError:
+                pass
 
 
-# --- Фаза 4: повторная проверка ------------------------------------------
+# --- Фаза verify (после замены) ------------------------------------------
 
 
 def verify_after_clean(path: str | Path) -> str:
@@ -319,26 +542,8 @@ def verify_after_clean(path: str | Path) -> str:
     """
     resolved = Path(path).resolve()
     integrity = check_integrity(resolved)
-
-    env = os.environ.copy()
-    env["DATABASE_URL"] = "sqlite:///" + str(resolved)
-    env.setdefault(
-        "TELEGRAM_BOT_TOKEN", "123456789:FIXTUREFAKETOKENforTestsOnly00000000"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", "from database import init_db; init_db()"],
-        cwd=str(APP_DIR),
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    if result.returncode != 0:
-        raise MaintenanceError(
-            "Smoke-запуск init_db после очистки упал:\n"
-            f"stdout: {result.stdout}\nstderr: {result.stderr}"
-        )
-    print(f"[4/4] Повторная проверка: integrity={integrity}, smoke-запуск ok.")
+    _run_init_db_subprocess(resolved, timeout=120)
+    print(f"[6/6] Smoke-запуск init_db ok, integrity={integrity}.")
     return integrity
 
 
@@ -347,31 +552,45 @@ def verify_after_clean(path: str | Path) -> str:
 
 def run_maintenance(path: str | Path, *, clean: bool = True) -> dict[str, object]:
     """
-    Полный цикл обслуживания: 1) целостность, 2) бэкап, 3) очистка,
-    4) повторная проверка. При clean=False выполняются фазы 1–2
-    (отчёт без очистки — для проверки механизма).
+    Полный цикл обслуживания:
+      report:  1) целостность, 2) проверенный WAL-бэкап + счётчики
+               пользовательских таблиц (read-only);
+      clean:   то же + 3) служба остановлена, 4) bootstrap новой базы,
+               5) верификация, 6) атомарная замена + smoke-запуск.
 
     Рабочая база по умолчанию: обслуживание без `DB=` — это утверждённая
     владельцем релизная очистка тестовых данных Poster/post_bot.db.
-    Проверка механизма (эта задача) выполнялась только на временных
-    копиях в /tmp/opencode с явным DB=.
+    Проверка механизма выполняется только на временных базах с явным DB=.
     """
     resolved = Path(path).resolve()
     if not resolved.exists() or resolved.stat().st_size == 0:
         raise MaintenanceError(f"База не найдена или пуста: {resolved}")
 
-    print(f"[1/4] База: {resolved}")
+    print(f"[1/6] База: {resolved}")
     integrity = check_integrity(resolved)
-    print(f"[1/4] Целостность исходной базы: {integrity}")
+    print(f"[1/6] Целостность исходной базы: {integrity}")
 
     backup_path = backup_database(resolved)
     report: dict[str, object] = {"database": str(resolved), "backup": str(backup_path)}
 
-    if clean:
-        report["deleted"] = clean_test_data(resolved)
-        report["integrity_after"] = verify_after_clean(resolved)
-    else:
+    # Счётчики пользовательских сущностей — в обоих режимах: отчёт обязан
+    # показывать остаток тестовых данных ДО очистки (задание 1).
+    counts = user_table_counts(resolved)
+    report["user_counts_before"] = counts
+    print(f"[2/6] Счётчики пользовательских таблиц: {_format_counts(counts)}")
+
+    if not clean:
         report["cleaned"] = False
+        return report
+
+    report.update(clean_test_data(resolved))
+
+    # Пост-проверки результата (уже на новой базе): нулевые счётчики и
+    # smoke-запуск init_db.
+    counts_after = user_table_counts(resolved)
+    report["user_counts_after"] = counts_after
+    print("[6/6] Счётчики после очистки: " f"{_format_counts(counts_after)}")
+    report["integrity_after"] = verify_after_clean(resolved)
     return report
 
 
@@ -385,7 +604,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--skip-clean",
         action="store_true",
-        help="Только целостность и проверенный бэкап, без очистки.",
+        help="Только целостность, бэкап и счётчики, без очистки.",
     )
     args = parser.parse_args(argv)
     try:

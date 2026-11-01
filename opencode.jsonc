@@ -107,7 +107,12 @@
     //    для конкретных ролей (менеджер, tester на /tmp-базе) стоят
     //    в конце каждого профиля и выигрывают у deny выше; остальные
     //    роли не имеют исключений и наследуют этот deny.
-    { "action": "shell", "resource": "make db-maintain-report*", "effect": "deny" },
-    { "action": "shell", "resource": "make db-maintain-clean*", "effect": "deny" }
+    //    2026-11-01, владелец: build-агенту дополнительно разрешён
+    //    read-only отчёт (integrity_check + проверенный бэкап, без
+    //    очистки) — задание «довести очистку тестовой БД до
+    //    утверждённого контракта», п. 1. Очистка (clean) остаётся
+    //    запрещённой: точный allow на report стоит ПОСЛЕ deny на clean.
+    { "action": "shell", "resource": "make db-maintain-clean*", "effect": "deny" },
+    { "action": "shell", "resource": "make db-maintain-report*", "effect": "allow" }
   ]
 }
