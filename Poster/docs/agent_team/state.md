@@ -348,6 +348,27 @@ autoflush=False row.id=None и INSERT невидим SELECT'у вытеснен�
 регресс c6c мутационно подтверждён. Ревизор (повтор): APPROVED. Полный
 make check: Ran 2024 tests OK, ruff/black/mypy чисто.
 
+**P4 принят (2026-11-01, коммит 1bc5100, pushed).** Юмор: фразы вынесены в
+config/humor_phrases.yaml (отдельный каталог, 8 фраз, валидация по образцу
+ui_texts: битый/пустой/отсутствующий файл → встроенные DEFAULT_JOKES +
+WARNING, импорт не падает; reload_phrases; CLI python -m utils.ui_humor;
+HUMOR_PHRASES_PATH в .env.example). Механика не менялась (1% детерминированно,
+whitelist экранов; юмор не в анонсах/ошибках/алертах — подтверждено
+независимыми пробами Tester при HUMOR_RATE=1). Дефект D1 (найден Tester):
+фраза с <,>,& на экране шага фото ломала parse_mode=HTML → «Что-то пошло не
+так»; закрыт двумя слоями: экранирование _h() в wizard_photos.photo_step_text
+и _render_preview (обзор), валидатор FORBIDDEN_PHRASE_CHARS отклоняет такой
+файл → дефолты. Тесты мутационно подтверждены. Миноры P2 закрыты:
+docs/ui_texts.md без buttons.extras.add (+ раздел юмора), SCOPE_LABELS
+удалён (каскад: ключ wizard.module.mesta стал мёртвым — удалён из YAML и
+DEFAULTS синхронно, keys=1118), _render_extras при доменной ошибке —
+нейтральный wizard.extras.unavailable (no_extended только для «нет
+расширенного»). Новый тест test_poster2_24_p4_minors.py. Полный make check
+(финальный): Ran 2041 tests OK, ruff/black/mypy чисто, ui_texts ok
+keys=1118, humor ok phrases=8. Независимая приёмка Tester: юмор/миноры/
+инварианты P2+P3 — pass. Коммиты программы 2.4: c1ee52a (P1), 5dbd078 (P2),
+bf4b4a5 (P3), 1bc5100 (P4) — все pushed.
+
 ## Шаблон записи
 
 ```
