@@ -321,6 +321,33 @@ announcement_wizard.py:180; неточная формулировка ошибк
 [адрес_места] дают дружелюбный текст вместо алиаса (решение владельца).
 Коммиты: c1ee52a (P1), 5dbd078 (P2). Push: выполнен, оба.
 
+**P3 принят (2026-11-01, коммит bf4b4a5, pushed).** Меню и анонсы:
+main_menu_keyboard — 3 строки (create_place|create_template,
+announcements, manage|help), callback прежние; «Мои анонсы» без кнопки
+создания (aw_new-ветки обработчиков сохранены, кнопки нет), каждая запись —
+пара aw_open:<id> | aw_del:<id>, отдельный экран подтверждения
+(aw_del_yes/aw_del_no), Telegram-сообщения не удаляются (delete_message в
+новых путях отсутствует); удаление с проверкой владельца
+(delete_announcement, чужой = NotFound); устаревший aw_open — текст
+«Анонс больше не хранится…» (новый ключ anons_bolshe_ne_hranitsya; мёртвые
+chernovik_nayden_nedostupen/novyy_anons удалены, keys=1118 синхронно).
+Лимиты: MAX_ANNOUNCEMENT_DRAFTS=4/MAX_ANNOUNCEMENT_SENT=4, категории
+независимы (_draft_category_condition, isnot('sent') для NULL), вытеснение
+самой старой по (created_at, id), тихое, в транзакции создания/финализации
+(enforce_announcement_limits в _start_place_announcement,
+_start_personal_announcement, mark_announcement_publication_sent;
+protect_ids). Автоочистка: cleanup_old_announcements(session, now, days=30),
+граница >= 30 суток (создана ровно 30 суток назад — удаляется); bot.py:
+post_init_announcement_cleanup — JobQueue при наличии APScheduler, иначе
+фоновая asyncio-задача раз в час, post_shutdown отменяет, ошибки логируются
+и не роняют бота. Тест-контракт: test_poster2_24_p3_announcements_tester.py
+(12 тестов; c6c — прод-конфиг autoflush=False). Ревизия: найден и закрыт
+MAJOR — в _start_place_announcement enforce вызывался до flush: при
+autoflush=False row.id=None и INSERT невидим SELECT'у вытеснения → лимит
+не соблюдался (устойчивое 5); фикс: session.flush()+assert до enforce,
+регресс c6c мутационно подтверждён. Ревизор (повтор): APPROVED. Полный
+make check: Ran 2024 tests OK, ruff/black/mypy чисто.
+
 ## Шаблон записи
 
 ```
