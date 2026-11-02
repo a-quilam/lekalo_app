@@ -325,7 +325,7 @@ class LoadAndValidateTests(_TempCatalog):
         self.assertTrue(any("wizard.question.header" in item for item in report.errors))
         self.assertEqual(
             ui_texts.tr("wizard.question.header", step=1, total=2, title="Дата"),
-            "🧱 Вопрос 1 из 2: Дата",
+            "🧩 Вопрос 1 из 2: Дата",
         )
 
     def test_unknown_key_is_warning_not_error(self) -> None:
@@ -359,7 +359,7 @@ class TrRenderingTests(_TempCatalog):
         ui_texts.reload_texts(CATALOG_PATH)
         self.assertEqual(
             ui_texts.tr("wizard.question.header", step=2, total=5, title="Дата"),
-            "🧱 Вопрос 2 из 5: Дата",
+            "🧩 Вопрос 2 из 5: Дата",
         )
         self.assertEqual(
             ui_texts.tr("wizard.photos.counter", count=3, limit=10),
@@ -400,7 +400,7 @@ class TrRenderingTests(_TempCatalog):
         ui_texts.reload_texts(CATALOG_PATH)
         with self.assertLogs("utils.ui_texts", level=logging.ERROR) as logs:
             text = ui_texts.tr("wizard.question.header", step=1, total=3)
-        self.assertEqual(text, "🧱 Вопрос 1 из 3: ")
+        self.assertEqual(text, "🧩 Вопрос 1 из 3: ")
         self.assertIn("title", "".join(logs.output))
 
     def test_missing_variable_never_raises(self) -> None:
@@ -421,7 +421,7 @@ class TrRenderingTests(_TempCatalog):
         ui_texts.reload_texts(CATALOG_PATH)
         self.assertEqual(
             ui_texts.tr("wizard.question.header", step=1, total=1, title=None),
-            "🧱 Вопрос 1 из 1: ",
+            "🧩 Вопрос 1 из 1: ",
         )
 
     def test_tr_safe_does_not_double_escape(self) -> None:

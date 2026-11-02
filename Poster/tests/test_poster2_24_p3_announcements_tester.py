@@ -87,7 +87,7 @@ LIST_HEAD = "📂 Мои анонсы"
 DRAFT_STATUS = "черновик"
 SENT_STATUS = "готовый анонс отправлен"
 DELIVERED_HEAD = "✅ Анонс готов."
-QUESTION_HEAD = "🧱 Вопрос"
+QUESTION_HEAD = "🧩 Вопрос"
 INTERNAL_FRAGMENT = "Что-то пошло не так"
 GONE_FRAGMENTS = ("больше не хранится", "не найден", "больше недоступ", "больше нет")
 

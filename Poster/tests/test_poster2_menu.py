@@ -790,8 +790,32 @@ class ManageSectionTests(unittest.TestCase):
         buttons = h.screen_buttons()
         self.assertIn(("📍 Площадки", "manage_places"), buttons)
         self.assertIn(("📝 Шаблоны", "manage_templates"), buttons)
-        self.assertIn(("🧱 Кирпичики", "manage_bricks"), buttons)
+        self.assertIn(("🧩 Кирпичики", "manage_bricks"), buttons)
         self.assertNotIn(("🛡 Администрирование", "admin_panel"), buttons)
+
+    @scenario_test
+    async def test_manage_is_compact_two_buttons_per_row(self, h):
+        """Poster 2.5 §10: компактная раскладка без пустых кнопок."""
+        await h.text("/start")
+        await h.callback("manage")
+        rows = [
+            [(button.text, button.callback_data) for button in row]
+            for row in h.screen().get("reply_markup").inline_keyboard
+        ]
+        self.assertEqual(
+            [[data for _label, data in row] for row in rows],
+            [
+                ["manage_places"],
+                ["manage_templates", "manage_bricks"],
+                ["main_menu"],
+            ],
+            f"«Управление» — четыре строки без прав: {rows}",
+        )
+        self.assertEqual([label for label, _data in rows[0]], ["📍 Площадки"])
+        self.assertEqual(
+            [label for label, _data in rows[1]], ["📝 Шаблоны", "🧩 Кирпичики"]
+        )
+        self.assertEqual([label for label, _data in rows[2]], ["🏠 В меню"])
 
     @scenario_test
     async def test_manage_shows_admin_for_superadmin(self, h):
@@ -799,6 +823,20 @@ class ManageSectionTests(unittest.TestCase):
             await h.text("/start", user_id=SUPERADMIN_TG)
             await h.callback("manage", user_id=SUPERADMIN_TG)
             self.assertIn(("🛡 Администрирование", "admin_panel"), h.screen_buttons())
+            rows = [
+                [button.callback_data for button in row]
+                for row in h.screen().get("reply_markup").inline_keyboard
+            ]
+            self.assertEqual(
+                rows,
+                [
+                    ["manage_places"],
+                    ["manage_templates", "manage_bricks"],
+                    ["admin_panel"],
+                    ["main_menu"],
+                ],
+                "Poster 2.5 §10: администрирование — отдельной строкой над «В меню»",
+            )
 
     @scenario_test
     async def test_admin_command_works_for_place_admin(self, h):

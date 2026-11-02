@@ -243,7 +243,7 @@ class FullPathTests(unittest.TestCase):
             self.assertNotIn("Шаг 2", text)
             self.assertNotIn("Выберите шаблон", text)
             self.assertNotIn("подтверд", text.lower())
-        self.assertIn("🧱 Вопрос 1", h.screen_text())
+        self.assertIn("🧩 Вопрос 1", h.screen_text())
 
         drafts = _drafts(h)
         self.assertEqual(len(drafts), 1)
@@ -261,7 +261,7 @@ class FullPathTests(unittest.TestCase):
         before = len(h.screens())
         await h.callback(f"tp_pick:{template_id}")
         self.assertEqual(len(h.screens()) - before, 1)
-        self.assertIn("🧱 Вопрос 1", h.screen_text())
+        self.assertIn("🧩 Вопрос 1", h.screen_text())
         drafts = _drafts(h)
         self.assertEqual(len(drafts), 1)
         self.assertEqual(drafts[0].origin, ORIGIN_PERSONAL)
@@ -315,7 +315,7 @@ class MyAnnouncementsTests(unittest.TestCase):
         self.assertEqual(len(drafts), 2)
         second = next(d for d in drafts if d.draft_id != first.draft_id)
         self.assertNotEqual(first.draft_id, second.draft_id)
-        self.assertIn("🧱 Вопрос 1", h.screen_text())
+        self.assertIn("🧩 Вопрос 1", h.screen_text())
 
         await h.callback("main_menu")
         await h.callback("my_announcements")
@@ -328,7 +328,7 @@ class MyAnnouncementsTests(unittest.TestCase):
 
         # незавершённый B продолжается с того же шага
         await h.callback(f"aw_open:{second.draft_id}")
-        self.assertIn("🧱 Вопрос 1", h.screen_text())
+        self.assertIn("🧩 Вопрос 1", h.screen_text())
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), 2)
 
 
@@ -343,7 +343,7 @@ class ManageTests(unittest.TestCase):
         await h.callback("manage")
         labels = [label for label, _ in _btns(h)]
         self.assertNotIn("🛡 Администрирование", labels)
-        for expected in ("📍 Площадки", "📝 Шаблоны", "🧱 Кирпичики"):
+        for expected in ("📍 Площадки", "📝 Шаблоны", "🧩 Кирпичики"):
             self.assertIn(expected, labels)
 
         await h.text("/admin")
@@ -381,7 +381,7 @@ class IdorTests(unittest.TestCase):
         await h.callback("main_menu")
         await h.callback(f"pl_pick:{foreign_place}", user_id=OTHER_TG)
         foreign_draft = _drafts(h, OTHER_TG)[0]
-        self.assertIn("🧱 Вопрос 1", h.screen_text())
+        self.assertIn("🧩 Вопрос 1", h.screen_text())
 
         await h.callback("main_menu")
         await h.callback("my_announcements")
@@ -391,7 +391,7 @@ class IdorTests(unittest.TestCase):
             [d for _l, d in _btns(h) if d],
         )
         await h.callback(f"aw_open:{foreign_draft.draft_id}")
-        self.assertNotIn("🧱 Вопрос 1", h.screen_text())
+        self.assertNotIn("🧩 Вопрос 1", h.screen_text())
         self.assertNotIn("Чужое место", h.screen_text())
 
 
@@ -456,7 +456,7 @@ class LongNameTests(unittest.TestCase):
             )
             self.assertLessEqual(len(label), 64, f"подпись > 64: {label!r}")
         await h.callback(f"pl_pick:{place_id}")
-        self.assertIn("🧱 Вопрос 1", h.screen_text())
+        self.assertIn("🧩 Вопрос 1", h.screen_text())
 
         await h.callback("main_menu")
         await h.callback("pick_template")
@@ -464,7 +464,7 @@ class LongNameTests(unittest.TestCase):
             self.assertLessEqual(len(data.encode()), 64)
             self.assertLessEqual(len(label), 64, f"подпись > 64: {label!r}")
         await h.callback(f"tp_pick:{template_id}")
-        self.assertIn("🧱 Вопрос 1", h.screen_text())
+        self.assertIn("🧩 Вопрос 1", h.screen_text())
 
 
 @unittest.skipIf(

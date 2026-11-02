@@ -213,6 +213,42 @@ SYSTEM_BRICK_CODES = tuple(item.code for item in SYSTEM_BRICKS)
 SYSTEM_BRICK_IDS = tuple(item.id for item in SYSTEM_BRICKS)
 SYSTEM_BRICKS_BY_CODE = {item.code: item for item in SYSTEM_BRICKS}
 
+# Poster 2.5 §9: индивидуальные эмодзи системных кирпичиков. Это ТОЛЬКО
+# оформление показа названия (карточки, списки, предложения, вопросы) —
+# каталог, коды, названия и модель данных не меняются. Пользовательские
+# кирпичики остаются без эмодзи: редактора эмодзи нет.
+SYSTEM_BRICK_EMOJIS: dict[str, str] = {
+    "название": "🏷",
+    "дата": "📅",
+    "время_начала": "🕒",
+    "время_окончания": "🕒",
+    "место": "📍",
+    "ссылка_места": "🔗",
+    "описание": "📝",
+    "контакт": "☎️",
+    "адрес": "🗺",
+    "город": "🌆",
+}
+
+
+def system_brick_emoji(code: object) -> str:
+    """Эмодзи системного кирпичика по коду; для прочих — пустая строка."""
+    if not isinstance(code, str):
+        return ""
+    return SYSTEM_BRICK_EMOJIS.get(code, "")
+
+
+def brick_title_display(title: object, code: object) -> str:
+    """
+    Название кирпичика для показа пользователю: эмодзи только у системных.
+
+    Возвращает уже готовый для экрана plain-текст без эмодзи, если код не
+    системный: список пользовательских кирпичиков остаётся прежним.
+    """
+    text = "" if title is None else str(title)
+    emoji = system_brick_emoji(code)
+    return f"{emoji} {text}" if emoji else text
+
 
 # --- Технические коды и человекочитаемые названия --------------------------
 

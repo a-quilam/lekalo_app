@@ -110,7 +110,7 @@ DEFAULTS: dict[str, str] = {
         )
     ),
     # --- конструктор: вопрос, календарь, время ------------------------------
-    "wizard.question.header": "🧱 Вопрос {step} из {total}: {title}",
+    "wizard.question.header": "🧩 Вопрос {step} из {total}: {title}",
     "wizard.question.description_html": "📝 <code>{description}</code>",
     "wizard.question.optional": "Это поле можно пропустить.",
     "wizard.question.current_value": "Текущее значение: {value}",
@@ -174,7 +174,7 @@ DEFAULTS: dict[str, str] = {
             "Выберите, что изменить. Каждое изменение сразу обновляет анонс в чате: новая версия заменяет предыдущую."
         )
     ),
-    "wizard.extras.title": "🧱 Дополнительные поля",
+    "wizard.extras.title": "🧩 Дополнительные поля",
     "wizard.extras.intro": (
         (
             "Эти поля относятся только к текущему анонсу. Шаблон останется прежним.\n"
@@ -203,7 +203,7 @@ DEFAULTS: dict[str, str] = {
         "Значение поля «{title}» оставлено как есть."
     ),
     # --- кирпичики: хаб, архив, пустые состояния ----------------------------
-    "bricks.hub.title_html": "🧱 <b>Мои кирпичики</b>",
+    "bricks.hub.title_html": "🧩 <b>Мои кирпичики</b>",
     "bricks.hub.intro": (
         "Кирпичик — это поле для шаблона анонса, например «Ведущий» или «Цена». У него есть тип: текст, число, дата и другие. Сам по себе кирпичик пока не добавляется в анонсы и шаблоны."
     ),
@@ -382,7 +382,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.main.help": "❓ Помощь",
     "buttons.manage.places": "📍 Площадки",
     "buttons.manage.templates": "📝 Шаблоны",
-    "buttons.manage.bricks": "🧱 Кирпичики",
+    "buttons.manage.bricks": "🧩 Кирпичики",
     "buttons.manage.admin": "🛡 Администрирование",
     "buttons.nav.main_menu": "🏠 В меню",
     "buttons.nav.back": "◀️ Назад",
@@ -395,7 +395,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.finished.menu": "🏠 В меню",
     "buttons.finished.data": "📝 Данные",
     "buttons.finished.photos": "🖼 Фото ({count})",
-    "buttons.finished.extras_edit": "🧱 Дополнительные поля",
+    "buttons.finished.extras_edit": "🧩 Дополнительные поля",
     "buttons.finished.main_menu": "🏠 В меню",
     "buttons.extras.edit": "✏️ {number}. {title}",
     "buttons.extras.delete": "🗑 {number}",
@@ -425,7 +425,7 @@ DEFAULTS: dict[str, str] = {
     # Poster 2.4 P1: административный редактор ОПИСАНИЯ кирпичика. Меняются
     # только слова описания; название, код и тип остаются прежними.
     "admin.brick_card.kartochka_kirpichika_html": (
-        "🧱 <b>{title}</b>\n\n"
+        "🧩 <b>{title}</b>\n\n"
         "Код: <code>[{code}]</code>\n"
         "Тип: {type_title}\n"
         "Область: {scope_label}\n"
@@ -458,7 +458,7 @@ DEFAULTS: dict[str, str] = {
         "Кирпичик не найден или больше недоступен."
     ),
     "admin.brick_list.kirpichiki_html": (
-        "🧱 <b>Кирпичики</b>\n\n{scope_line}\n\n"
+        "🧩 <b>Кирпичики</b>\n\n{scope_line}\n\n"
         "Выберите кирпичик: здесь меняется только описание. Название, код и "
         "тип кирпичика остаются прежними."
     ),
@@ -745,7 +745,7 @@ DEFAULTS: dict[str, str] = {
     "admin.proposal_admin_card.oboznachenie_html": "Обозначение: <code>[{code}]</code>",
     "admin.proposal_admin_card.opisanie": "Описание: {description}",
     "admin.proposal_admin_card.otpravleno": "Отправлено: {date_label}",
-    "admin.proposal_admin_card.predlozhenie_kirpichika_html": "🧱 <b>Предложение кирпичика</b>",
+    "admin.proposal_admin_card.predlozhenie_kirpichika_html": "🧩 <b>Предложение кирпичика</b>",
     "admin.proposal_admin_card.predlozhenie_otkloneno_bez": "Предложение отклонено. Личный кирпичик остался прежним.",
     "admin.proposal_admin_card.predlozhenie_otozvano_avtorom": "Автор отозвал предложение. Принять решение по нему уже нельзя.",
     "admin.proposal_admin_card.prichina": "Причина: {decision_note}",
@@ -757,7 +757,7 @@ DEFAULTS: dict[str, str] = {
     "admin.proposal_admin_list.globalnye_predlozheniya": "🌍 Глобальные предложения",
     "admin.proposal_admin_list.k_mestu": "◀️ К месту",
     "admin.proposal_admin_list.ozhidayuschie_predlozheniya_mesta": "Предложения для места «{canonical_name}», по которым ещё нет решения. Здесь показаны предложения только для этого места.",
-    "admin.proposal_admin_list.predlozheniya_kirpichikov": "🧱 Предложения кирпичиков",
+    "admin.proposal_admin_list.predlozheniya_kirpichikov": "🧩 Предложения кирпичиков",
     "admin.proposal_admin_list.predlozheniya_mestam": "📍 Предложения по местам",
     "admin.proposal_admin_list.predlozheniya_novyh_kirpichikov": "Предложения кирпичиков для всей системы. Рассмотреть их может только суперадминистратор.",
     "admin.proposal_admin_list.vse_ozhidayuschie_predlozheniya": "Здесь собраны предложения для всех существующих мест, которые ещё ждут решения. Предложения для всей системы находятся в отдельном разделе.",
@@ -933,7 +933,7 @@ DEFAULTS: dict[str, str] = {
         "Тип изменить нельзя. Если нужен другой, создайте новый кирпичик. При редактировании этот кирпичик сохранит свой ID."
     ),
     "bricks.build.oboznachenie_tip_opisanie_oblast_html": (
-        "🧱 <b>{title}</b>\n\nОбозначение: <code>[{code}]</code>\n"
+        "🧩 <b>{title}</b>\n\nОбозначение: <code>[{code}]</code>\n"
         "Тип: {type_title}\nОписание: {description}\n"
         "Доступ: только вам\nСтатус: {state_label}\n"
         "Настройки: {settings_text}\n\n"
@@ -1009,7 +1009,7 @@ DEFAULTS: dict[str, str] = {
     "bricks.module.chislo_neobyazatelnymi_granicami": "Число. При желании можно задать минимум, максимум и подпись.",
     "bricks.module.data": "Дата",
     "bricks.module.data_sobytiya_vvode_budet": "Дата события. Её можно выбрать в календаре.",
-    "bricks.module.kirpichiki_predlozheniya": "🧱 Кирпичики → 📨 Предложения",
+    "bricks.module.kirpichiki_predlozheniya": "🧩 Кирпичики → 📨 Предложения",
     "bricks.module.korotkiy_tekst": "Короткий текст",
     "bricks.module.neskolko_strok_opisanie": "Несколько строк: описание, примечание, программа.",
     "bricks.module.odin_neskolko_variantov_vashego": "Один или несколько вариантов из вашего списка.",
@@ -1108,7 +1108,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.globalnye_predlozheniya": "🌍 Глобальные предложения ({system_pending})",
     "buttons.admin.izmenit_gorod": "🏙 Изменить город",
     "buttons.admin.izmenit_nazvanie": "🏷 Изменить название",
-    "buttons.admin.kirpichiki": "🧱 Кирпичики",
+    "buttons.admin.kirpichiki": "🧩 Кирпичики",
     "buttons.admin.k_konfliktam": "◀️ К конфликтам",
     "buttons.admin.k_ocheredi": "◀️ К очереди",
     "buttons.admin.k_spisku_mest": "◀️ К списку мест",
@@ -1128,7 +1128,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.pereklyuchitsya_globalnyy": "🌍 Переключиться на глобальный",
     "buttons.admin.podtverdit": "✅ Подтвердить",
     "buttons.admin.podtverzhdayu": "✅ Подтверждаю",
-    "buttons.admin.predlozheniya_kirpichikov": "🧱 Предложения кирпичиков ({pending_proposals})",
+    "buttons.admin.predlozheniya_kirpichikov": "🧩 Предложения кирпичиков ({pending_proposals})",
     "buttons.admin.predlozheniya_mestam": "📍 Предложения по местам ({places_pending})",
     "buttons.admin.redaktirovat_mesto": "✏️ Редактировать место",
     "buttons.admin.snyat_administratora": "🚫 Снять администратора",
@@ -1589,7 +1589,7 @@ DEFAULTS: dict[str, str] = {
     "wizard.render_publish_status.tekst_znacheniya_kirpichikov": "Для отправки сохранены текст, заполненные поля и фото на момент её начала. Если Telegram принял последнюю часть, но подтверждение не пришло, повторная отправка может создать дубль. Это ограничение Telegram. Ссылки на сообщения с подтверждённой доставкой сохранены.",
     "wizard.render_publish_status.telegram_podtverdil_otpravku_ni": "❌ Telegram не подтвердил ни одного шага отправки. Подтверждения доставки нет.",
     "wizard.render_publish_status.v_chate_ostaetsya_proshlaya": "Предыдущая версия анонса остаётся в чате, пока доставка новой версии не будет подтверждена полностью.",
-    "wizard.render_question_manager.polya_anonsa": "🧱 Поля анонса",
+    "wizard.render_question_manager.polya_anonsa": "🧩 Поля анонса",
     "wizard.render_question_manager.vyberite_pole_chtoby_izmenit": "Выберите поле, которое хотите заполнить или изменить. Необязательные поля можно пропустить.",
     "wizard.render_search_prompt.poisk_mesta_otpravte_nazvanie": (
         "🔎 Поиск места\n\n"
@@ -1707,7 +1707,7 @@ DEFAULTS: dict[str, str] = {
     "bricks.build.tip_redaktirovanii_menyaetsya": "\n\nИзменить тип этого кирпичика нельзя.",
     "bricks.proposal_list.vy_otpravlyali_predlozheniy": (
         "\n\n"
-        "Вы пока не отправляли предложения. Откройте «🧱 Кирпичики» и нажмите «📨» рядом с нужным кирпичиком."
+        "Вы пока не отправляли предложения. Откройте «🧩 Кирпичики» и нажмите «📨» рядом с нужным кирпичиком."
     ),
     "bricks.proposal_list.vy_otpravlyali_predlozheniy_2": (
         "\n\n"

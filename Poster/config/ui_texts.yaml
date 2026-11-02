@@ -37,7 +37,7 @@
 
 # --- Конструктор: вопросы, календарь, время, фото, завершение ---
 # {step}, {total} — номера шагов (с единицы), {title} — название кирпичика.
-"wizard.question.header": "🧱 Вопрос {step} из {total}: {title}"
+"wizard.question.header": "🧩 Вопрос {step} из {total}: {title}"
 # Описание задаёт человек: {description} экранируется, <code> — наша разметка.
 "wizard.question.description_html": "📝 <code>{description}</code>"
 "wizard.question.optional": "Это поле можно пропустить."
@@ -85,7 +85,7 @@
 "wizard.finished.pending": "✏️ Изменения пока не отправлены в чат."
 "wizard.finished.edit_text": "✏️ Изменить анонс\n\nВыберите, что изменить. Каждое изменение сразу обновляет анонс в чате: новая версия заменяет предыдущую."
 # H3: экран дополнительных полей (вход с экрана правки готового анонса).
-"wizard.extras.title": "🧱 Дополнительные поля"
+"wizard.extras.title": "🧩 Дополнительные поля"
 "wizard.extras.intro": "Эти поля относятся только к текущему анонсу. Шаблон останется прежним.\nКаждое изменение сразу обновляет анонс в чате: новая версия заменяет предыдущую."
 "wizard.extras.empty": "Дополнительных полей пока нет."
 "wizard.extras.no_extended": "В этом шаблоне дополнительных полей нет: у него нет расширенной версии текста."
@@ -95,7 +95,7 @@
 "wizard.skip_question.znachenie_ostavleno": "Значение поля «{title}» оставлено как есть."
 
 # --- Кирпичики: хаб, архив, пустое состояние ---
-"bricks.hub.title_html": "🧱 <b>Мои кирпичики</b>"
+"bricks.hub.title_html": "🧩 <b>Мои кирпичики</b>"
 "bricks.hub.intro": "Кирпичик — это поле для шаблона анонса, например «Ведущий» или «Цена». У него есть тип: текст, число, дата и другие. Сам по себе кирпичик пока не добавляется в анонсы и шаблоны."
 "bricks.hub.active_count": "Активных кирпичиков: {count}."
 "bricks.hub.propose_hint": "Чтобы предложить кирпичик для места или всей системы, нажмите «📨» рядом с его названием."
@@ -187,7 +187,7 @@
 "buttons.main.help": "❓ Помощь"
 "buttons.manage.places": "📍 Площадки"
 "buttons.manage.templates": "📝 Шаблоны"
-"buttons.manage.bricks": "🧱 Кирпичики"
+"buttons.manage.bricks": "🧩 Кирпичики"
 "buttons.manage.admin": "🛡 Администрирование"
 "buttons.nav.main_menu": "🏠 В меню"
 "buttons.nav.back": "◀️ Назад"
@@ -202,7 +202,7 @@
 # {count} — число фотографий анонса в скобках.
 "buttons.finished.photos": "🖼 Фото ({count})"
 # H3: вход в список дополнительных полей с главного экрана правки.
-"buttons.finished.extras_edit": "🧱 Дополнительные поля"
+"buttons.finished.extras_edit": "🧩 Дополнительные поля"
 # Кнопка «добавить поле» на экране дополнительных полей.
 # {number} и {title} — позиция и название дополнительного поля.
 "buttons.extras.edit": "✏️ {number}. {title}"
@@ -233,7 +233,7 @@
 "admin.assign_search.zameny_administratora": "замены администратора"
 # Poster 2.4 P1: административный редактор ОПИСАНИЯ кирпичика. Меняются
 # только слова описания; название, код и тип остаются прежними.
-"admin.brick_card.kartochka_kirpichika_html": "🧱 <b>{title}</b>\n\nКод: <code>[{code}]</code>\nТип: {type_title}\nОбласть: {scope_label}\nСтатус: {status_label}\nОписание: {description_block}\n\nЗдесь меняется только описание — подсказка автору анонса. Название, код и тип кирпичика остаются прежними."
+"admin.brick_card.kartochka_kirpichika_html": "🧩 <b>{title}</b>\n\nКод: <code>[{code}]</code>\nТип: {type_title}\nОбласть: {scope_label}\nСтатус: {status_label}\nОписание: {description_block}\n\nЗдесь меняется только описание — подсказка автору анонса. Название, код и тип кирпичика остаются прежними."
 "admin.brick_card.mesto_bez_nazvaniya": "Без названия"
 "admin.brick_card.oblast_lichno": "Личный"
 "admin.brick_card.oblast_mesto": "Площадка «{place}»"
@@ -246,7 +246,7 @@
 "admin.brick_description_input.ne_udalos_sohranit": "Из-за ошибки описание не сохранено. Кирпичик остался прежним. Попробуйте ещё раз."
 "admin.brick_description_input.sohraneno": "✅ Описание сохранено."
 "admin.brick_list.kirpichik_nedostupen": "Кирпичик не найден или больше недоступен."
-"admin.brick_list.kirpichiki_html": "🧱 <b>Кирпичики</b>\n\n{scope_line}\n\nВыберите кирпичик: здесь меняется только описание. Название, код и тип кирпичика остаются прежними."
+"admin.brick_list.kirpichiki_html": "🧩 <b>Кирпичики</b>\n\n{scope_line}\n\nВыберите кирпичик: здесь меняется только описание. Название, код и тип кирпичика остаются прежними."
 "admin.brick_list.mesto_line": "Место: {place}."
 "admin.brick_list.net_kirpichikov": "Кирпичиков пока нет."
 "admin.brick_list.sistema_line": "Системные кирпичики: общий каталог."
@@ -377,7 +377,7 @@
 "admin.proposal_admin_card.oboznachenie_html": "Обозначение: <code>[{code}]</code>"
 "admin.proposal_admin_card.opisanie": "Описание: {description}"
 "admin.proposal_admin_card.otpravleno": "Отправлено: {date_label}"
-"admin.proposal_admin_card.predlozhenie_kirpichika_html": "🧱 <b>Предложение кирпичика</b>"
+"admin.proposal_admin_card.predlozhenie_kirpichika_html": "🧩 <b>Предложение кирпичика</b>"
 "admin.proposal_admin_card.predlozhenie_otkloneno_bez": "Предложение отклонено. Личный кирпичик остался прежним."
 "admin.proposal_admin_card.predlozhenie_otozvano_avtorom": "Автор отозвал предложение. Принять решение по нему уже нельзя."
 "admin.proposal_admin_card.prichina": "Причина: {decision_note}"
@@ -389,7 +389,7 @@
 "admin.proposal_admin_list.globalnye_predlozheniya": "🌍 Глобальные предложения"
 "admin.proposal_admin_list.k_mestu": "◀️ К месту"
 "admin.proposal_admin_list.ozhidayuschie_predlozheniya_mesta": "Предложения для места «{canonical_name}», по которым ещё нет решения. Здесь показаны предложения только для этого места."
-"admin.proposal_admin_list.predlozheniya_kirpichikov": "🧱 Предложения кирпичиков"
+"admin.proposal_admin_list.predlozheniya_kirpichikov": "🧩 Предложения кирпичиков"
 "admin.proposal_admin_list.predlozheniya_mestam": "📍 Предложения по местам"
 "admin.proposal_admin_list.predlozheniya_novyh_kirpichikov": "Предложения кирпичиков для всей системы. Рассмотреть их может только суперадминистратор."
 "admin.proposal_admin_list.vse_ozhidayuschie_predlozheniya": "Здесь собраны предложения для всех существующих мест, которые ещё ждут решения. Предложения для всей системы находятся в отдельном разделе."
@@ -500,7 +500,7 @@
 "bricks.build.1_nazvat_kirpichik_naprimer_html": "1️⃣ <b>Как назвать кирпичик?</b>\n\nНапример, «Ведущий мероприятия», «Формат участия» или «Стоимость билета».\n\nЭто название увидит автор анонса в списке и на экране вопроса. Код и описание добавим на следующих шагах."
 "bricks.build.3_opisanie_avtora_anonsa_html": "3️⃣ <b>Подсказка для автора анонса</b>\n\n{shown}Напишите, что нужно указать в этом поле. Например, «Имя и фамилия ведущего, без должности» или «Цена в рублях, только число».\n\nПодсказка будет видна при заполнении поля. В текст анонса она не попадёт и шаблон не изменит.\n\nПодсказку можно не добавлять."
 "bricks.build.izmenit_kirpichik_nazvanie_html": "✏️ <b>Изменить кирпичик</b>\n\nНазвание: {h}\nОбозначение: <code>[{h_2}]</code>\nТип: {type_title}\nОписание: {get}\nНастройки: {settings_text}\n\nТип изменить нельзя. Если нужен другой, создайте новый кирпичик. При редактировании этот кирпичик сохранит свой ID."
-"bricks.build.oboznachenie_tip_opisanie_oblast_html": "🧱 <b>{title}</b>\n\nОбозначение: <code>[{code}]</code>\nТип: {type_title}\nОписание: {description}\nДоступ: только вам\nСтатус: {state_label}\nНастройки: {settings_text}\n\nЗдесь вы настраиваете поле. Значение для него вводится при создании анонса по шаблону. Сам по себе кирпичик в анонсы не добавляется."
+"bricks.build.oboznachenie_tip_opisanie_oblast_html": "🧩 <b>{title}</b>\n\nОбозначение: <code>[{code}]</code>\nТип: {type_title}\nОписание: {description}\nДоступ: только вам\nСтатус: {state_label}\nНастройки: {settings_text}\n\nЗдесь вы настраиваете поле. Значение для него вводится при создании анонса по шаблону. Сам по себе кирпичик в анонсы не добавляется."
 "bricks.build.proverte_kirpichik_nazvanie_html": "👁 <b>Проверьте кирпичик</b>\n\nНазвание: {title}\nОбозначение: <code>[{code}]</code>\nТип: {type_title}\nОписание: {get}\nДоступ: только вам\nНастройки: {settings_text}\n\nПосле сохранения кирпичик появится в вашем списке. В анонсы и шаблоны он пока не добавляется."
 "bricks.build.proverte_predlozhenie": "Проверьте предложение"
 "bricks.build.tekuschee_opisanie": "Текущее описание"
@@ -554,7 +554,7 @@
 "bricks.module.chislo_neobyazatelnymi_granicami": "Число. При желании можно задать минимум, максимум и подпись."
 "bricks.module.data": "Дата"
 "bricks.module.data_sobytiya_vvode_budet": "Дата события. Её можно выбрать в календаре."
-"bricks.module.kirpichiki_predlozheniya": "🧱 Кирпичики → 📨 Предложения"
+"bricks.module.kirpichiki_predlozheniya": "🧩 Кирпичики → 📨 Предложения"
 "bricks.module.korotkiy_tekst": "Короткий текст"
 "bricks.module.neskolko_strok_opisanie": "Несколько строк: описание, примечание, программа."
 "bricks.module.odin_neskolko_variantov_vashego": "Один или несколько вариантов из вашего списка."
@@ -638,7 +638,7 @@
 "buttons.admin.globalnye_predlozheniya": "🌍 Глобальные предложения ({system_pending})"
 "buttons.admin.izmenit_gorod": "🏙 Изменить город"
 "buttons.admin.izmenit_nazvanie": "🏷 Изменить название"
-"buttons.admin.kirpichiki": "🧱 Кирпичики"
+"buttons.admin.kirpichiki": "🧩 Кирпичики"
 "buttons.admin.k_konfliktam": "◀️ К конфликтам"
 "buttons.admin.k_ocheredi": "◀️ К очереди"
 "buttons.admin.k_spisku_mest": "◀️ К списку мест"
@@ -658,7 +658,7 @@
 "buttons.admin.pereklyuchitsya_globalnyy": "🌍 Переключиться на глобальный"
 "buttons.admin.podtverdit": "✅ Подтвердить"
 "buttons.admin.podtverzhdayu": "✅ Подтверждаю"
-"buttons.admin.predlozheniya_kirpichikov": "🧱 Предложения кирпичиков ({pending_proposals})"
+"buttons.admin.predlozheniya_kirpichikov": "🧩 Предложения кирпичиков ({pending_proposals})"
 "buttons.admin.predlozheniya_mestam": "📍 Предложения по местам ({places_pending})"
 "buttons.admin.redaktirovat_mesto": "✏️ Редактировать место"
 "buttons.admin.snyat_administratora": "🚫 Снять администратора"
@@ -1045,7 +1045,7 @@
 "wizard.render_publish_status.tekst_znacheniya_kirpichikov": "Для отправки сохранены текст, заполненные поля и фото на момент её начала. Если Telegram принял последнюю часть, но подтверждение не пришло, повторная отправка может создать дубль. Это ограничение Telegram. Ссылки на сообщения с подтверждённой доставкой сохранены."
 "wizard.render_publish_status.telegram_podtverdil_otpravku_ni": "❌ Telegram не подтвердил ни одного шага отправки. Подтверждения доставки нет."
 "wizard.render_publish_status.v_chate_ostaetsya_proshlaya": "Предыдущая версия анонса остаётся в чате, пока доставка новой версии не будет подтверждена полностью."
-"wizard.render_question_manager.polya_anonsa": "🧱 Поля анонса"
+"wizard.render_question_manager.polya_anonsa": "🧩 Поля анонса"
 "wizard.render_question_manager.vyberite_pole_chtoby_izmenit": "Выберите поле, которое хотите заполнить или изменить. Необязательные поля можно пропустить."
 "wizard.render_search_prompt.poisk_mesta_otpravte_nazvanie": "🔎 Поиск места\n\nОтправьте название или его часть одним сообщением. Поиск работает по основным и альтернативным названиям."
 "wizard.render_search_results.naydeno_mest": "Найдено мест: {total}."
@@ -1124,7 +1124,7 @@
 
 # --- Кирпичики -----------------------------------------------------
 "bricks.build.tip_redaktirovanii_menyaetsya": "\n\nИзменить тип этого кирпичика нельзя."
-"bricks.proposal_list.vy_otpravlyali_predlozheniy": "\n\nВы пока не отправляли предложения. Откройте «🧱 Кирпичики» и нажмите «📨» рядом с нужным кирпичиком."
+"bricks.proposal_list.vy_otpravlyali_predlozheniy": "\n\nВы пока не отправляли предложения. Откройте «🧩 Кирпичики» и нажмите «📨» рядом с нужным кирпичиком."
 "bricks.proposal_list.vy_otpravlyali_predlozheniy_2": "\n\nВы пока не отправляли предложения. Создайте кирпичик кнопкой «➕ Создать кирпичик» в разделе «Мои кирпичики». После этого его можно предложить для места или всей системы."
 "bricks.proposal_select_place.v_spravochnike_poka_net": "\n\nВ справочнике пока нет мест. Вернитесь назад и выберите «Вся система»."
 

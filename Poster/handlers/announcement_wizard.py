@@ -96,6 +96,7 @@ from brick_types import (
     BRICK_TYPE_TIME,
     BrickValueResult,
     BrickValueStatus,
+    brick_title_display,
 )
 from database import SessionLocal
 from handlers import wizard_live, wizard_photos, wizard_questions
@@ -2492,7 +2493,10 @@ async def _save_question_value(
             return AW_PREVIEW
         await _answer(
             update,
-            tr("alerts.wizard.znachenie_sohraneno", title=_short(field.title, 50)),
+            tr(
+                "alerts.wizard.znachenie_sohraneno",
+                title=_short(brick_title_display(field.title, field.code), 50),
+            ),
         )
         return AW_PREVIEW
     return await _advance_question(
@@ -2500,7 +2504,10 @@ async def _save_question_value(
         context,
         updated,
         index + 1,
-        notice=tr("alerts.wizard.znachenie_sohraneno", title=_short(field.title, 50)),
+        notice=tr(
+            "alerts.wizard.znachenie_sohraneno",
+            title=_short(brick_title_display(field.title, field.code), 50),
+        ),
     )
 
 
@@ -2529,7 +2536,7 @@ async def _skip_question(
             index + 1,
             notice=tr(
                 "wizard.skip_question.znachenie_ostavleno",
-                title=_short(field.title, 50),
+                title=_short(brick_title_display(field.title, field.code), 50),
             ),
         )
     return await _save_question_value(update, context, details, field, "", index=index)
@@ -2560,7 +2567,11 @@ async def _render_question_manager(
         rows.append(
             [
                 InlineKeyboardButton(
-                    _short(f"{index}. {field.title} — {status}", 60),
+                    _short(
+                        f"{index}. "
+                        f"{brick_title_display(field.title, field.code)} — {status}",
+                        60,
+                    ),
                     callback_data=(
                         f"aw_qgoto:{details.draft_id}:"
                         f"{details.revision}:{field.brick_id}"
@@ -3159,7 +3170,7 @@ def _extras_entries(details, telegram_user_id: int):
             {
                 "brick_id": brick_id,
                 "extra_id": extra.extra_id if extra is not None else None,
-                "title": definition.title,
+                "title": brick_title_display(definition.title, definition.code),
                 "field": _extra_field_state(details, definition),
             }
         )
@@ -3426,7 +3437,7 @@ def _extra_value_text(
     lines = [
         # Заголовок кирпичика задаёт человеком и уходит в parse_mode=HTML
         # экран — экранируем (аудит: неэкранированный HTML ломал экран).
-        f"➕ {_h(field.title)}",
+        f"➕ {_h(brick_title_display(field.title, field.code))}",
         tr("wizard.extra_value.position_from_template"),
     ]
     description = wizard_questions.description_html(field.description)
@@ -3674,21 +3685,22 @@ def _preview_summary_lines(
         if field.status == FIELD_STATUS_VALID:
             value = _field_value_text(field)
             filled.append(
-                f"• {_h(field.title)}: {_h(_short(value, FIELD_DISPLAY_LIMIT))}"
+                f"• {_h(brick_title_display(field.title, field.code))}: "
+                f"{_h(_short(value, FIELD_DISPLAY_LIMIT))}"
             )
         elif field.status == FIELD_STATUS_KNOWN:
             value = _field_value_text(field)
             filled.append(
                 tr_safe(
                     "wizard.preview_summary_lines.iz_spravochnika",
-                    title=_h(field.title),
+                    title=_h(brick_title_display(field.title, field.code)),
                     short=_h(_short(value, FIELD_DISPLAY_LIMIT)),
                 )
             )
         elif field.status == FIELD_STATUS_SKIPPED:
-            skipped.append(f"• {_h(field.title)}")
+            skipped.append(f"• {_h(brick_title_display(field.title, field.code))}")
         elif field.status == FIELD_STATUS_MISSING:
-            missing.append(f"• {_h(field.title)}")
+            missing.append(f"• {_h(brick_title_display(field.title, field.code))}")
     lines = [
         tr("buttons.wizard.obzor_anonsa"),
         "",
@@ -3777,7 +3789,9 @@ def _preview_summary_lines(
                 value_text = tr("wizard.preview_summary_lines.znachenie_propuscheno")
             else:
                 value_text = tr("wizard.build.znachenie_zadano")
-            lines.append(f"• {_h(extra.title)} — {value_text}")
+            lines.append(
+                f"• {_h(brick_title_display(extra.title, extra.code))} — {value_text}"
+            )
         if len(extras) > MAX_PREVIEW_EXTRAS:
             lines.append(
                 tr(
@@ -3810,7 +3824,10 @@ def _preview_block(preview: AnnouncementPreview) -> list[str]:
     for issue in preview.issues:
         lines.append(f"• {_h(issue)}")
     if preview.missing:
-        titles = ", ".join(_h(question.title) for question in preview.missing[:5])
+        titles = ", ".join(
+            _h(brick_title_display(question.title, question.code))
+            for question in preview.missing[:5]
+        )
         suffix = "…" if len(preview.missing) > 5 else ""
         lines.append(
             tr(
@@ -4117,7 +4134,7 @@ async def _render_length_problem(
             lines.append(
                 tr_safe(
                     "wizard.render_length_problem.simv",
-                    title=_h(_short(field.title, 60)),
+                    title=_h(_short(brick_title_display(field.title, field.code), 60)),
                     length=length,
                 )
             )
@@ -4135,7 +4152,11 @@ async def _render_length_problem(
         rows.append(
             [
                 InlineKeyboardButton(
-                    _short(f"✏️ {field.title} — {length}", 60),
+                    _short(
+                        f"✏️ {brick_title_display(field.title, field.code)} "
+                        f"— {length}",
+                        60,
+                    ),
                     callback_data=(
                         f"aw_qgoto:{details.draft_id}:"
                         f"{details.revision}:{field.brick_id}"
@@ -6529,7 +6550,7 @@ async def handle_extras_callback(
         await _answer(update, tr("alerts.wizard.dopolnitelnyy_kirpichik_udalen"))
         notice = tr(
             "wizard.handle_extras_callback.udalen_kirpichik",
-            title=_short(extra.title, 50),
+            title=_short(brick_title_display(extra.title, extra.code), 50),
         )
         if updated.publication_sent:
             # H3 (требование A): удаление применяется сразу, как и ввод.
@@ -6585,7 +6606,7 @@ async def handle_extras_callback(
                 details,
                 notice=tr(
                     "wizard.handle_extras_callback.znachenie_ostavleno",
-                    title=_short(extra.title, 50),
+                    title=_short(brick_title_display(extra.title, extra.code), 50),
                 ),
             )
         return await _save_extra_value(

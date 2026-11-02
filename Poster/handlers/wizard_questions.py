@@ -38,6 +38,7 @@ from brick_types import (
     BRICK_TYPE_TIME,
     BRICK_TYPE_TITLES,
     BRICK_TYPE_URL,
+    brick_title_display,
 )
 from utils import calendar_view, keyboard_layouts
 from utils.parsers import app_today
@@ -345,7 +346,12 @@ def question_text(
     оставался чистым, а `callback_data` — неизменными.
     """
     blocks = [
-        tr("wizard.question.header", step=index + 1, total=total, title=field.title)
+        tr(
+            "wizard.question.header",
+            step=index + 1,
+            total=total,
+            title=brick_title_display(field.title, field.code),
+        )
     ]
     # Poster 2.0 S5: описание кирпичика — инструкция автору анонса. Текст
     # задаёт человек, поэтому `tr` экранирует его и оставляет в `<code>`

@@ -573,7 +573,7 @@ class AdminBackMatrixTests(BackChecks):
             await h.text("/admin")
             await self.click(h, f"adm_place:{place_id}")
             await self.click_live_back(
-                h, f"adm_bprop_place:{place_id}", target="🧱 Предложения кирпичиков"
+                h, f"adm_bprop_place:{place_id}", target="🧩 Предложения кирпичиков"
             )
             await self.click_live_back(h, "adm_bprop_back", target="🛡 Место")
             # ADMIN_TG — администратор места, но не суперадмин: список мест

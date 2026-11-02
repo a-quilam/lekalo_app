@@ -116,6 +116,7 @@ from brick_types import (
     BRICK_TYPE_CHOICE,
     BRICK_TYPE_NUMBER,
     BRICK_TYPE_TITLES,
+    brick_title_display,
 )
 from database import SessionLocal
 from handlers.place_invite_screen import invite_content
@@ -969,7 +970,7 @@ def _brick_card_content(
     """
     text = tr_safe(
         "admin.brick_card.kartochka_kirpichika_html",
-        title=_h(brick.title),
+        title=_h(brick_title_display(brick.title, brick.code)),
         code=_h(brick.code),
         type_title=_h(BRICK_TYPE_TITLES.get(brick.value_type, brick.value_type)),
         scope_label=_h(_brick_scope_label(brick.scope, place_name)),
@@ -1044,7 +1045,7 @@ def _brick_list_content(
     text = tr_safe("admin.brick_list.kirpichiki_html", scope_line=scope_line)
     rows: list[list[InlineKeyboardButton]] = []
     for brick in bricks:
-        label = f"[{brick.code}] {brick.title}"
+        label = f"[{brick.code}] {brick_title_display(brick.title, brick.code)}"
         if brick.status != BRICK_STATUS_ACTIVE:
             label += " · " + tr("admin.brick_card.status_arxiv")
         rows.append(
@@ -1673,7 +1674,7 @@ def _proposal_admin_list_content(
             text += tr_safe(
                 "admin.proposal_admin_list.avtor_oblast_otpravleno_html",
                 index=index,
-                title=_h(proposal.title),
+                title=_h(brick_title_display(proposal.title, proposal.code)),
                 code=_h(proposal.code),
                 author_label=_h(_short(proposal.author_label, 100)),
                 proposal_target_label=_h(_proposal_target_label(proposal)),
@@ -1684,7 +1685,8 @@ def _proposal_admin_list_content(
             InlineKeyboardButton(
                 _button_name(
                     f"{index}. ",
-                    f"{proposal.title} — [{proposal.code}]",
+                    f"{brick_title_display(proposal.title, proposal.code)} "
+                    f"— [{proposal.code}]",
                 ),
                 callback_data=f"adm_bprop_open:{proposal.id}",
             )
@@ -1740,7 +1742,10 @@ def _proposal_admin_card_content(
         "",
         # R4 №29: все семь полей карточки — название, код, тип, описание,
         # автор, цель и статус — в одном месте и в одном порядке.
-        tr_safe("admin.proposal_admin_card.nazvanie_html", title=_h(proposal.title)),
+        tr_safe(
+            "admin.proposal_admin_card.nazvanie_html",
+            title=_h(brick_title_display(proposal.title, proposal.code)),
+        ),
         tr_safe("admin.proposal_admin_card.oboznachenie_html", code=_h(proposal.code)),
         tr_safe(
             "admin.proposal_admin_card.tip",
@@ -1832,7 +1837,7 @@ def _proposal_approve_confirm_content(
 ) -> tuple[str, InlineKeyboardMarkup]:
     text = tr_safe(
         "admin.proposal_approve_confirm.odobrit_predlozhenie_kirpi_html",
-        title=_h(proposal.title),
+        title=_h(brick_title_display(proposal.title, proposal.code)),
         code=_h(proposal.code),
         proposal_target_label=_h(_proposal_target_label(proposal)),
         author_label=_h(proposal.author_label),
@@ -1859,7 +1864,7 @@ def _proposal_reject_confirm_content(
 ) -> tuple[str, InlineKeyboardMarkup]:
     text = tr_safe(
         "admin.proposal_reject_confirm.otklonit_predlozhenie_kirpi_html",
-        title=_h(proposal.title),
+        title=_h(brick_title_display(proposal.title, proposal.code)),
         code=_h(proposal.code),
         proposal_target_label=_h(_proposal_target_label(proposal)),
         author_label=_h(proposal.author_label),
@@ -5683,7 +5688,7 @@ async def _notify_proposal_author(
     if approved:
         text = tr_safe(
             "admin.notify_proposal_author.vashe_predlozhenie_kirpichik_html",
-            title=_h(proposal.title),
+            title=_h(brick_title_display(proposal.title, proposal.code)),
             code=_h(proposal.code),
             proposal_target_label=_h(_proposal_target_label(proposal)),
         )
@@ -5694,7 +5699,7 @@ async def _notify_proposal_author(
     else:
         text = tr_safe(
             "admin.notify_proposal_author.vashe_predlozhenie_kirpichik_2_html",
-            title=_h(proposal.title),
+            title=_h(brick_title_display(proposal.title, proposal.code)),
             code=_h(proposal.code),
             proposal_target_label=_h(_proposal_target_label(proposal)),
         )

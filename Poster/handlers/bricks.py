@@ -79,6 +79,7 @@ from brick_types import (
     BRICK_TYPE_URL,
     BRICK_TYPES,
     BrickValidationError,
+    brick_title_display,
     clean_brick_description,
     clean_brick_title,
     ensure_brick_type,
@@ -377,7 +378,13 @@ def _short(value: object, limit: int = _BUTTON_TITLE_LIMIT) -> str:
 
 
 def _button_title(brick) -> str:
-    return _short(f"{brick.title} — [{brick.code}]")
+    """
+    Подпись списка: «название — [код]».
+
+    Poster 2.5 §9: у системных кирпичиков перед названием стоит собственный
+    эмодзи; код остаётся прежним и показывает токен шаблона.
+    """
+    return _short(f"{brick_title_display(brick.title, brick.code)} — [{brick.code}]")
 
 
 def _type_title(value_type: str) -> str:
@@ -640,7 +647,7 @@ def _card_content(brick):
     def build(limits: list[int]) -> str:
         return tr_safe(
             "bricks.build.oboznachenie_tip_opisanie_oblast_html",
-            title=_h(brick.title),
+            title=_h(brick_title_display(brick.title, brick.code)),
             code=_h(brick.code),
             type_title=_h(_type_title(brick.value_type)),
             description=_description_html(brick.description, limit=limits[0]),
@@ -689,7 +696,7 @@ def _card_content(brick):
 def _archive_confirm_content(brick):
     text = tr_safe(
         "bricks.archive_confirm.peremestit_kirpichik_arhiv_html",
-        title=_h(brick.title),
+        title=_h(brick_title_display(brick.title, brick.code)),
         code=_h(brick.code),
     )
     return text, InlineKeyboardMarkup(
@@ -719,7 +726,7 @@ def _delete_confirm_content(brick):
     """
     text = tr_safe(
         "bricks.delete_confirm.udalit_kirpichik_navsegda_html",
-        title=_h(brick.title),
+        title=_h(brick_title_display(brick.title, brick.code)),
         code=_h(brick.code),
     )
     return text, InlineKeyboardMarkup(
@@ -919,7 +926,7 @@ def _proposal_scope_content(session: Session, user: User, state: dict):
         tr("bricks.proposal_scope.kuda_predlozhit_kirpichik"), step=1
     ) + tr_safe(
         "bricks.proposal_scope.kirpichik_oboznachenie_vyberite_html",
-        title=_h(brick.title),
+        title=_h(brick_title_display(brick.title, brick.code)),
         code=_h(brick.code),
     )
     # Две цели — рядом в одной строке: это выбор из двух равноправных
@@ -959,7 +966,7 @@ def _proposal_select_place_content(session: Session, user: User, state: dict):
         tr("bricks.proposal_select_place.vyberite_mesto"), step=2
     ) + tr_safe(
         "bricks.proposal_select_place.kirpichik_vyberite_mesto_html",
-        title=_h(brick.title),
+        title=_h(brick_title_display(brick.title, brick.code)),
         code=_h(brick.code),
     )
     rows = [
@@ -1055,7 +1062,7 @@ def _proposal_preview_content(session: Session, user: User, state: dict):
             tr("bricks.build.proverte_predlozhenie"), step=3
         ) + tr_safe(
             "bricks.build.nazvanie_oboznachenie_tip_opisanie_html",
-            title=_h(brick.title),
+            title=_h(brick_title_display(brick.title, brick.code)),
             code=_h(brick.code),
             type_title=_h(_type_title(brick.value_type)),
             description=_description_html(brick.description, limit=limits[0]),
@@ -1118,7 +1125,8 @@ def _proposal_list_content(session: Session, user: User, state: dict):
             keyboard_layouts.button(
                 _short(
                     f"{_proposal_status_ui(proposal.status)} · "
-                    f"{proposal.title} — [{proposal.code}]",
+                    f"{brick_title_display(proposal.title, proposal.code)} "
+                    f"— [{proposal.code}]",
                     60,
                 ),
                 f"bp_open:{proposal.id}",
@@ -1168,7 +1176,10 @@ def _proposal_card_content(proposal: BrickProposalSnapshot):
     parts = [
         _proposal_header(tr("bricks.proposal_card.predlozhenie_kirpichika")),
         "",
-        tr_safe("admin.proposal_admin_card.nazvanie_html", title=_h(proposal.title)),
+        tr_safe(
+            "admin.proposal_admin_card.nazvanie_html",
+            title=_h(brick_title_display(proposal.title, proposal.code)),
+        ),
         tr_safe("admin.proposal_admin_card.oboznachenie_html", code=_h(proposal.code)),
         tr_safe(
             "bricks.proposal_card.tip", type_title=_h(_type_title(proposal.value_type))
@@ -1246,7 +1257,7 @@ def _proposal_withdraw_confirm_content(proposal: BrickProposalSnapshot):
         tr("bricks.proposal_withdraw_confirm.otozvat_predlozhenie")
     ) + tr_safe(
         "bricks.proposal_withdraw_confirm.nazvanie_oboznachenie_ce_html",
-        title=_h(proposal.title),
+        title=_h(brick_title_display(proposal.title, proposal.code)),
         code=_h(proposal.code),
         proposal_target_text=_h(_proposal_target_text(proposal)),
     )
@@ -3200,7 +3211,7 @@ async def _handle_create_save(
         notice=(
             tr_safe(
                 "bricks.handle_create_save.kirpichik_sozdan_oboznachenie_html",
-                title=_h(brick.title),
+                title=_h(brick_title_display(brick.title, brick.code)),
                 code=_h(brick.code),
             )
         ),

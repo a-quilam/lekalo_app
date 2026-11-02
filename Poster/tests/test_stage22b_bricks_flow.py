@@ -140,7 +140,7 @@ class BricksUiTests(unittest.TestCase):
         # Poster 2.0 S2: кирпичики открываются из «⚙️ Управление».
         self.assertIn(("⚙️ Управление", "manage"), h.screen_buttons())
         await h.callback("manage")
-        self.assertIn(("🧱 Кирпичики", "manage_bricks"), h.screen_buttons())
+        self.assertIn(("🧩 Кирпичики", "manage_bricks"), h.screen_buttons())
         await h.callback("manage_bricks")
         self.assertIn("Мои кирпичики", h.screen_text())
         self.assertIn("У вас пока нет личных кирпичиков", h.screen_text())

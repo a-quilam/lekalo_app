@@ -228,12 +228,12 @@ class DeliveredEditScreenTests(unittest.TestCase):
         rows = _keyboard_rows(h)
         self.assertEqual([label for label, _data in rows[0]], self.EDIT_ROW, rows)
         self.assertEqual([label for label, _data in rows[-1]], [self.EDIT_MENU], rows)
-        # «🧱 Дополнительные поля» — отдельная строка и только когда есть что
+        # «🧩 Дополнительные поля» — отдельная строка и только когда есть что
         # добавить: у этого шаблона доступные кирпичики есть.
         extras_rows = [
             row
             for row in rows
-            if [label for label, _data in row] == ["🧱 Дополнительные поля"]
+            if [label for label, _data in row] == ["🧩 Дополнительные поля"]
         ]
         self.assertEqual(len(extras_rows), 1, f"нет строки доп. полей: {rows}")
         labels = [label for label, _data in h.screen_buttons()]
@@ -272,7 +272,7 @@ class DeliveredEditScreenTests(unittest.TestCase):
         )
         await h.callback(_callback(h, "aw_edit"))
         self.assertIn(
-            "🧱 Дополнительные поля",
+            "🧩 Дополнительные поля",
             [label for label, _data in h.screen_buttons()],
         )
 
@@ -325,7 +325,7 @@ class DeliveredEditScreenTests(unittest.TestCase):
         )
         await h.callback(_callback(h, "aw_edit"))
         self.assertNotIn(
-            "🧱 Дополнительные поля",
+            "🧩 Дополнительные поля",
             [label for label, _data in h.screen_buttons()],
         )
 

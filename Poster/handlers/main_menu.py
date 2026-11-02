@@ -97,11 +97,12 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
 
 def manage_keyboard(*, show_admin: bool = False) -> InlineKeyboardMarkup:
     """
-    Подменю «⚙️ Управление».
+    Подменю «⚙️ Управление» (Poster 2.5 §10: компактная раскладка).
 
-    «Администрирование» добавляется только при подтверждённых правах;
+    Строки: «📍 Площадки»; «📝 Шаблоны | 🧩 Кирпичики»; «🛡 Администрирование»
+    (только при подтверждённых правах); «🏠 В меню». Пустых кнопок нет, а
     обработчик `/admin` перепроверяет роль заново, поэтому скрытая кнопка —
-    удобство, а не защита.
+    удобство, а не защита. Callback-данные прежние.
     """
     rows = [
         [
@@ -112,12 +113,10 @@ def manage_keyboard(*, show_admin: bool = False) -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton(
                 tr("buttons.manage.templates"), callback_data="manage_templates"
-            )
-        ],
-        [
+            ),
             InlineKeyboardButton(
                 tr("buttons.manage.bricks"), callback_data="manage_bricks"
-            )
+            ),
         ],
     ]
     if show_admin:

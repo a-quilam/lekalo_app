@@ -66,7 +66,7 @@ RETIRED_LITERALS = {
         "Фото не добавлено:",
     ],
     "handlers/wizard_questions.py": [
-        "🧱 Вопрос ",
+        "🧩 Вопрос ",
         "Это поле можно пропустить.",
         "Вы пропустили это",
         "Нажмите кнопку с нужным вариантом.",
@@ -81,7 +81,7 @@ RETIRED_LITERALS = {
         "Поле пока не заполнено.",
     ],
     "handlers/bricks.py": [
-        "🧱 <b>Мои кирпичики</b>",
+        "🧩 <b>Мои кирпичики</b>",
         "У вас пока нет личных кирпичиков.",
         "🗄 <b>Архив кирпичиков</b>",
     ],
@@ -322,9 +322,9 @@ class OwnerScenarioTests(_CatalogCase):
         # Доверенная разметка работает в ключе с суффиксом _html.
         # help.text_html сюда не подходит: у него есть переменные, и подмена
         # текста без них сделала бы файл невалидным (это проверено выше).
-        self.write_flat(**{"bricks.hub.title_html": "🧱 <b>Мои</b>"})
+        self.write_flat(**{"bricks.hub.title_html": "🧩 <b>Мои</b>"})
         self.assertTrue(ui_texts.reload_texts(self.path).ok)
-        self.assertEqual(ui_texts.tr("bricks.hub.title_html"), "🧱 <b>Мои</b>")
+        self.assertEqual(ui_texts.tr("bricks.hub.title_html"), "🧩 <b>Мои</b>")
 
     def test_value_escaping_in_both_branches(self) -> None:
         payload = "<a href=\"x\">клик</a> & 'кавычки'"

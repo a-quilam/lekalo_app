@@ -110,7 +110,7 @@ class OwnerScenarioTests(_Case):
                     "wizard.photos.hint": "Пришлите до {limit} картинок.",
                     "wizard.finished.text": "✅ ГОТОВО-ПРИЁМКА",
                     "buttons.finished.edit": "✏️ ПРАВКА-ПРИЁМКА",
-                    "bricks.hub.title_html": "🧱 <b>КИРПИЧИ-ПРИЁМКА</b>",
+                    "bricks.hub.title_html": "🧩 <b>КИРПИЧИ-ПРИЁМКА</b>",
                     "places.all.empty": "📚 ПУСТО-ПРИЁМКА",
                     "places.hub.title": "📍 МЕСТА-ПРИЁМКА",
                     "errors.stale.places": "СТАРО-ПРИЁМКА",
@@ -133,7 +133,7 @@ class OwnerScenarioTests(_Case):
         # 3. хаб кирпичиков
         await h.callback("manage")
         await h.callback("manage_bricks")
-        self.assertTrue(h.screen_text().startswith("🧱 <b>КИРПИЧИ-ПРИЁМКА</b>"))
+        self.assertTrue(h.screen_text().startswith("🧩 <b>КИРПИЧИ-ПРИЁМКА</b>"))
 
         # 4. пустой список мест + 5. устаревшая кнопка
         await h.text("/places")
@@ -355,7 +355,7 @@ class PlaceholderTests(_Case):
         self.assertIsInstance(text, str)
         self.assertNotIn("{title}", text)
         self.assertNotIn("KeyError", text)
-        self.assertTrue(text.startswith("🧱 Вопрос 2 из 4"))
+        self.assertTrue(text.startswith("🧩 Вопрос 2 из 4"))
 
     def test_none_value_does_not_leak_none(self) -> None:
         self.assertEqual(ui_texts.tr("places.card.city", city=None), "Город: ")
