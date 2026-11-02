@@ -73,7 +73,7 @@ OTHER_TG = 9_845_002
 REQ_VISIBLE_LINES = (
     "<b>Летний концерт</b>",
     "",
-    "<b>12.07.2027 // 19:00</b>",
+    "<b>12.07 (пн) // 19:00</b>",
     '<b><a href="https://example.com/place">Дом культуры</a></b>',
     "ул. Ленина, 1",
     "",
@@ -192,7 +192,7 @@ class TemplateV4RequirementTests(TemplateDatabaseTestCase):
             f"неверные пустые строки: {lines!r}",
         )
         self.assertEqual(lines[0], "<b>Летний концерт</b>")
-        self.assertEqual(lines[2], "<b>12.07.2027 // 19:00</b>")
+        self.assertEqual(lines[2], "<b>12.07 (пн) // 19:00</b>")
         self.assertTrue(lines[3].startswith("<b>"), lines[3])
         self.assertEqual(lines[4], "ул. Ленина, 1")
 

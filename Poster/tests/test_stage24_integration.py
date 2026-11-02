@@ -17,6 +17,7 @@ from datetime import date, timedelta
 from sqlalchemy import text
 
 from template_compiler import TemplateCompileError
+from utils.calendar_view import format_announcement_date
 from template_store import (
     TemplateNotFoundError,
     create_personal_template,
@@ -121,7 +122,10 @@ class Stage24IntegrationTests(TemplateDatabaseTestCase):
 
         # 8. Загрузка snapshot (версии 1) из новой сессии SQLite.
         self.session.expire_all()
-        event_date = (date.today() + timedelta(days=1)).strftime("%d.%m.%Y")
+        event_day = date.today() + timedelta(days=1)
+        event_date = event_day.strftime("%d.%m.%Y")
+        # Poster 2.5 §17: системный `[дата]` выводится как `ДД.ММ (дн)`.
+        event_date_text = format_announcement_date(event_day)
         stored = render_template_snapshot(
             self.session,
             actor_telegram_user_id=OWNER_TG,
@@ -138,7 +142,7 @@ class Stage24IntegrationTests(TemplateDatabaseTestCase):
         )
         # 9. Компиляция snapshot в готовый HTML со ссылкой.
         self.assertIn("Клуб «Гнездо»", stored)
-        self.assertIn(event_date, stored)
+        self.assertIn(event_date_text, stored)
         self.assertIn("Гнездо", stored)
         self.assertIn("Стёпа в клетке", stored)
         self.assertIn("@nest", stored)
@@ -368,6 +372,7 @@ class Stage24IntegrationTests(TemplateDatabaseTestCase):
             rules={"choices": ["Оффлайн", "Онлайн"]},
         )
         choice_id = choice_def.id
+        later_day = date.today() + timedelta(days=200)
         created = create_personal_template(
             self.session,
             actor_telegram_user_id=OWNER_TG,
@@ -395,7 +400,7 @@ class Stage24IntegrationTests(TemplateDatabaseTestCase):
             template_id=created.template_id,
             values_by_id={
                 1: "Встреча",
-                date_id: (date.today() + timedelta(days=200)).strftime("%d.%m.%Y"),
+                date_id: later_day.strftime("%d.%m.%Y"),
                 time_id: "14:30",
                 url_id: "https://example.com/event",
                 long_id: "Подробное\nописание",
@@ -405,7 +410,8 @@ class Stage24IntegrationTests(TemplateDatabaseTestCase):
             },
         )
         self.assertIn("Встреча", html)
-        self.assertIn((date.today() + timedelta(days=200)).strftime("%d.%m.%Y"), html)
+        # Poster 2.5 §17: даже в личном шаблоне системный `[дата]` — `ДД.ММ (дн)`.
+        self.assertIn(format_announcement_date(later_day), html)
         self.assertIn("14:30", html)
         self.assertIn("https://example.com/event", html)
         self.assertIn("Подробное\nописание", html)

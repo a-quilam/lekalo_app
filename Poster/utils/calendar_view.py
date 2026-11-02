@@ -289,6 +289,17 @@ def format_month_day(value: date) -> str:
     return str(value.day)
 
 
+def format_announcement_date(value: date) -> str:
+    """
+    Системный кирпичик `[дата]` в готовом анонсе: «09.11 (пн)».
+
+    Poster 2.5 §17: две цифры дня, две цифры месяца, без года и две русские
+    буквы дня недели в нижнем регистре — по самой дате. Год остаётся только
+    во внутреннем хранении (`payload["date"]` = ДД.ММ.ГГГГ).
+    """
+    return f"{value.day:02d}.{value.month:02d} ({WEEKDAYS_SHORT[value.weekday()]})"
+
+
 def format_range(start: date, end: date, today: date | None = None) -> str:
     """
     Подпись диапазона: «06.11–12.11», одиночный день — «30.11».

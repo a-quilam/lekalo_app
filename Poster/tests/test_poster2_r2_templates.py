@@ -63,7 +63,7 @@ from user_store import get_or_create_user
 EXPECTED_ANNOUNCEMENT = (
     "<b>Летний концерт</b>\n"
     "\n"
-    "<b>12.07.2027 // 19:00</b>\n"
+    "<b>12.07 (пн) // 19:00</b>\n"
     '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
     "ул. Ленина, 1\n"
     "\n"

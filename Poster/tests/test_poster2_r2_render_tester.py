@@ -66,7 +66,7 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 OWNER_REFERENCE = (
     "<b>Летний концерт</b>\n"
     "\n"
-    "<b>12.07.2027 // 19:00</b>\n"
+    "<b>12.07 (пн) // 19:00</b>\n"
     '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
     "ул. Ленина, 1\n"
     "\n"
@@ -80,7 +80,7 @@ OWNER_REFERENCE = (
 OWNER_LINES = (
     (0, "Летний концерт", True),
     (1, "", None),
-    (2, "12.07.2027 // 19:00", True),
+    (2, "12.07 (пн) // 19:00", True),
     (3, '<a href="https://example.com/place">Дом культуры</a>', True),
     (4, "ул. Ленина, 1", False),
     (5, "", None),
@@ -211,7 +211,7 @@ class SkippedBricksTests(unittest.TestCase):
             time_id = get_system_brick(session, "время_начала").id
             values.pop(time_id)
             rendered = _render_personal(h, session, template.template_id, values)
-            self.assertIn("<b>12.07.2027 // </b>", rendered)
+            self.assertIn("<b>12.07 (пн) // </b>", rendered)
 
     @scenario_test
     async def test_only_title_hides_line_with_empty_date_and_time(self, h):

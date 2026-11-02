@@ -97,7 +97,7 @@ def _join(header: str, body: str, footer: str) -> str:
 GOLDEN_ALL_FILLED = (
     "<b>Летний концерт</b>\n"
     "\n"
-    "<b>12.07.2027 // 19:00</b>\n"
+    "<b>12.07 (пн) // 19:00</b>\n"
     '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
     "ул. Ленина, 1\n"
     "\n"
@@ -110,7 +110,7 @@ GOLDEN_ALL_FILLED = (
 GOLDEN_EMPTY_DESCRIPTION = (
     "<b>Летний концерт</b>\n"
     "\n"
-    "<b>12.07.2027 // 19:00</b>\n"
+    "<b>12.07 (пн) // 19:00</b>\n"
     '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
     "ул. Ленина, 1\n"
     "\n"
@@ -120,7 +120,7 @@ GOLDEN_EMPTY_DESCRIPTION = (
 GOLDEN_EMPTY_CONTACT = (
     "<b>Летний концерт</b>\n"
     "\n"
-    "<b>12.07.2027 // 19:00</b>\n"
+    "<b>12.07 (пн) // 19:00</b>\n"
     '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
     "ул. Ленина, 1\n"
     "\n"
@@ -129,7 +129,7 @@ GOLDEN_EMPTY_CONTACT = (
 GOLDEN_EMPTY_BOTH = (
     "<b>Летний концерт</b>\n"
     "\n"
-    "<b>12.07.2027 // 19:00</b>\n"
+    "<b>12.07 (пн) // 19:00</b>\n"
     '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
     "ул. Ленина, 1"
 )
@@ -667,7 +667,7 @@ class EmptyBrickLineHidingTests(unittest.TestCase):
         self.assertEqual(
             rendered,
             "Афиша\n\nНазвание\n\nлитерал // без токенов\n\n\n"
-            "<b>01.01.2027 // 19:00</b>\n\nПодпись",
+            "<b>01.01 (пт) // 19:00</b>\n\nПодпись",
         )
 
 

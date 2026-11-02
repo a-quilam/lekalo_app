@@ -71,7 +71,7 @@ REFERENCE_CONTENT = REFERENCE_HEADER + "\n" + REFERENCE_BODY + "\n" + REFERENCE_
 FILLED_REFERENCE = (
     "<b>Летний концерт</b>\n"
     "\n"
-    "<b>12.07.2027 // 19:00</b>\n"
+    "<b>12.07 (пн) // 19:00</b>\n"
     '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
     "ул. Ленина, 1\n"
     "\n"
@@ -267,7 +267,7 @@ class TemplateV4RenderTests(_TemplateCase):
         # Ровно одна пустая строка сразу после заголовка.
         self.assertEqual(lines[0], "<b>Летний концерт</b>")
         self.assertEqual(lines[1], "", "между заголовком и датой нет пустой")
-        self.assertEqual(lines[2], "<b>12.07.2027 // 19:00</b>")
+        self.assertEqual(lines[2], "<b>12.07 (пн) // 19:00</b>")
         # Площадка — соседняя с датой строка, пустой между ними нет.
         self.assertTrue(lines[3].startswith("<b>"))
         # Адрес — сразу под площадкой, нежирный.
@@ -291,7 +291,7 @@ class TemplateV4RenderTests(_TemplateCase):
         text = (
             "Летний концерт\n"
             "\n"
-            "12.07.2027 // 19:00\n"
+            "12.07 (пн) // 19:00\n"
             "Дом культуры\n"
             "ул. Ленина, 1\n"
             "\n"
@@ -316,7 +316,7 @@ class TemplateV4RenderTests(_TemplateCase):
             return offset, len(label.encode("utf-16-le")) // 2
 
         title_offset, title_length = _span("Летний концерт")
-        date_offset, date_length = _span("12.07.2027 // 19:00")
+        date_offset, date_length = _span("12.07 (пн) // 19:00")
         place_offset, place_length = _span("Дом культуры")
         return [
             MessageEntity(

@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -43,6 +44,7 @@ from sqlalchemy.orm import Session
 from announcement_wizard import visible_announcement_text
 from brick_store import BrickDefinition, resolve_brick_code_candidates
 from brick_types import (
+    BRICK_SCOPE_SYSTEM,
     validate_brick_value,
 )
 from template_parser import (
@@ -54,8 +56,13 @@ from template_parser import (
     parse_template,
 )
 from template_types import TEMPLATE_CONTENT, TEMPLATE_EXTENDED_CONTENT
+from utils.calendar_view import format_announcement_date
 from utils.tg_html import SafeHtml, strip_link_tags, utf16_len
 from utils.validators import normalize_url
+
+# Poster 2.5 §17: код системного кирпичика даты. Отображение `ДД.ММ (дн)`
+# применяется только к нему; пользовательский кирпичик типа date не трогаем.
+SYSTEM_DATE_CODE = "дата"
 
 # Порядок обработки текстов шаблона предсказуем: сначала канонический, затем
 # расширенный. Ключи — те же, что в моделях и снимках.
@@ -271,6 +278,35 @@ def resolve_template_bindings(
     return bindings
 
 
+def _system_date_text(raw: Any) -> str | None:
+    """
+    `ДД.ММ (дн)` для системного кирпичика даты; `None` — если значение
+    не разбирается как дата (тогда остаётся прежний вывод без догадок).
+    """
+    if not isinstance(raw, str):
+        return None
+    try:
+        parsed = datetime.strptime(raw.strip(), "%d.%m.%Y").date()
+    except (TypeError, ValueError):
+        return None
+    return format_announcement_date(parsed)
+
+
+def _is_system_date(definition: Any) -> bool:
+    """
+    Системный кирпичик даты ли это?
+
+    `BrickDefinition` из хранилища знает `scope`; `SystemBrickDefinition`
+    из каталога `brick_types` — нет, потому что там лежат только системные
+    определения. Отсутствие `scope` трактуем как system, иначе golden-тесты
+    на чистом каталоге падали бы на `AttributeError`.
+    """
+    if getattr(definition, "code", None) != SYSTEM_DATE_CODE:
+        return False
+    scope = getattr(definition, "scope", None)
+    return scope is None or scope == BRICK_SCOPE_SYSTEM
+
+
 def _brick_text(value: Any, definition: BrickDefinition) -> str:
     """
     Стабильный текст значения кирпичика с строгой валидацией.
@@ -278,6 +314,12 @@ def _brick_text(value: Any, definition: BrickDefinition) -> str:
     Все семь типов проверяются через `validate_brick_value` — значение
     не подменяется молча на short_text, ошибки данных не превращаются
     в правдоподобный, но некорректный анонс.
+
+    Poster 2.5 §17: системный кирпичик даты (`[дата]`, scope=system)
+    выводится как `ДД.ММ (дн)` — год остаётся только во внутреннем
+    хранении `payload["date"]` = ДД.ММ.ГГГГ. Пользовательский кирпичик
+    типа date сохраняет прежний формат: правило относится только к
+    системному `[дата]`.
     """
     result = validate_brick_value(definition.value_type, value, rules=definition.rules)
     if not result.is_valid:
@@ -285,6 +327,10 @@ def _brick_text(value: Any, definition: BrickDefinition) -> str:
             f"Значение кирпичика «{definition.code}» некорректно: {result.error}"
         )
     payload = result.payload or {}
+    if _is_system_date(definition) and "date" in payload:
+        formatted = _system_date_text(payload["date"])
+        if formatted is not None:
+            return formatted
     for key in ("text", "date", "time", "url", "number", "choice"):
         if key in payload:
             return str(payload[key])
