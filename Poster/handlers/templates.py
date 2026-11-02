@@ -3203,7 +3203,14 @@ async def _process_section_text(
     state: dict,
 ) -> None:
     message = ctx.message(update)
-    new_text = message.text if message.text is not None else ""
+    # Единая точка захвата: entities клиента становятся канонической
+    # грамматикой Stage 24 (`**жирный**`, `URL(подпись)` и т.д.), поэтому
+    # разметка переживает сохранение, повторное открытие и рендер анонса.
+    # Работает одинаково для content/extended_content и обоих видов шаблонов.
+    new_text = entities_to_template_markup(
+        message.text if message.text is not None else "",
+        getattr(message, "entities", None),
+    )
     state["draft_text"] = new_text
     # Новый авторский текст требует нового явного выбора при неоднозначности.
     state["chosen_brick_ids"] = {}

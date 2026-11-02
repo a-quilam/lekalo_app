@@ -114,18 +114,20 @@ class LinkGrammarTests(unittest.TestCase):
             '<a href="https://example.com">Наше место</a>',
         )
 
-    def test_hyphen_in_literal_link_label_becomes_space(self) -> None:
+    def test_hyphen_in_literal_link_label_is_preserved(self) -> None:
+        # Poster 2.4.1: дефис — обычный символ подписи (требование владельца),
+        # а не служебный разделитель: «Наше-место» остаётся с дефисом.
         text = "Наше-уютное-место([ссылка_места])"
         tokens = parse_template(text, section="body")
         self.assertEqual(len(tokens), 1)
         assert isinstance(tokens[0], LinkNode)
         label = tokens[0].label[0]
         assert isinstance(label, TextNode)
-        self.assertEqual(label.text, "Наше уютное место")
-        # Обычный текст с дефисами не заменяется.
+        self.assertEqual(label.text, "Наше-уютное-место")
+        # Обычный текст с дефисами тоже не меняется.
         self.assertEqual(
             self._plain("Скоро-будет(https://example.com)"),
-            "Скоро будет",
+            "Скоро-будет",
         )
         self.assertEqual(
             self._plain("Обычный текст с - дефисом"),

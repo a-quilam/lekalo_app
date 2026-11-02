@@ -816,7 +816,7 @@ class PlaceCityUiTests(unittest.TestCase):
             card = h.screen_text()
             self.assertIn("Москва", card, "карточка не показывает город")
 
-            await h.callback(f"plm_edit:{place_id}")
+            await h.callback(f"adm_edit_place:{place_id}")
             menu = h.screen_text()
             callbacks = _callbacks(h, "adm_edit_")
             self.assertIn("Москва", menu, "меню правки не показывает город")

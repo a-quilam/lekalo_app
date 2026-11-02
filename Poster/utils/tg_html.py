@@ -523,6 +523,331 @@ def _bare_flags(name: str, raw: str) -> set[str]:
     }
 
 
+# —— entities → грамматика шаблонов Stage 24 (Poster 2.4.1) ———————————————
+
+# Маркеры грамматики для сущностей форматирования Telegram.
+_ENTITY_MARKERS = {
+    "bold": "**",
+    "italic": "*",
+    "underline": "__",
+    "strikethrough": "~~",
+    "spoiler": "||",
+    "code": "`",
+    "pre": "```",
+}
+
+# Типы-ссылки: при равных диапазонах они обрабатываются последними, чтобы
+# вложенное форматирование оказалось внутри ссылки, а не наоборот.
+_LINK_ENTITY_TYPES = frozenset({MessageEntity.TEXT_LINK, MessageEntity.URL})
+
+
+# Литеральные спецсимволы грамматики экранируются обратным слэшем; скобки —
+# удвоением, потому что `\[`/`\]` в ESCAPE_MAP нет (для них есть `[[`/`]]`).
+_TEMPLATE_ESCAPES = {
+    "\\": "\\\\",
+    "*": "\\*",
+    "_": "\\_",
+    "~": "\\~",
+    "|": "\\|",
+    "`": "\\`",
+    "(": "\\(",
+    ")": "\\)",
+    "{": "\\{",
+    "}": "\\}",
+    "[": "[[",
+    "]": "]]",
+}
+
+# Токен кирпичика: код без квадратных и круглых скобок — ровно правила
+# `template_parser.BRICK_PATTERN`. Здесь шаблон повторён, а не импортирован:
+# `utils` не зависит от прикладных модулей. Согласованность с парсером
+# проверяет тест `test_poster2_241_template_markup`.
+_BRICK_TOKEN_RE = re.compile(r"\[[^\[\]\(\)]+\]")
+
+
+def _brick_token_at(text: str, offset: int) -> str | None:
+    """
+    Валидный токен кирпичика `[код]`, начинающийся в `offset`, либо None.
+
+    Не токен: `[[` слева и `]]` справа (это уже авторское экранирование
+    литеральных скобок), а также содержимое с квадратными/круглыми скобками.
+    Одиночная `]` сразу после токена допустима: парсер читает `[main]]` как
+    кирпичик и литеральную `]`, а `]]` — как экранированную скобку.
+    """
+    if offset >= len(text) or text[offset] != "[":
+        return None
+    if offset > 0 and text[offset - 1] == "[":
+        return None
+    match = _BRICK_TOKEN_RE.match(text, offset)
+    if match is None:
+        return None
+    end = match.end()
+    # `]]` справа — авторское экранирование литеральной скобки. Одиночная
+    # `]` после токена — литерал, как в грамматике парсера (`[a]]`), но
+    # только если токен не вложен в незакрытую литеральную `[`: в `[a[b]]`
+    # `[b]` — часть экранируемой скобочной конструкции, а не кирпичик.
+    nested = text.count("[", 0, offset) > text.count("]", 0, offset)
+    if text[end : end + 2] == "]]" or (text[end : end + 1] == "]" and nested):
+        return None
+    return match.group(0)
+
+
+def _contains_brick_token(text: str) -> bool:
+    """Есть ли в тексте хотя бы один валидный токен кирпичика."""
+    return any(
+        _brick_token_at(text, offset) is not None
+        for offset, char in enumerate(text)
+        if char == "["
+    )
+
+
+def _escape_template_text(text: str, *, keep_bricks: bool = True) -> str:
+    """
+    Экранирует литеральный текст секции, чтобы он не стал оформлением.
+
+    Квадратные скобки экранируются удвоением, НО валидный кирпичик `[код]`
+    остаётся собой: сообщение с entities — это правка авторского текста, и
+    `[main]` в нём обязан остаться привязкой, а не превратиться в литерал
+    `[[main]]`. Поэтому одиночная `[` с кодом и закрывающей `]` не
+    экранируется, а всё остальное (в том числе пользовательские `[[`/`]]`,
+    которые уже означают литеральную скобку) — экранируется как раньше.
+
+    `keep_bricks=False` — для содержимого code/pre: буквальный спан не
+    содержит кирпичиков, и `[main]` в нём остаётся текстом.
+    """
+    out: list[str] = []
+    offset = 0
+    length = len(text)
+    while offset < length:
+        if keep_bricks:
+            brick = _brick_token_at(text, offset)
+            if brick is not None:
+                out.append(brick)
+                offset += len(brick)
+                continue
+        out.append(_TEMPLATE_ESCAPES.get(text[offset], text[offset]))
+        offset += 1
+    return "".join(out)
+
+
+def entities_to_template_markup(
+    text: str, entities: Sequence[MessageEntity] | None
+) -> str:
+    """
+    Текст сообщения с entities → канонический текст грамматики Stage 24.
+
+    Результат — не HTML, а авторская запись шаблона: `**жирный**`,
+    `*курсив*`, `__подчёркнутый__`, `~~зачёркнутый~~`, `||спойлер||`,
+    `` `код` ``, ```` ```блок``` ````, `подпись(URL)` для `text_link`.
+    Так форматирование из клиента Telegram переживает сохранение секции,
+    повторное открытие редактора и рендер анонса.
+
+    Правила:
+
+    - смещения entities — в 16-битных код-юнитах UTF-16, разбор идёт по
+      utf-16-байтам (как `entities_to_html`), поэтому кириллица и эмодзи
+      не сдвигают границы;
+    - вложенность entities сохраняется: `**` + text_link на том же диапазоне
+      дают `**{подпись}(URL)**` (ссылка — внутри жирного), а не наоборот;
+    - `text_link` пишется как `подпись(URL)`, даже если URL нет в видимом
+      тексте; схемы `tg://` сохраняются;
+    - при равных смещениях entities порядок не важен: сортировка делает
+      внешним слоем более длинный диапазон, а ссылку — внутренним;
+    - `url` остаётся текстом: Bot API сам делает голый URL кликабельным;
+    - `text_mention`, `custom_emoji`, `date_time`, `mention`, `hashtag` и
+      прочие неподдерживаемые грамматикой типы деградируют в видимый текст
+      (оформление теряется, содержимое — нет);
+    - `pre` с языком теряет язык: в грамматике его нет;
+    - code/pre — буквальные спаны: содержимое не экранируется, но если в
+      нём есть обратная кавычка, спан невозможен — остаётся обычный текст;
+    - если entities в сообщении ЕСТЬ, все литеральные `*`, `_`, `~`, `` ` ``,
+      `|`, `(`, `)`, `{`, `}` обычного текста экранируются; квадратные скобки
+      тоже, КРОМЕ валидного токена кирпичика `[код]` — он остаётся
+      кирпичиком (`**Итог**: [main]`), иначе правка шаблона сообщением с
+      entities уничтожала бы привязки;
+    - деградация text_link: `http(s)`, `tg://`, `t.me/…` и домены без схемы
+      записываются ссылкой; URL со пробелами, скобками `(`/`)`,
+      квадратными скобками или обратным слэшем, а также схемы вне
+      грамматики (`mailto:`, `ftp:` и пр.) превращаются в подпись БЕЗ
+      ссылки — предсказуемо и без ошибки сохранения (грамматика не умеет их
+      записать);
+    - если entities НЕТ, текст возвращается без изменений: прежнее
+      поведение редактора, где `**` пользователь набирал сам.
+    """
+    if not text or not entities:
+        return text
+
+    utf16_text = text.encode("utf-16-le", "surrogatepass")
+    total_units = len(utf16_text) // 2
+    sliced: dict[MessageEntity, str] = {}
+    for entity in entities:
+        if entity.length <= 0 or entity.offset < 0:
+            continue
+        if entity.offset + entity.length > total_units:
+            continue
+        start = entity.offset * 2
+        sliced[entity] = utf16_text[start : start + entity.length * 2].decode(
+            "utf-16-le"
+        )
+    if not sliced:
+        return text
+    return _parse_template_markup(text, sliced)
+
+
+def _template_entity_sort_key(
+    item: tuple[MessageEntity, str],
+) -> tuple[int, int, int]:
+    """
+    Порядок разбора entities: внешний слой первым.
+
+    Сортировка по смещению, затем по концу диапазона в обратном порядке:
+    при одинаковом начале более длинная entity содержит короткую и обязана
+    стать внешним слоем, иначе короткая «съест» её хвост. При полном
+    совпадении диапазонов форматирование идёт раньше ссылки: ссылка
+    оказывается внутри (`**{подпись}(URL)**`), а не наоборот.
+    """
+    entity = item[0]
+    link_layer = 1 if entity.type in _LINK_ENTITY_TYPES else 0
+    return (entity.offset, -(entity.offset + entity.length), link_layer)
+
+
+def _parse_template_markup(
+    message_text: str,
+    entities: dict[MessageEntity, str],
+    *,
+    offset: int = 0,
+    top_level: bool = True,
+) -> str:
+    """
+    Рекурсивная сборка авторской записи: вложенность entities → маркеры.
+
+    Алгоритм повторяет `_parse_html` (срезы по UTF-16, сортировка по
+    смещению, вложенные entities разбираются отдельным вызовом), но вместо
+    HTML-тегов пишет маркеры грамматики Stage 24. Порядок при равных
+    смещениях задаёт `_template_entity_sort_key`: внешний слой — более
+    длинный диапазон, ссылка внутри форматирования на том же диапазоне.
+    """
+    utf16_text = message_text.encode("utf-16-le", "surrogatepass")
+    markup = ""
+    last_offset = 0
+    sorted_entities = sorted(entities.items(), key=_template_entity_sort_key)
+    parsed: list[MessageEntity] = []
+
+    for entity, entity_text in sorted_entities:
+        if entity in parsed:
+            continue
+        if entity.offset - offset < last_offset:
+            # Перекрывающиеся, но не вложенные entities: не ломаем уже
+            # выданный фрагмент, содержимое остаётся текстом.
+            continue
+        nested = {
+            nested_entity: nested_text
+            for nested_entity, nested_text in sorted_entities
+            if nested_entity.offset >= entity.offset
+            and nested_entity.offset + nested_entity.length
+            <= entity.offset + entity.length
+            and nested_entity != entity
+        }
+        parsed.extend(nested.keys())
+
+        # Текст между предыдущей entities и текущей экранируется; кирпичики
+        # `[код]` в нём сохраняются, иначе правка шаблона сообщением с
+        # entities уничтожала бы привязки.
+        gap = _escape_template_text(
+            utf16_text[last_offset * 2 : (entity.offset - offset) * 2].decode(
+                "utf-16-le"
+            )
+        )
+        # Обычная запись `подпись(URL)` верна только когда подпись — весь
+        # хвост секции перед скобкой, внутри неё нет разметки, а сама
+        # подпись не содержит кирпичика: ссылка с кирпичиком в подписи
+        # читается только в явной форме `{подпись}(URL)`.
+        plain_label = (
+            top_level
+            and offset == 0
+            and entity.offset == 0
+            and not markup
+            and not gap
+            and not nested
+            and not _contains_brick_token(entity_text)
+            and not entity_text.endswith((" ", "\n", "\t"))
+        )
+
+        kind = entity.type
+        if kind in {MessageEntity.CODE, MessageEntity.PRE}:
+            # Буквальный спан: содержимое не разбирается и не экранируется.
+            # Обратная кавычка внутри сделала бы спан неоднозначным — тогда
+            # деградируем в обычный экранированный текст.
+            fence = _ENTITY_MARKERS[kind]
+            if fence in entity_text:
+                wrapped = _escape_template_text(entity_text, keep_bricks=False)
+            else:
+                wrapped = f"{fence}{entity_text}{fence}"
+        elif nested:
+            inner = _parse_template_markup(
+                entity_text, nested, offset=entity.offset, top_level=False
+            )
+            wrapped = _wrap_markup(entity, inner, plain_label=plain_label)
+        else:
+            inner = _escape_template_text(entity_text)
+            wrapped = _wrap_markup(entity, inner, plain_label=plain_label)
+
+        markup += gap
+        markup += wrapped
+        last_offset = entity.offset - offset + entity.length
+
+    markup += _escape_template_text(utf16_text[last_offset * 2 :].decode("utf-16-le"))
+    return markup
+
+
+def _wrap_markup(entity: MessageEntity, inner: str, *, plain_label: bool) -> str:
+    """
+    Маркер грамматики для entity; неподдерживаемые типы дают просто текст.
+
+    `text_link` пишется как `подпись(URL)` — так устроена грамматика Stage 24
+    (`ТЕКСТ(URL)`). Такая запись годится, только когда подпись — хвост текста
+    перед скобкой и внутри неё нет вложенной разметки; иначе используется
+    явная форма `{подпись}(URL)`, где грамматика читает подпись целиком.
+    Адрес берётся из entity, даже если его нет в тексте.
+
+    Неподдерживаемые грамматикой типы (`text_mention`, `custom_emoji`,
+    `date_time`, `url`, `mention` и пр.) остаются видимым текстом: содержимое
+    не теряется.
+    """
+    kind = entity.type
+    marker = _ENTITY_MARKERS.get(kind)
+    if marker is not None:
+        return f"{marker}{inner}{marker}"
+    if kind == MessageEntity.TEXT_LINK and entity.url:
+        url = str(entity.url).strip()
+        if _link_is_expressible(url):
+            return f"{inner}({url})" if plain_label else f"{{{inner}}}({url})"
+        return inner
+    return inner
+
+
+def _link_is_expressible(url: str) -> bool:
+    """
+    Можно ли записать URL внутри `( )` без искажения.
+
+    Запись ссылки — `подпись(URL)` (или `{подпись}(URL)`): закрывающая
+    скобка обрывает адрес, `[`/`]` грамматика читает как кирпичик или как
+    обрывочную скобку (`TemplateParseError`), а `\\` — как экранирование
+    следующего символа. Поэтому такой text_link деградирует в подпись без
+    ссылки — предсказуемо и без ошибки сохранения. Схемы, которые
+    грамматика не представляет (`mailto:`, `ftp:` и любые не
+    http/https/tg), деградируют так же.
+    """
+    if not url or any(char.isspace() for char in url):
+        return False
+    if any(char in url for char in "()[]\\"):
+        return False
+    lowered = url.lower()
+    return lowered.startswith(
+        ("http://", "https://", "tg://", "t.me/", "www.")
+    ) or bool(re.match(r"^[a-z0-9\-]+(\.[a-z0-9\-]+)+", lowered))
+
+
 # —— Ссылки внутри ссылок ——————————————————————————————————————————————
 
 _LINK_TAG_RE = re.compile(r"</?a(?:\s[^<>]*)?>")

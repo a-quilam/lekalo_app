@@ -15,8 +15,10 @@ Stage 24: парсер шаблонов анонсов.
 - `ТЕКСТ(URL)` или `[место]([ссылка_места])` — гиперссылка; видимый текст
   идёт до `(`, адрес — внутри; скобки и служебные обозначения в готовом
   сообщении не выводятся;
-- `**жирный**`, `*курсив*`, `__подчёркивание__`, `~~зачёркнутый~~` —
-  Telegram-форматирование (с поддержкой вложенности);
+- `**жирный**`, `*курсив*`, `__подчёркивание__`, `~~зачёркнутый~~`,
+  `||спойлер||` — Telegram-форматирование (с поддержкой вложенности);
+- `` `код` `` и ```` ```блок```` ```` — буквальные спаны: внутри них нет
+  вложенного форматирования и кирпичиков, как в Telegram;
 - прочие символы, включая переводы строк и Unicode, сохраняются дословно.
 
 Неизвестные конструкции (в том числе `[неизвестный]` и `[место](текст)`)
@@ -33,7 +35,7 @@ from html import escape as _escape
 
 BRICK_PATTERN = re.compile(r"\[(?P<code>[^\[\]\(\)]+)\]")
 LINK_URL_PATTERN = re.compile(r"\((?P<url>[^()]+)\)")
-FORMAT_PATTERN = re.compile(r"(?P<marker>\*\*|~~|__|\*)")
+FORMAT_PATTERN = re.compile(r"(?P<marker>\*\*|~~|__|\|\||\*)")
 
 ALLOWED_URL_SCHEMES = ("http", "https")
 
@@ -136,8 +138,37 @@ ESCAPE_MAP = {
     "~": "~",
     "(": "(",
     ")": ")",
+    "|": "|",
+    "`": "`",
+    "{": "{",
+    "}": "}",
     "\\": "\\",
 }
+
+
+def _read_code_span(text: str, start: int) -> tuple[str, str, int] | None:
+    """
+    Читает буквальный спан: ```` ```…``` ```` (pre) или `` `…` `` (code).
+
+    Содержимое не разбирается: обратные слэши и маркеры внутри остаются
+    символами, как в Telegram. Незакрытый спан не является оформлением —
+    возвращается None, и обратная кавычка остаётся обычным текстом.
+    """
+    if text.startswith("```", start):
+        marker, fence = "```", "```"
+    else:
+        marker, fence = "`", "`"
+    body_start = start + len(fence)
+    if body_start >= len(text):
+        return None
+    end = text.find(fence, body_start)
+    if end < 0:
+        return None
+    content = text[body_start:end]
+    if not content:
+        # Пустой спан (``, `````) — не оформление, а просто кавычки в тексте.
+        return None
+    return marker, content, end + len(fence)
 
 
 def _lex(text: str, *, section: str | None) -> list[LexerToken]:
@@ -183,9 +214,31 @@ def _lex(text: str, *, section: str | None) -> list[LexerToken]:
             offset += 2
             continue
 
+        # Буквальные спаны: ```` ```блок``` ```` и `` `код` `` — без вложенной
+        # разметки и кирпичиков, как в Telegram.
+        if char == "`":
+            span = _read_code_span(text, offset)
+            if span is not None:
+                marker, content, end = span
+                flush()
+                tokens.append(FormatNode(marker=marker, children=(TextNode(content),)))
+                offset = end
+                continue
+
+        # Явная подпись ссылки: `{подпись}(URL)` — для случая, когда подпись
+        # не является хвостом текста перед скобкой (середина предложения).
+        if char == "{":
+            explicit = _read_explicit_link(text, offset, section=section)
+            if explicit is not None:
+                label, url_token, end = explicit
+                flush()
+                tokens.append(LinkNode(label=label, url=url_token, normalized_url=None))
+                offset = end
+                continue
+
         # Маркеры форматирования (длинные раньше коротких: `**` раньше `*`).
         matched = False
-        for marker in ("**", "__", "~~", "*"):
+        for marker in ("**", "__", "~~", "||", "*"):
             if text.startswith(marker, offset):
                 flush()
                 tokens.append(FormatMarker(marker=marker))
@@ -214,13 +267,13 @@ def _lex(text: str, *, section: str | None) -> list[LexerToken]:
             (buffer and not buffer[-1].isspace())
             or (tokens and isinstance(tokens[-1], (BrickNode, FormatNode)))
         ):
-            end = _find_close_paren(text, offset)
-            if end is None:
+            link_end = _find_close_paren(text, offset)
+            if link_end is None:
                 # Нет закрывающей скобки — это просто текст со скобкой.
                 buffer.append(char)
                 offset += 1
                 continue
-            inner = text[offset + 1 : end]
+            inner = text[offset + 1 : link_end]
             flush()
             # Подпись-кирпичик явно указывает на намерение сделать ссылку:
             # невалидный адрес для неё — ошибка, а не проза.
@@ -236,12 +289,12 @@ def _lex(text: str, *, section: str | None) -> list[LexerToken]:
                 if ":" in inner:
                     raise
                 # Обычный текст в скобках после слова — проза, а не ссылка.
-                buffer.append(text[offset : end + 1])
-                offset = end + 1
+                buffer.append(text[offset : link_end + 1])
+                offset = link_end + 1
                 continue
             label = _pop_link_label(tokens)
             tokens.append(LinkNode(label=label, url=url_token, normalized_url=None))
-            offset = end + 1
+            offset = link_end + 1
             continue
 
         buffer.append(char)
@@ -273,14 +326,65 @@ def _find_close_paren(text: str, start: int) -> int | None:
     return None
 
 
+def _find_unescaped(text: str, char: str, start: int) -> int | None:
+    """Ищет `char` вне экранирования обратным слэшем (`\\}` литеральна)."""
+    offset = start
+    while offset < len(text):
+        current = text[offset]
+        if current == "\\":
+            offset += 2
+            continue
+        if current == char:
+            return offset
+        offset += 1
+    return None
+
+
+def _read_explicit_link(
+    text: str, start: int, *, section: str | None
+) -> tuple[tuple[TemplateToken, ...], str | BrickNode, int] | None:
+    """
+    Читает явную ссылку `{подпись}(URL)`.
+
+    Нужна там, где обычная запись неоднозначна: подпись `ТЕКСТ(URL)` — это
+    всегда хвост текста перед скобкой, поэтому ссылка в середине предложения
+    без явной подписи захватила бы лишний текст. Внутри `{ }` допустима вся
+    разметка грамматики, кроме вложенной ссылки.
+
+    Возвращает None, если это не ссылка (нет закрывающей `}`, нет `(` сразу
+    после неё или внутри не корректный URL): тогда `{` остаётся обычным
+    текстом. Ошибка ради фигурных скобок не поднимается: до появления формы
+    `{…}` здесь был литеральный текст, и старые шаблоны не должны падать.
+    """
+    close = _find_unescaped(text, "}", start + 1)
+    if close is None:
+        return None
+    if close + 1 >= len(text) or text[close + 1] != "(":
+        return None
+    end = _find_close_paren(text, close + 1)
+    if end is None:
+        return None
+    label_text = text[start + 1 : close]
+    inner = text[close + 2 : end]
+    try:
+        url_token = _parse_link_url(inner, section=section, offset=close + 1)
+    except TemplateParseError:
+        return None
+    if isinstance(url_token, BrickNode):
+        # Ссылку на кирпичик пишут обычной формой `[место]([ссылка_места])`.
+        return None
+    label = tuple(_apply_formatting(_lex(label_text, section=section), section=section))
+    return label, url_token, end + 1
+
+
 def _pop_link_label(tokens: list[LexerToken]) -> tuple[TemplateToken, ...]:
     """
-    Забирает последний узел как подпись ссылки.
+    Забирает подпись ссылки — подряд идущий текст перед `(`.
 
-    Дефисы в литеральной подписи заменяются пробелами (`Наше-уютное-место`
-    → «Наше уютное место»), но только в этой конструкции; дефисы в обычном
-    тексте и значениях кирпичиков не трогаются. Пробелы перед «(» не
-    распознаются как ссылка.
+    Подпись сохраняется дословно, включая дефисы («Наше-место»): дефис —
+    обычный символ, а не служебный. Забирается весь хвост текстовых узлов,
+    поэтому подпись естественно совпадает с текстом до скобки. Пробелы перед
+    «(» не распознаются как ссылка: такой фрагмент остаётся прозой.
     """
     if not tokens:
         return ()
@@ -288,13 +392,20 @@ def _pop_link_label(tokens: list[LexerToken]) -> tuple[TemplateToken, ...]:
     if isinstance(last, TextNode):
         if last.text.endswith((" ", "\n", "\t")):
             return ()
-        label = TextNode(last.text.replace("-", " "))
-        tokens.pop()
-        return (label,)
-    if isinstance(last, BrickNode):
+    elif isinstance(last, BrickNode):
         tokens.pop()
         return (last,)
-    return ()
+    else:
+        return ()
+    start = len(tokens)
+    while start > 0 and isinstance(tokens[start - 1], TextNode):
+        start -= 1
+    # Все узлы хвоста — TextNode (проверено выше), то есть валидные токены.
+    label: list[TemplateToken] = [
+        node for node in tokens[start:] if isinstance(node, TextNode)
+    ]
+    del tokens[start:]
+    return tuple(label)
 
 
 def _parse_link_url(inner: str, *, section: str | None, offset: int) -> str | BrickNode:
@@ -327,7 +438,8 @@ def _normalize_url(raw: str, *, section: str | None, offset: int) -> str:
     """
     Нормализует адрес: схемы `t.me`, домены без `://` превращаются в HTTPS.
 
-    Опасные схемы (`javascript:`, `data:`, `file:`) отклоняются.
+    Опасные схемы (`javascript:`, `data:`, `file:`) отклоняются; `tg://`
+    разрешена наравне с http(s) — это внутренние ссылки Telegram.
     Путь, query и фрагмент сохраняются дословно.
     """
     value = raw.strip()
@@ -344,8 +456,12 @@ def _normalize_url(raw: str, *, section: str | None, offset: int) -> str:
         )
     if lowered.startswith(("http://", "https://")):
         return value
-    if lowered.startswith("t.me/") or lowered.startswith("tg://resolve?"):
-        return f"https://{value}" if not lowered.startswith("tg://") else value
+    # `tg://resolve?domain=…` и прочие tg-ссылки — штатная схема Telegram,
+    # она допустима наравне с http(s).
+    if lowered.startswith("tg://"):
+        return value
+    if lowered.startswith("t.me/"):
+        return f"https://{value}"
     # Домен без схемы — подставляем https, не добавляем www.
     if re.match(r"^[a-z0-9\-]+(\.[a-z0-9\-]+)+", lowered) or lowered.startswith("www."):
         return f"https://{value}"
@@ -360,14 +476,14 @@ def _apply_formatting(
     tokens: list[LexerToken], *, section: str | None
 ) -> list[TemplateToken]:
     """
-    Сворачивает маркеры `**…**`, `*…*`, `__…__`, `~~…~~` в FormatNode.
+    Сворачивает маркеры `**…**`, `*…*`, `__…__`, `~~…~~`, `||…||` в FormatNode.
 
     Реализация: ищем первую пару одинаковых маркеров; дети рекурсивно
     обрабатываются тем же алгоритмом, что даёт вложенность (`**жирный
     с *курсивом***`). Незакрытый маркер остаётся Literal-текстом —
     парсер не молча удаляет неизвестные конструкции.
     """
-    markers = ("**", "__", "~~", "*")
+    markers = ("**", "__", "~~", "||", "*")
     for marker in markers:
         while True:
             occurrences = [
@@ -482,6 +598,9 @@ def _format_tag(marker: str) -> str:
         "*": "i",
         "__": "u",
         "~~": "s",
+        "||": "tg-spoiler",
+        "`": "code",
+        "```": "pre",
     }.get(marker, "span")
 
 

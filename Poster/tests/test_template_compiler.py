@@ -162,7 +162,8 @@ class TemplateBindingTests(unittest.TestCase):
         result = self._resolve("Билеты(t.me/example)")
         self.assertTrue(result.ok)
 
-    def test_hyphenated_link_label(self) -> None:
+    def test_hyphenated_link_label_keeps_hyphens(self) -> None:
+        # Poster 2.4.1: дефисы в подписи — литеральные символы.
         result = self._resolve("Наше-уютное-место([ссылка_места])")
         self.assertTrue(result.ok)
         self.assertEqual(result.resolved_brick_ids.get("ссылка_места"), 3)
@@ -237,6 +238,12 @@ class TemplateRenderTests(unittest.TestCase):
         # без пустых скобок и без битой ссылки.
         result = self._render("[место]([ссылка_места]) и всё", {2: "Место"})
         self.assertEqual(result, "Место и всё")
+
+    def test_render_literal_tg_link(self) -> None:
+        # Poster 2.4.1: `tg://` разрешена наравне с http(s) — иначе шаблон
+        # сохранялся, а рендер падал на «некорректном адресе».
+        result = self._render("Канал(tg://resolve?domain=poster)", {})
+        self.assertEqual(result, '<a href="tg://resolve?domain=poster">Канал</a>')
 
     def test_render_date_value(self) -> None:
         result = self._render("Когда: [дата]", {4: "10.10.2026"})

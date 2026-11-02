@@ -313,7 +313,15 @@ def _safe_url(value: Any, *, code: str = "") -> str:
     return normalized
 
 
-_FORMAT_TAGS = {"**": "b", "*": "i", "__": "u", "~~": "s"}
+_FORMAT_TAGS = {
+    "**": "b",
+    "*": "i",
+    "__": "u",
+    "~~": "s",
+    "||": "tg-spoiler",
+    "`": "code",
+    "```": "pre",
+}
 
 
 def _escape_html(text: str, *, quote: bool = False) -> str:
@@ -496,13 +504,15 @@ def _normalize_render_url(raw: str) -> str:
     Нормализует литеральный URL гиперссылки перед созданием `<a href>`.
 
     Опасные схемы и произвольный текст отклоняются; корректные адреса
-    приводятся к https://.
+    приводятся к https://. Схема `tg://` разрешена наравне с http(s) —
+    это внутренние ссылки Telegram, и парсер (`template_parser`) сохраняет
+    их как есть.
     """
     value = str(raw).strip()
     lowered = value.lower()
     if lowered.startswith(("javascript:", "data:", "file:", "vbscript:")):
         raise TemplateCompileError(f"Схема ссылки запрещена: {value!r}.")
-    if lowered.startswith(("http://", "https://")):
+    if lowered.startswith(("http://", "https://", "tg://")):
         return value
     normalized = normalize_url(value)
     if normalized is None:
