@@ -72,7 +72,7 @@ DEFAULTS: dict[str, str] = {
         )
     ),
     "menu.outside.photo": (
-        "Фото можно добавить при создании анонса, на шаге «Фотографии». Чтобы начать, нажмите «📍 Создать для площадки» или «📝 Создать по личному шаблону»."
+        "Фото можно добавить при создании анонса, на шаге «Фотографии». Чтобы начать, нажмите «📝 Создать анонс»."
     ),
     "menu.outside.text": ("Выберите действие в меню. Список команд — /help."),
     "menu.cancel.place": "Выбор места отменён.",
@@ -86,8 +86,7 @@ DEFAULTS: dict[str, str] = {
             "<b>Помощь</b>\n\n"
             "Poster помогает собрать анонс по шаблону. Ответьте на вопросы, добавьте фото — и готовый анонс придёт в этот чат. Пока вы отвечаете, текст анонса виден вверху экрана.\n"
             "\n<b>Кнопки меню</b>\n"
-            "— <b>«📍 Создать для площадки»</b> — выберите площадку, чтобы начать анонс по её стандартному шаблону. Новую площадку можно добавить здесь же: после этого сразу откроется анонс.\n"
-            "— <b>«📝 Создать по личному шаблону»</b> — выберите свой шаблон, чтобы начать анонс. Здесь же можно создавать и менять личные шаблоны.\n"
+            "— <b>«📝 Создать анонс»</b> — выберите площадку, чтобы начать анонс по её стандартному шаблону. Новую площадку можно добавить здесь же: после этого сразу откроется анонс. Там же — «📝 Создать по личному шаблону», если анонс нужен без площадки.\n"
             "— <b>«📂 Мои анонсы»</b> — продолжайте черновики и открывайте готовые анонсы. Новые анонсы не удаляют старые.\n"
             "— <b>«⚙️ Управление»</b> — площадки, шаблоны и кирпичики. Раздел «🛡 Администрирование» доступен при наличии прав.\n"
             "— <b>«❓ Помощь»</b> — эта справка.\n\n"
@@ -304,7 +303,7 @@ DEFAULTS: dict[str, str] = {
             "Напишите город, например Москва или Санкт-Петербург. Он будет виден в списке площадок и поможет найти место."
         )
     ),
-    "places.pick.title": "📍 Создать для площадки",
+    "places.pick.title": "📝 Создать анонс",
     "places.pick.empty": (
         "Площадок пока нет. Добавьте первую — сразу начнётся создание анонса по её стандартному шаблону."
     ),
@@ -346,7 +345,7 @@ DEFAULTS: dict[str, str] = {
         "Готовый анонс можно отправить только в личный чат автора. Продолжите создание в личном чате с ботом. Черновик сохранён."
     ),
     "errors.stale.places": "Эта кнопка больше не работает. Откройте раздел «Места» заново.",
-    "errors.stale.pick": "Эта кнопка больше не работает. Откройте «Создать для площадки» заново.",
+    "errors.stale.pick": "Эта кнопка больше не работает. Откройте «📝 Создать анонс» заново.",
     "errors.stale.manage": "Эта кнопка больше не работает. Откройте «Управление → Площадки» заново.",
     "errors.stale.bricks": "Эта кнопка больше не работает. Откройте раздел заново.",
     "errors.stale.admin": "Эта кнопка больше не работает. Откройте раздел администрирования заново.",
@@ -376,7 +375,7 @@ DEFAULTS: dict[str, str] = {
         " Не удалось доставить уведомление автору. Решение сохранено, статус можно посмотреть в «Мои предложения»."
     ),
     # --- общие кнопки -------------------------------------------------------
-    "buttons.main.create_place": "📍 Создать для площадки",
+    "buttons.main.create_place": "📝 Создать анонс",
     "buttons.main.create_template": "📝 Создать по личному шаблону",
     "buttons.main.announcements": "📂 Мои анонсы",
     "buttons.main.manage": "⚙️ Управление",
@@ -868,8 +867,6 @@ DEFAULTS: dict[str, str] = {
     "alerts.admin.u_mesta_poyavilsya_administrator": "У места уже появился администратор. Выберите «Заменить администратора».",
     "alerts.admin.uvedomlenie_bolshe_trebuetsya": "Статус передачи изменился. Уведомление больше не нужно.",
     "alerts.admin.zadacha_nedostupna": "Задача недоступна.",
-    "alerts.places.naznachenie_administratorov": "Назначение администраторов доступно только суперадминистратору.",
-    "alerts.places.redaktirovanie_dostupno": "Редактирование доступно администратору места.",
     "alerts.places.ssylka_perevypuschena": "Новая ссылка создана",
     "alerts.places.u_est_prava_upravlenie": "У вас уже есть права на управление этим местом.",
     "alerts.places.uzhe_podtverzhdeno": "Уже подтверждено.",
@@ -1170,7 +1167,6 @@ DEFAULTS: dict[str, str] = {
     "buttons.bricks.udalit": "🗑 Удалить",
     "buttons.bricks.v_arhiv": "📦 В архив",
     "buttons.bricks.vosstanovit": "♻️ Восстановить",
-    "buttons.places.administratory": "👥 Администраторы",
     "buttons.places.da_dobavit": "✅ Да, добавить",
     "buttons.places.eto_novoe_mesto": "✅ Это новое место",
     "buttons.places.ispravit_nazvanie": "✏️ Исправить название",
@@ -1182,7 +1178,6 @@ DEFAULTS: dict[str, str] = {
     "buttons.places.net_otmena": "❌ Нет, отмена",
     "buttons.places.novaya_ploschadka": "➕ Новая площадка",
     "buttons.places.otkryt_kartochku_bez_sohraneniya": "Открыть карточку без сохранения",
-    "buttons.places.redaktirovat": "✏️ Редактировать",
     "buttons.places.sohranit_alternativnoe": "💾 Сохранить как альтернативное",
     "buttons.places.vernutsya_spisku": "◀️ Вернуться к списку",
     "buttons.places.vybrat_alternativnoe_nazvanie": "🔤 Выбрать альтернативное название",
@@ -1280,7 +1275,6 @@ DEFAULTS: dict[str, str] = {
     "places.handle_save_candidate.vvedennoe_nazvanie_sohraneno": "Введённое название сохранено как альтернативное.",
     "places.manage_card.alternativnye_nazvaniya": "Альтернативные названия: {count_alternatives}",
     "places.manage_card.eto_prosmotr_spravochnika": "Здесь можно посмотреть данные места. Изменять их могут администратор места и суперадминистратор Poster.",
-    "places.manage_card.vy_mozhete_redaktirovat_dannye": "Вы можете редактировать данные места и его стандартный шаблон.",
     "places.names.kanonicheskoe": "основное",
     "places.names.nazvaniya_mesta": "🔤 Названия места\n\n📍 {canonical_name}\n\n",
     "places.names.vybrano": "выбрано",
@@ -1486,7 +1480,7 @@ DEFAULTS: dict[str, str] = {
     "wizard.handle_preview_callback.publikaciya_nachinalas_mozhno": "↩️ Отправка ещё не началась. Можно изменить поля, дополнительные поля или фото.",
     "wizard.handle_preview_callback.vse_fotografii_udaleny": "✅ Все фотографии удалены.",
     "wizard.handle_unknown_command.konstruktor_anonsa_aktiven": "Сейчас вы создаёте анонс. Используйте кнопки под сообщением. Чтобы закрыть анонс и оставить черновик, отправьте /cancel.",
-    "wizard.home.anonsov_poka_net_nachnite": "Анонсов пока нет. Чтобы создать первый, нажмите «📍 Создать для площадки» или «📝 Создать по личному шаблону».",
+    "wizard.home.anonsov_poka_net_nachnite": "Анонсов пока нет. Чтобы создать первый, нажмите «📝 Создать анонс».",
     "wizard.home.na_etoy_stranice_anonsov": "На этой странице анонсов нет.",
     "wizard.home.nezavershennye_anonsy_mozhno": (
         "Черновик можно продолжить с того же шага. Готовые анонсы остаются в истории, даже когда вы создаёте новые.\n"

@@ -5,9 +5,9 @@ Poster 2.4, этап P3 — независимые тесты Tester (тест-�
 Контракт владельца «меню и анонсы» (docs/agent_team/state.md, P3):
 
 A. Главное меню — ровно 3 строки:
-   [📍 Создать для площадки, 📝 Создать по личному шаблону],
+   [📝 Создать анонс],
    [📂 Мои анонсы],
-   [⚙️ Управление, ❓ Помощь]. Порядок в строке 1 именно такой.
+   [⚙️ Управление, ❓ Помощь].
 
 B. «Мои анонсы»:
    - кнопки создания анонса на экране НЕТ (ни `aw_new`, ни «Создать…»);
@@ -78,10 +78,7 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 # --- литералы владельца (значения из config/ui_texts.yaml) --------------------
 
 MENU_ROWS = [
-    [
-        ("📍 Создать для площадки", "pick_place"),
-        ("📝 Создать по личному шаблону", "pick_template"),
-    ],
+    [("📝 Создать анонс", "pick_place")],
     [("📂 Мои анонсы", "my_announcements")],
     [("⚙️ Управление", "manage"), ("❓ Помощь", "help")],
 ]
@@ -372,11 +369,10 @@ class MainMenuLayoutTests(unittest.TestCase):
     @scenario_test
     async def test_a1_main_menu_has_exactly_three_rows_in_given_order(self, h):
         """
-        A.1: меню 3 строки, пары в строках 1 и 3, одиночная «Мои анонсы».
+        A.1: меню 3 строки (Poster 2.4.1 T3), одиночная «Мои анонсы».
 
-        Строка 1 — «📍 Создать для площадки» затем «📝 Создать по личному
-        шаблону»; строка 2 — «📂 Мои анонсы»; строка 3 — «⚙️ Управление»
-        и «❓ Помощь». Лишних кнопок нет (P3: ожидаемая реализация).
+        Строка 1 — единый вход «📝 Создать анонс»; строка 2 — «📂 Мои
+        анонсы»; строка 3 — «⚙️ Управление» и «❓ Помощь». Лишних кнопок нет.
         """
         await h.text("/start")
         rows = [[(label, data) for label, data in row] for row in _rows(h)]
@@ -386,14 +382,8 @@ class MainMenuLayoutTests(unittest.TestCase):
             "главное меню должно быть ровно из трёх строк в порядке владельца; "
             f"фактически: {rows}",
         )
-        # Порядок кнопок первой строки — именно create_place → create_template.
-        self.assertEqual(
-            [data for _label, data in rows[0]],
-            ["pick_place", "pick_template"],
-            f"порядок кнопок строки 1 нарушен: {rows[0]}",
-        )
         datas = _datas(h)
-        self.assertEqual(len(datas), 5, f"в меню должно быть 5 кнопок: {datas}")
+        self.assertEqual(len(datas), 4, f"в меню должно быть 4 кнопки: {datas}")
         for forbidden in ("aw_new", "create_post", "my_announcements_new"):
             self.assertNotIn(forbidden, datas, f"в меню лишняя кнопка {forbidden!r}")
 
@@ -411,7 +401,6 @@ class MainMenuLayoutTests(unittest.TestCase):
         source = inspect.getsource(main_menu_module.main_menu_keyboard)
         for key in (
             "buttons.main.create_place",
-            "buttons.main.create_template",
             "buttons.main.announcements",
             "buttons.main.manage",
             "buttons.main.help",

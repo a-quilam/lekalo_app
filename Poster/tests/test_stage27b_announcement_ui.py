@@ -324,12 +324,11 @@ class AnnouncementWizardMenuTests(unittest.TestCase):
     async def test_new_menu_entry_and_removed_legacy_wizard(self, h) -> None:
         await h.text("/start")
         buttons = h.screen_buttons()
-        # Poster 2.0 S2: в меню ровно пять кнопок, старых входов нет.
+        # Poster 2.4.1 T3: в меню три строки и четыре кнопки, старых входов нет.
         self.assertEqual(
             [label for label, _ in buttons],
             [
-                "📍 Создать для площадки",
-                "📝 Создать по личному шаблону",
+                "📝 Создать анонс",
                 "📂 Мои анонсы",
                 "⚙️ Управление",
                 "❓ Помощь",

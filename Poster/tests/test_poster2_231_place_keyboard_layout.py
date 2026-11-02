@@ -5,6 +5,8 @@ Poster 2.3.1 E4: компактная клавиатура карточки ме
 Проверяется раскладка `_place_keyboard` снаружи, как у владельца:
 - действия собраны парами по смыслу, не больше двух кнопок в строке;
 - навигация «К списку мест» | «В меню» — последняя строка;
+- Poster 2.4.1 T2: «🔗 Ссылка для создания анонса» (`adm_invite`) —
+  отдельная строка прямо перед навигацией, для управляющего местом;
 - состав действий и их callback-данные не изменились по сравнению с
   прежней компоновкой (права по-прежнему решают видимость).
 
@@ -92,11 +94,17 @@ class PlaceKeyboardLayoutTests(unittest.TestCase):
             self.assertEqual(
                 [data for _label, data in rows[-1]], ["adm_places", "main_menu"]
             )
+            # Poster 2.4.1 T2: «🔗 Ссылка для создания анонса» — одиночная
+            # строка прямо перед навигацией.
+            self.assertEqual(
+                [data for _label, data in rows[-2]], [f"adm_invite:{place_id}"]
+            )
             # Назначение — одиночное действие: рядом с ним ничего не стоит.
             self.assertEqual(
-                [data for _label, data in rows[-2]], [f"adm_assign:{place_id}"]
+                [data for _label, data in rows[-3]], [f"adm_assign:{place_id}"]
             )
             self.assertIn(f"adm_assign:{place_id}", _callbacks(h))
+            self.assertIn(f"adm_invite:{place_id}", _callbacks(h))
 
     @scenario_test
     async def test_superadmin_with_admin_pairs_replace_and_revoke(self, h) -> None:
@@ -110,8 +118,11 @@ class PlaceKeyboardLayoutTests(unittest.TestCase):
 
             rows = _rows(h)
             self.assertEqual(
-                [data for _label, data in rows[-2]],
+                [data for _label, data in rows[-3]],
                 [f"adm_replace:{place_id}", f"adm_revoke:{place_id}"],
+            )
+            self.assertEqual(
+                [data for _label, data in rows[-2]], [f"adm_invite:{place_id}"]
             )
             self.assertEqual(
                 [data for _label, data in rows[-1]], ["adm_places", "main_menu"]
@@ -130,11 +141,14 @@ class PlaceKeyboardLayoutTests(unittest.TestCase):
 
             rows = _rows(h)
             self.assertEqual(
-                [data for _label, data in rows[-3]],
+                [data for _label, data in rows[-4]],
                 [f"adm_transfer:{place_id}", f"adm_replace:{place_id}"],
             )
             self.assertEqual(
-                [data for _label, data in rows[-2]], [f"adm_revoke:{place_id}"]
+                [data for _label, data in rows[-3]], [f"adm_revoke:{place_id}"]
+            )
+            self.assertEqual(
+                [data for _label, data in rows[-2]], [f"adm_invite:{place_id}"]
             )
             self.assertEqual(
                 [data for _label, data in rows[-1]], ["adm_places", "main_menu"]
@@ -158,7 +172,10 @@ class PlaceKeyboardLayoutTests(unittest.TestCase):
             [f"adm_bprop_place:{place_id}", f"adm_bconflicts:{place_id}"],
         )
         self.assertEqual(
-            [data for _label, data in rows[-2]], [f"adm_transfer:{place_id}"]
+            [data for _label, data in rows[-3]], [f"adm_transfer:{place_id}"]
+        )
+        self.assertEqual(
+            [data for _label, data in rows[-2]], [f"adm_invite:{place_id}"]
         )
         self.assertEqual(
             [data for _label, data in rows[-1]], ["adm_places", "main_menu"]
@@ -169,3 +186,5 @@ class PlaceKeyboardLayoutTests(unittest.TestCase):
                 [data for data in callbacks if (data or "").startswith(forbidden)],
                 f"лишнее действие {forbidden}: {callbacks}",
             )
+        # T2: ссылка доступна управляющему местом.
+        self.assertIn(f"adm_invite:{place_id}", callbacks)

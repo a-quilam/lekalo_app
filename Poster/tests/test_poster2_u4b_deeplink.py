@@ -121,11 +121,13 @@ def _callback(h, prefix: str) -> str:
 
 
 async def _open_invite_screen(h, place_id: int, user_id: int = DEFAULT_USER_ID) -> str:
-    """Открывает карточку места и раздел ссылки, возвращает токен."""
+    """Открывает полную карточку места и раздел ссылки, возвращает токен."""
     await h.text("/start", user_id=user_id)
     await h.callback("manage_places", user_id=user_id)
+    # Poster 2.4.1 T2: управляющий местом сразу попадает в полную карточку,
+    # ссылка — её кнопка `adm_invite`.
     await h.callback(f"plm_open:{place_id}", user_id=user_id)
-    await h.callback(f"plm_invite:{place_id}", user_id=user_id)
+    await h.callback(f"adm_invite:{place_id}", user_id=user_id)
     return _token_from_screen(h)
 
 
@@ -172,8 +174,9 @@ class PlaceInviteLinkTests(unittest.TestCase):
     async def test_repeated_visit_does_not_duplicate_link(self, h):
         place_id = _seed_place(h, admin=True)
         first = await _open_invite_screen(h, place_id)
-        await h.callback(f"plm_card:{place_id}")
-        await h.callback(f"plm_invite:{place_id}")
+        # «◀️ К карточке» → снова «🔗 Ссылка для создания анонса».
+        await h.callback("adm_invite_back")
+        await h.callback(f"adm_invite:{place_id}")
         second = _token_from_screen(h)
 
         self.assertEqual(first, second)
@@ -185,7 +188,7 @@ class PlaceInviteLinkTests(unittest.TestCase):
         place_id = _seed_place(h, admin=True)
         old_token = await _open_invite_screen(h, place_id)
 
-        await h.callback(_callback(h, "plm_invite_regen:"))
+        await h.callback(_callback(h, "adm_invite_regen:"))
         new_token = _token_from_screen(h)
 
         self.assertNotEqual(old_token, new_token)
@@ -213,8 +216,10 @@ class PlaceInviteLinkTests(unittest.TestCase):
         await h.text("/start", user_id=INVITED_TG)
         await h.callback("manage_places", user_id=INVITED_TG)
         await h.callback(f"plm_open:{place_id}", user_id=INVITED_TG)
-        self.assertEqual(_callbacks(h, "plm_edit:"), [])
-        self.assertEqual(_callbacks(h, "plm_invite:"), [])
+        self.assertEqual(_callbacks(h, "adm_edit_place:"), [])
+        self.assertEqual(_callbacks(h, "adm_invite:"), [])
+        self.assertEqual(_callbacks(h, "plm_edit:"), [], "старой кнопки нет")
+        self.assertEqual(_callbacks(h, "plm_invite:"), [], "старой кнопки нет")
         await h.callback("/admin", user_id=INVITED_TG)
         await h.text("/admin", user_id=INVITED_TG)
         self.assertNotIn("Кабинет суперадмина", h.screen_text())
@@ -432,7 +437,7 @@ class PlaceInviteDeepLinkTests(unittest.TestCase):
         self.assertIn("Что хотите сделать?", h.screen_text())
         self.assertEqual(
             [data for _label, data in h.screen_buttons()],
-            ["pick_place", "pick_template", "my_announcements", "manage", "help"],
+            ["pick_place", "my_announcements", "manage", "help"],
         )
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))
 

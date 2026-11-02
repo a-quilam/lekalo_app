@@ -256,7 +256,7 @@ class BrokenYamlTests(_Case):
             ui_texts.reload_texts(self.path)
         await h.text("/start")
         self.assertEqual(h.screen_text(), ui_texts.DEFAULTS["menu.main"])
-        self.assertIn(("📍 Создать для площадки", "pick_place"), h.screen_buttons())
+        self.assertIn(("📝 Создать анонс", "pick_place"), h.screen_buttons())
         await h.text("/places")
         self.assertIn("📍 Места", h.screen_text())
 

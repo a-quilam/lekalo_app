@@ -6,8 +6,9 @@ Poster 2.2 U4b, независимые негативные проверки с�
 устойчивость, а не UX-тексты.
 
 - IDOR выдачи: обычный пользователь, админ ДРУГОЙ площадки и незнакомец не
-  получают ссылку чужой площадки; подделанная кнопка `plm_invite:<чужой id>`
-  отвечает отказом и ничего не создаёт;
+  получают ссылку чужой площадки; подделанная кнопка `adm_invite:<чужой id>`
+  отвечает отказом и ничего не создаёт (Poster 2.4.1 T2: кнопка ссылки живёт
+  в полной карточке места);
 - суперадмин выдаёт ссылку любой площадки;
 - подделанные payload'ы `/start` (пустой, мусор, токен другой площадки,
   усечённый/удлинённый токен) не открывают конструктор и не создают
@@ -121,10 +122,12 @@ class InviteIssuanceSecurityTests(unittest.TestCase):
         await h.text("/start", user_id=STRANGER_TG)
         await h.callback("manage_places", user_id=STRANGER_TG)
         await h.callback(f"plm_open:{place_id}", user_id=STRANGER_TG)
+        # Poster 2.4.1 T2: карточка просмотра — без кнопки ссылки.
+        self.assertEqual(_callbacks(h, "adm_invite:"), [])
         self.assertEqual(_callbacks(h, "plm_invite:"), [])
 
         # Подделанная кнопка: отказ в callback'е, ссылка не создаётся.
-        await h.callback(f"plm_invite:{place_id}", user_id=STRANGER_TG)
+        await h.callback(f"adm_invite:{place_id}", user_id=STRANGER_TG)
         self.assertTrue(h.answers())
         self.assertEqual(_invites(h), [])
 
@@ -136,7 +139,10 @@ class InviteIssuanceSecurityTests(unittest.TestCase):
         await h.text("/start", user_id=FOREIGN_ADMIN_TG)
         await h.callback("manage_places", user_id=FOREIGN_ADMIN_TG)
         await h.callback(f"plm_open:{foreign_place}", user_id=FOREIGN_ADMIN_TG)
-        await h.callback(f"plm_invite:{foreign_place}", user_id=FOREIGN_ADMIN_TG)
+        self.assertEqual(
+            _callbacks(h, "adm_invite:"), [], "у чужой карточки нет кнопки ссылки"
+        )
+        await h.callback(f"adm_invite:{foreign_place}", user_id=FOREIGN_ADMIN_TG)
 
         self.assertEqual(
             [row.place_id for row in _invites(h)],
@@ -147,7 +153,7 @@ class InviteIssuanceSecurityTests(unittest.TestCase):
         # Своя площадка — можно (возврат в список, затем карточка).
         await h.callback("plm_back", user_id=FOREIGN_ADMIN_TG)
         await h.callback(f"plm_open:{own_place}", user_id=FOREIGN_ADMIN_TG)
-        await h.callback(f"plm_invite:{own_place}", user_id=FOREIGN_ADMIN_TG)
+        await h.callback(f"adm_invite:{own_place}", user_id=FOREIGN_ADMIN_TG)
         self.assertEqual([row.place_id for row in _active(h)], [own_place])
 
     @scenario_test
@@ -157,7 +163,7 @@ class InviteIssuanceSecurityTests(unittest.TestCase):
         await h.text("/start", user_id=SUPERADMIN_TG)
         await h.callback("manage_places", user_id=SUPERADMIN_TG)
         await h.callback(f"plm_open:{place_id}", user_id=SUPERADMIN_TG)
-        await h.callback(f"plm_invite:{place_id}", user_id=SUPERADMIN_TG)
+        await h.callback(f"adm_invite:{place_id}", user_id=SUPERADMIN_TG)
 
         token = _token_from_screen(h)
         self.assertTrue(is_valid_token_shape(token))
@@ -197,7 +203,7 @@ class ForgedStartTests(unittest.TestCase):
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))
         self.assertEqual(
             [data for _label, data in h.screen_buttons()],
-            ["pick_place", "pick_template", "my_announcements", "manage", "help"],
+            ["pick_place", "my_announcements", "manage", "help"],
         )
 
     @scenario_test

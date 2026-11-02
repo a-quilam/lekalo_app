@@ -36,7 +36,7 @@ from admin_state import clear_admin_session
 from brick_state import clear_brick_session
 from database import SessionLocal
 from models import PlaceName, User
-from permissions import can_manage_place, is_superadmin
+from permissions import can_manage_place
 from place_state import load_place_session, save_place_session
 from place_store import (
     PlaceDetails,
@@ -58,7 +58,6 @@ from template_state import clear_template_session
 from user_store import get_or_create_user
 from utils import screen
 from utils import tg_context as ctx
-from utils.deep_links import deep_link
 from utils.place_labels import place_title
 from utils.ui_texts import tr, tr_safe
 
@@ -105,8 +104,6 @@ PHASES = {
     "manage_search_results",
     "manage_card",
     "manage_admin_request",
-    # Poster 2.2 U4b: ссылка на создание анонса площадки.
-    "manage_invite",
 }
 
 
@@ -850,36 +847,7 @@ async def _render_phase(
                 )
                 text, keyboard = _manage_list_content(session, state)
             else:
-                text, keyboard = _manage_card_content(
-                    session,
-                    details,
-                    manages=can_manage_place(
-                        session, telegram_user_id, details.place_id
-                    ),
-                    superadmin=is_superadmin(telegram_user_id),
-                )
-        elif phase == "manage_invite":
-            place_id = state.get("place_id")
-            details = (
-                get_place_details(session, int(place_id))
-                if isinstance(place_id, int)
-                else None
-            )
-            if details is None:
-                state.clear()
-                state.update(_new_manage())
-                notice = notice or tr(
-                    "admin.render_phase.mesto_suschestvuet_bylo_udaleno"
-                )
-                text, keyboard = _manage_list_content(session, state)
-            else:
-                text, keyboard = await _invite_content(
-                    context,
-                    session,
-                    details,
-                    telegram_user_id=telegram_user_id,
-                    regenerated=bool(state.get("invite_regenerated")),
-                )
+                text, keyboard = _manage_card_content(session, details)
         elif phase == "manage_admin_request":
             place_id = state.get("place_id")
             details = (
@@ -1168,7 +1136,13 @@ def _pick_content(session: Session, state: dict) -> tuple[str, InlineKeyboardMar
                 ],
                 [
                     InlineKeyboardButton(
-                        tr("buttons.nav.main_menu"), callback_data="main_menu"
+                        tr("buttons.main.create_template"),
+                        callback_data="pick_template",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.nav.back"), callback_data="main_menu"
                     )
                 ],
             ]
@@ -1221,8 +1195,16 @@ def _pick_content(session: Session, state: dict) -> tuple[str, InlineKeyboardMar
             )
         ]
     )
+    # Poster 2.4.1 T3: единый вход в анонс — личный шаблон доступен отсюда же.
     rows.append(
-        [InlineKeyboardButton(tr("buttons.nav.main_menu"), callback_data="main_menu")]
+        [
+            InlineKeyboardButton(
+                tr("buttons.main.create_template"), callback_data="pick_template"
+            )
+        ]
+    )
+    rows.append(
+        [InlineKeyboardButton(tr("buttons.nav.back"), callback_data="main_menu")]
     )
     return text, InlineKeyboardMarkup(rows)
 
@@ -1245,6 +1227,12 @@ def _pick_search_content(
                     InlineKeyboardButton(
                         tr("buttons.places.novaya_ploschadka"),
                         callback_data="pl_pick_add",
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.main.create_template"),
+                        callback_data="pick_template",
                     )
                 ],
                 [
@@ -1301,6 +1289,13 @@ def _pick_search_content(
     rows.append(
         [
             InlineKeyboardButton(
+                tr("buttons.main.create_template"), callback_data="pick_template"
+            )
+        ]
+    )
+    rows.append(
+        [
+            InlineKeyboardButton(
                 tr("buttons.nav.retry_search"), callback_data="pl_pick_search"
             )
         ]
@@ -1328,7 +1323,6 @@ MANAGE_LIST_PHASES = frozenset(
         "manage_search_input",
         "manage_search_results",
         "manage_card",
-        "manage_invite",
     }
 )
 
@@ -1511,13 +1505,14 @@ def _manage_search_content(
 
 
 def _manage_card_content(
-    session: Session, details: PlaceDetails, *, manages: bool, superadmin: bool
+    session: Session, details: PlaceDetails
 ) -> tuple[str, InlineKeyboardMarkup]:
     """
-    Карточка места справочника: данные и действия по актуальным правам.
+    Карточка просмотра справочника для не-управляющих.
 
-    `manages`/`superadmin` вычислены по БД в момент отрисовки: callback не
-    передаёт роль, а видимость кнопки — только удобство.
+    Poster 2.4.1 T2: управляющий местом (и суперадмин) попадает сразу в
+    полную административную карточку (`handlers.admin`), поэтому здесь
+    остаётся только просмотр чужого места и объяснение «🛡 Я админ места».
     """
     alternatives = [item for item in details.names if not item.is_canonical]
     lines = [f"📍 {_h(details.canonical_name)}", ""]
@@ -1554,48 +1549,17 @@ def _manage_card_content(
         )
     )
     lines.append("")
-    if manages:
-        lines.append(tr("places.manage_card.vy_mozhete_redaktirovat_dannye"))
-    else:
-        lines.append(tr("places.manage_card.eto_prosmotr_spravochnika"))
+    lines.append(tr("places.manage_card.eto_prosmotr_spravochnika"))
 
     rows: list[list[InlineKeyboardButton]] = []
-    if manages:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.places.redaktirovat"),
-                    callback_data=f"plm_edit:{details.place_id}",
-                )
-            ]
-        )
-        # Poster 2.2 U4b: ссылка на создание анонса — только управляющему.
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.places.invite"),
-                    callback_data=f"plm_invite:{details.place_id}",
-                )
-            ]
-        )
-    if superadmin:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.places.administratory"),
-                    callback_data=f"plm_admins:{details.place_id}",
-                )
-            ]
-        )
-    if not manages:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.places.ya_admin_mesta"),
-                    callback_data=f"plm_admin_request:{details.place_id}",
-                )
-            ]
-        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                tr("buttons.places.ya_admin_mesta"),
+                callback_data=f"plm_admin_request:{details.place_id}",
+            )
+        ]
+    )
     rows.append(
         [InlineKeyboardButton(tr("buttons.places.k_spisku"), callback_data="plm_back")]
     )
@@ -1609,65 +1573,9 @@ def _manage_card_content(
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-async def _invite_content(
-    context: ContextTypes.DEFAULT_TYPE,
-    session: Session,
-    details: PlaceDetails,
-    *,
-    telegram_user_id: int,
-    regenerated: bool = False,
-) -> tuple[str, InlineKeyboardMarkup]:
-    """
-    Экран ссылки на создание анонса площадки (Poster 2.2 U4b).
-
-    Ссылка показывается текстом; превью ссылки отключено самим экраном
-    (`render_screen` передаёт `LinkPreviewOptions(is_disabled=True)`).
-    Перевыпуск отзывает прежний токен — об этом говорит плашка, новая ссылка
-    уже в тексте.
-    """
-    lines: list[str] = []
-    if regenerated:
-        lines.append(tr("places.invite.regenerated"))
-        lines.append("")
-    lines.append(tr("places.invite.title", place=details.canonical_name))
-    lines.append("")
-
-    from place_invite_store import PlaceInviteError, ensure_invite
-
-    token: str | None = None
-    try:
-        token = ensure_invite(
-            session,
-            actor_telegram_user_id=telegram_user_id,
-            place_id=details.place_id,
-        ).token
-    except PlaceInviteError as exc:
-        logger.info("Ссылка для площадки %s не выдана: %s", details.place_id, exc)
-    link = await deep_link(context, token) if token else None
-    lines.append(
-        tr("places.invite.link", link=link) if link else tr("places.invite.no_link")
-    )
-    rows = [
-        [
-            InlineKeyboardButton(
-                tr("buttons.places.invite_regenerate"),
-                callback_data=f"plm_invite_regen:{details.place_id}",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                tr("buttons.bricks.k_kartochke"),
-                callback_data=f"plm_card:{details.place_id}",
-            )
-        ],
-        [InlineKeyboardButton(tr("buttons.nav.main_menu"), callback_data="main_menu")],
-    ]
-    return "\n".join(lines), InlineKeyboardMarkup(rows)
-
-
 async def open_place_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    «📍 Создать для площадки»: список площадок первым экраном.
+    «📝 Создать анонс»: список площадок первым экраном.
 
     Поиск и добавление — отдельные кнопки, а не замена списка. Состояние
     раздела сбрасывается: это вход в создание анонса, а не справочник.
@@ -1683,6 +1591,40 @@ async def open_place_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     state = _new_pick()
     save_place_session(user_id, state)
     await _render_phase(update, context, state, drop_input=True)
+
+
+async def open_place_picker_with_page(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, page: object = 0
+) -> None:
+    """
+    Возврат в выбор площадки с сохранённой позицией списка (Poster 2.4.1 T3).
+
+    Вызывается из пикера личных шаблонов по «◀️ Назад»: страница выбора
+    площадок сохраняется «по возможности» — битое значение безопасно
+    превращается в первую страницу. Состояние шаблонов вызывающий очищает
+    сам, здесь остаётся только сессия мест.
+    """
+    query = getattr(update, "callback_query", None)
+    if query is not None:
+        await query.answer()
+    await screen.reanchor_screen(update, context)
+    user_id = ctx.user(update).id
+    clear_admin_session(user_id)
+    clear_brick_session(user_id)
+    state = _new_pick()
+    state["pick_page"] = _pick_page_value(page)
+    save_place_session(user_id, state)
+    await _render_phase(update, context, state, drop_input=True)
+
+
+def _pick_page_value(value: object) -> int:
+    """Смещение сохранённой страницы: битое/отрицательное значение безопасно = 0."""
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        return 0
+    try:
+        return max(int(value), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 async def handle_pick_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1824,6 +1766,26 @@ async def open_places_manage(
     await _render_phase(update, context, state, drop_input=True)
 
 
+async def open_manage_list(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, *, page: int = 0
+) -> None:
+    """
+    Возврат в список справочника «Управление → Площадки» на нужную страницу.
+
+    Poster 2.4.1 T2: полная карточка места помнит, что её открыли из
+    справочника, и «◀️ К списку мест» возвращает пользователя туда же, а не
+    в список кабинета.
+    """
+    user_id = ctx.user(update).id
+    state = load_place_session(user_id)
+    if not isinstance(state, dict):
+        state = _new_manage()
+    state.clear()
+    state.update(_new_manage())
+    state["page"] = max(int(page), 0)
+    await _render_phase(update, context, state)
+
+
 async def handle_manage_page(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -1937,9 +1899,17 @@ async def handle_manage_back(
 async def handle_manage_open(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Тап по площадке в справочнике открывает КАРТОЧКУ, не анонс."""
+    """
+    Тап по площадке в справочнике: сразу ПОЛНАЯ карточка, не анонс.
+
+    Poster 2.4.1 T2: двух карточек одной площадки больше нет. Управляющий
+    местом (или суперадмин) попадает в административную карточку кабинета —
+    тот же экран, что из «Кабинет → adm_place». Не-управляющему остаётся
+    карточка просмотра справочника с объяснением «🛡 Я админ места».
+    """
     query = ctx.query(update)
-    state = load_place_session(ctx.user(update).id)
+    user_id = ctx.user(update).id
+    state = load_place_session(user_id)
     if state is None or state.get("phase") not in {
         "manage_list",
         "manage_search_results",
@@ -1956,6 +1926,7 @@ async def handle_manage_open(
     try:
         visible = _manage_visible_place_ids(session, state)
         details = get_place_details(session, place_id)
+        manages = can_manage_place(session, user_id, place_id)
     finally:
         session.close()
     if visible is not None and place_id not in visible:
@@ -1969,213 +1940,22 @@ async def handle_manage_open(
             update, context, state, notice=tr("alerts.admin.mesto_suschestvuet_udaleno")
         )
         return
+    if manages:
+        # Переход сам отвечает на callback: повторный `answer` на тот же
+        # callback Telegram отклоняет.
+        from handlers.admin import open_place_admin_card_from_manage
+
+        await open_place_admin_card_from_manage(
+            update,
+            context,
+            place_id,
+            manage_page=_page_value(state),
+        )
+        return
     await query.answer()
     state["phase"] = "manage_card"
     state["place_id"] = place_id
     await _render_phase(update, context, state)
-
-
-async def handle_manage_edit(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """
-    «✏️ Редактировать»: переход в существующее меню правки кабинета места.
-
-    Права проверяются заново по БД (IDOR): чужое место не открывает
-    административный экран даже подделанной кнопкой.
-    """
-    query = ctx.query(update)
-    state = load_place_session(ctx.user(update).id)
-    if state is None or state.get("phase") != "manage_card":
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    data = query.data or ""
-    try:
-        place_id = int(data[len("plm_edit:") :])
-    except (TypeError, ValueError):
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    if state.get("place_id") != place_id:
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    user_id = ctx.user(update).id
-    session = SessionLocal()
-    try:
-        details = get_place_details(session, place_id)
-        allowed = can_manage_place(session, user_id, place_id)
-    finally:
-        session.close()
-    if details is None:
-        await query.answer(
-            tr("alerts.admin.mesto_suschestvuet_udaleno"), show_alert=True
-        )
-        return
-    if not allowed:
-        await query.answer(tr("alerts.places.redaktirovanie_dostupno"), show_alert=True)
-        return
-    # Ответ на callback даёт сам переход: повторный `answer` на тот же
-    # callback Telegram отклоняет, и ошибка выглядела бы как сбой экрана.
-    from handlers.admin import open_place_admin_editor
-
-    await open_place_admin_editor(update, context, place_id)
-
-
-async def handle_manage_invite(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """
-    «🔗 Ссылка для создания анонса»: экран ссылки (Poster 2.2 U4b).
-
-    Права проверяются по БД заново: подделанная кнопка по чужой площадке
-    получает отказ, и ссылка не выдаётся. Повторное открытие раздела не
-    создаёт дублей — `ensure_invite` возвращает действующую ссылку.
-    """
-    query = ctx.query(update)
-    state = load_place_session(ctx.user(update).id)
-    if state is None or state.get("phase") != "manage_card":
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    place_id = _parse_prefixed_id(query.data or "", "plm_invite:")
-    if place_id is None or state.get("place_id") != place_id:
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    user_id = ctx.user(update).id
-    session = SessionLocal()
-    try:
-        details = get_place_details(session, place_id)
-        allowed = details is not None and can_manage_place(session, user_id, place_id)
-    finally:
-        session.close()
-    if details is None:
-        await query.answer(
-            tr("alerts.admin.mesto_suschestvuet_udaleno"), show_alert=True
-        )
-        return
-    if not allowed:
-        await query.answer(tr("places.invite.no_rights"), show_alert=True)
-        return
-    await query.answer()
-    state["phase"] = "manage_invite"
-    state["place_id"] = place_id
-    state.pop("invite_regenerated", None)
-    await _render_phase(update, context, state)
-
-
-async def handle_manage_invite_regenerate(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """«🔁 Перевыпустить»: старый токен отзывается, выдаётся новый."""
-    query = ctx.query(update)
-    state = load_place_session(ctx.user(update).id)
-    if state is None or state.get("phase") != "manage_invite":
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    place_id = _parse_prefixed_id(query.data or "", "plm_invite_regen:")
-    if place_id is None or state.get("place_id") != place_id:
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    user_id = ctx.user(update).id
-    from place_invite_store import PlaceInvitePermissionError, regenerate_invite
-
-    session = SessionLocal()
-    details = None
-    refused = True
-    try:
-        details = get_place_details(session, place_id)
-        if details is not None and can_manage_place(session, user_id, place_id):
-            regenerate_invite(
-                session, actor_telegram_user_id=user_id, place_id=place_id
-            )
-            refused = False
-    except PlaceInvitePermissionError:
-        refused = True
-    finally:
-        session.close()
-    if refused:
-        await query.answer(
-            (
-                tr("places.invite.no_rights")
-                if details is not None
-                else tr("alerts.admin.mesto_suschestvuet_udaleno")
-            ),
-            show_alert=True,
-        )
-        return
-    await query.answer(tr("alerts.places.ssylka_perevypuschena"))
-    state["invite_regenerated"] = True
-    await _render_phase(update, context, state)
-
-
-async def handle_manage_card(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """«◀️ К карточке» с экрана ссылки: возврат в карточку площадки."""
-    query = ctx.query(update)
-    state = load_place_session(ctx.user(update).id)
-    if state is None or state.get("phase") != "manage_invite":
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    place_id = _parse_prefixed_id(query.data or "", "plm_card:")
-    if place_id is None or state.get("place_id") != place_id:
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    await query.answer()
-    state["phase"] = "manage_card"
-    state.pop("invite_regenerated", None)
-    await _render_phase(update, context, state)
-
-
-def _parse_prefixed_id(data: str, prefix: str) -> int | None:
-    """Целое после префикса callback'а (None — кнопка испорчена)."""
-    if not data.startswith(prefix):
-        return None
-    try:
-        value = int(data[len(prefix) :])
-    except (TypeError, ValueError):
-        return None
-    return value if value > 0 else None
-
-
-async def handle_manage_admins(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """«👥 Администраторы»: только суперадмин — карточка места кабинета."""
-    query = ctx.query(update)
-    state = load_place_session(ctx.user(update).id)
-    if state is None or state.get("phase") != "manage_card":
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    data = query.data or ""
-    try:
-        place_id = int(data[len("plm_admins:") :])
-    except (TypeError, ValueError):
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    if state.get("place_id") != place_id:
-        await query.answer(tr("errors.stale.manage"), show_alert=True)
-        return
-    user_id = ctx.user(update).id
-    if not is_superadmin(user_id):
-        await query.answer(
-            tr("alerts.places.naznachenie_administratorov"),
-            show_alert=True,
-        )
-        return
-    session = SessionLocal()
-    try:
-        details = get_place_details(session, place_id)
-    finally:
-        session.close()
-    if details is None:
-        await query.answer(
-            tr("alerts.admin.mesto_suschestvuet_udaleno"), show_alert=True
-        )
-        return
-    # Ответ на callback даёт переход в кабинет: второй `answer` на тот же
-    # callback Telegram отклоняет.
-    from handlers.admin import open_place_admin_card
-
-    await open_place_admin_card(update, context, place_id)
 
 
 async def handle_manage_admin_request(
@@ -2682,7 +2462,7 @@ async def _create_place_from_state(
         }
     )
     if pick_mode:
-        # Poster 2.0 S2: создание площадки из «Создать для площадки» сразу
+        # Poster 2.0 S2: создание площадки из «📝 Создать анонс» сразу
         # открывает анонс по её стандартному шаблону. Вопрос о городе уже
         # задан здесь; анонс не спрашивает его повторно.
         await _auto_start_pick_announcement(update, context, place_id)
@@ -3227,8 +3007,9 @@ def places_handlers() -> list[BaseHandler]:
     а навигация вне мастера попадает сюда. Callback-префикс `pl_` уникален и
     не пересекается с кнопками визарда/черновиков.
 
-    Режим pick (Poster 2.0 S2) — вход «📍 Создать для площадки»: список
-    площадок, поиск, добавление; тап по названию немедленно начинает анонс.
+    Режим pick (Poster 2.0 S2, единый вход в анонс с 2.4.1) — «📝 Создать
+    анонс»: список площадок, поиск, добавление и «📝 Создать по личному
+    шаблону»; тап по названию немедленно начинает анонс.
     Точка входа тапа (`pl_pick:<id>`) зарегистрирована в
     `announcement_wizard_handlers` как entry_point диалога конструктора.
     """
@@ -3249,17 +3030,16 @@ def places_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(handle_manage_search_page, pattern=r"^plm_spage:\d+$"),
         CallbackQueryHandler(handle_manage_back, pattern=r"^plm_back$"),
         CallbackQueryHandler(handle_manage_open, pattern=r"^plm_open:\d+$"),
-        CallbackQueryHandler(handle_manage_edit, pattern=r"^plm_edit:\d+$"),
-        CallbackQueryHandler(handle_manage_invite, pattern=r"^plm_invite:\d+$"),
-        CallbackQueryHandler(
-            handle_manage_invite_regenerate, pattern=r"^plm_invite_regen:\d+$"
-        ),
-        CallbackQueryHandler(handle_manage_card, pattern=r"^plm_card:\d+$"),
-        CallbackQueryHandler(handle_manage_admins, pattern=r"^plm_admins:\d+$"),
+        # Poster 2.4.1 T2: plm_edit/plm_invite/plm_invite_regen/plm_card/plm_admins
+        # больше не существуют — их маршруты переехали в полную карточку
+        # кабинета. Устаревшие сообщения получают честный stale-ответ из
+        # общего обработчика `^plm_` ниже (префикс `plm_` не попадает под
+        # `^pl_`, поэтому нужен отдельный фолбэк).
         CallbackQueryHandler(
             handle_manage_admin_request, pattern=r"^plm_admin_request:\d+$"
         ),
         CallbackQueryHandler(handle_manage_add, pattern=r"^plm_add$"),
+        CallbackQueryHandler(stale_place_callback, pattern=r"^plm_"),
         CallbackQueryHandler(handle_hub, pattern=r"^pl_hub$"),
         CallbackQueryHandler(handle_search_prompt, pattern=r"^pl_search$"),
         CallbackQueryHandler(handle_all_places, pattern=r"^pl_all$"),

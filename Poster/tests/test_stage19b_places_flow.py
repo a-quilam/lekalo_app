@@ -134,7 +134,7 @@ class PlacesNavigationTests(unittest.TestCase):
     async def test_main_menu_has_places_and_hub_has_required_actions(self, h):
         await h.text("/start")
         # Poster 2.0 S2: площадки открываются из «⚙️ Управление».
-        self.assertIn(("📍 Создать для площадки", "pick_place"), h.screen_buttons())
+        self.assertIn(("📝 Создать анонс", "pick_place"), h.screen_buttons())
         self.assertIn(("⚙️ Управление", "manage"), h.screen_buttons())
 
         await open_hub(h)

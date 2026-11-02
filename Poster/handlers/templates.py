@@ -60,7 +60,7 @@ from brick_types import (
 from database import SessionLocal
 from models import AnnouncementDraft, Template, TemplateSnapshot, User
 from permissions import can_access_admin_panel, can_manage_place
-from place_state import clear_place_session
+from place_state import clear_place_session, load_place_session
 from place_store import get_place_details
 from template_compiler import (
     TemplateBindings,
@@ -99,7 +99,7 @@ from template_types import (
 )
 from user_store import get_or_create_user
 from utils import current_value
-from utils.tg_html import escape_html
+from utils.tg_html import entities_to_template_markup, escape_html
 from utils.ui_texts import tr, tr_safe
 
 logger = logging.getLogger(__name__)
@@ -577,11 +577,13 @@ def _pick_content(
     templates: list[TemplateDetails], page: int
 ) -> tuple[str, InlineKeyboardMarkup]:
     """
-    Экран «📝 Создать по личному шаблону» (Poster 2.0 S2).
+    Экран «📝 Создать по личному шаблону» (Poster 2.0 S2, единый вход 2.4.1).
 
     Тап по названию сразу начинает анонс по этому шаблону — без карточки и
     подтверждений. Правка и создание остаются в том же разделе: «✏️» рядом с
     названием открывает карточку, «➕ Создать шаблон» — мастер создания.
+    «◀️ Назад» возвращает в выбор площадок (единственный вход в анонс), а не
+    в главное меню.
     """
     total = len(templates)
     if total == 0:
@@ -596,7 +598,7 @@ def _pick_content(
                 ],
                 [
                     InlineKeyboardButton(
-                        tr("buttons.nav.main_menu"), callback_data="main_menu"
+                        tr("buttons.nav.back"), callback_data="tp_pick_back"
                     )
                 ],
             ]
@@ -657,7 +659,7 @@ def _pick_content(
         ]
     )
     rows.append(
-        [InlineKeyboardButton(tr("buttons.nav.main_menu"), callback_data="main_menu")]
+        [InlineKeyboardButton(tr("buttons.nav.back"), callback_data="tp_pick_back")]
     )
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
@@ -1952,7 +1954,8 @@ async def open_templates(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     R2b, дефект №25: «Управление → Шаблоны» и `/templates` — только
     управление. Сохранённая фаза `pick` (вход в создание анонса) здесь НЕ
     возобновляется: раздел открывается списком управления, а создать анонс
-    можно только из главного меню через «📝 Создать по личному шаблону».
+    можно только из главного меню — «📝 Создать анонс» → «📝 Создать по
+    личному шаблону».
     Незавершённая правка/сохранение шаблона возобновляется как раньше.
     """
     query = getattr(update, "callback_query", None)
@@ -1981,17 +1984,49 @@ async def open_template_picker(
     Раздел тот же, что «Мои шаблоны» (`/templates`), но вход сразу
     ориентирован на запуск анонса: тап по названию начинает конструктор.
     Правка и создание остаются доступны здесь же.
+
+    Poster 2.4.1 T3: кнопка живёт в выборе площадок, поэтому «◀️ Назад»
+    возвращает туда же. Страницу списка площадок запоминаем до очистки
+    сессии мест: возврат «по возможности» сохраняет позицию.
     """
     query = getattr(update, "callback_query", None)
     if query is not None:
         await query.answer()
     await screen.reanchor_screen(update, context)
     telegram_user_id = ctx.user(update).id
+    place_state = load_place_session(telegram_user_id)
+    place_page = 0
+    if isinstance(place_state, dict) and place_state.get("phase") == "pick":
+        place_page = _page_value(place_state.get("pick_page"))
     clear_place_session(telegram_user_id)
     clear_admin_session(telegram_user_id)
     clear_brick_session(telegram_user_id)
     state = _new_pick()
+    state["place_page"] = place_page
     await _render_phase(update, context, state, drop_input=True)
+
+
+async def handle_pick_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    «◀️ Назад» из пикера личных шаблонов → выбор площадок (Poster 2.4.1 T3).
+
+    Единственный вход в анонс — «📝 Создать анонс» (выбор площадки), поэтому
+    возврат ведёт туда, а не в главное меню. `place_page` из сессии
+    шаблонов восстанавливает страницу списка площадок.
+    """
+    query = ctx.query(update)
+    telegram_user_id = ctx.user(update).id
+    state = load_template_session(telegram_user_id)
+    if not _valid_state(state) or state.get("phase") != PHASE_PICK:
+        await query.answer(STALE_TEXT, show_alert=True)
+        return
+    place_page = _page_value(state.get("place_page"))
+    clear_template_session(telegram_user_id)
+    from handlers.places import open_place_picker_with_page
+
+    # Ответ на callback и отрисовку делает общий вход выбора площадок:
+    # повторный `answer` в Telegram считается ошибкой запроса.
+    await open_place_picker_with_page(update, context, place_page)
 
 
 async def handle_pick_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -3358,6 +3393,8 @@ def templates_handlers() -> list[BaseHandler]:
         # по названию сразу начинает анонс. Точка старта (`tp_pick:<id>`)
         # зарегистрирована в announcement_wizard_handlers как entry_point.
         CallbackQueryHandler(open_template_picker, pattern=r"^pick_template$"),
+        # Poster 2.4.1 T3: «◀️ Назад» из пикера шаблонов → выбор площадок.
+        CallbackQueryHandler(handle_pick_back, pattern=r"^tp_pick_back$"),
         CallbackQueryHandler(handle_pick_page, pattern=r"^tp_pickpage:\d+$"),
         # Стандартный шаблон в кабинете места и возврат в карточку места.
         CallbackQueryHandler(open_standard_template, pattern=r"^tp_std:\d+$"),

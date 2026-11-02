@@ -1,6 +1,6 @@
 # tests/test_poster2_menu.py
 """
-Poster 2.0, S2: главное меню из пяти кнопок и два прямых входа в конструктор.
+Poster 2.0 S2, Poster 2.4.1 T3: главное меню из трёх строк и единый вход в анонс.
 
 Проверяется через настоящее приложение `bot.build_application`, FakeBot и
 временную SQLite (tests.integration_harness): реальный Telegram, `.env` и
@@ -8,7 +8,7 @@ Poster 2.0, S2: главное меню из пяти кнопок и два п�
 
 Покрытие:
 
-- состав меню (ровно пять кнопок, старые входы отсутствуют);
+- состав меню (ровно четыре кнопки в трёх строках, старые входы отсутствуют);
 - тап по площадке сразу создаёт подтверждённый черновик со стандартным
   шаблоном места — без промежуточных подтверждений;
 - тап по личному шаблону сразу создаёт черновик без площадки;
@@ -73,15 +73,13 @@ OTHER_TG = 8_900_002
 SUPERADMIN_TG = 8_900_003
 
 MENU_BUTTONS = [
-    "📍 Создать для площадки",
-    "📝 Создать по личному шаблону",
+    "📝 Создать анонс",
     "📂 Мои анонсы",
     "⚙️ Управление",
     "❓ Помощь",
 ]
 MENU_CALLBACKS = [
     "pick_place",
-    "pick_template",
     "my_announcements",
     "manage",
     "help",
@@ -262,14 +260,24 @@ def _delete_personal_templates(h, telegram_user_id: int = DEFAULT_USER_ID) -> No
     f"интеграционное окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
 )
 class MainMenuTests(unittest.TestCase):
-    """Главное меню Poster 2.0: ровно пять кнопок."""
+    """Главное меню Poster 2.4.1: три строки, четыре кнопки."""
 
     @scenario_test
-    async def test_menu_has_five_buttons(self, h):
+    async def test_menu_has_four_buttons_in_three_rows(self, h):
         await h.text("/start")
         buttons = h.screen_buttons()
         self.assertEqual([label for label, _ in buttons], MENU_BUTTONS)
         self.assertEqual([data for _, data in buttons], MENU_CALLBACKS)
+        rows = [
+            [(button.text, button.callback_data) for button in row]
+            for row in h.screen().get("reply_markup").inline_keyboard
+        ]
+        self.assertEqual(
+            len(rows), 3, f"главное меню должно быть из трёх строк: {rows}"
+        )
+        self.assertEqual([data for _label, data in rows[0]], ["pick_place"])
+        self.assertEqual([data for _label, data in rows[1]], ["my_announcements"])
+        self.assertEqual([data for _label, data in rows[2]], ["manage", "help"])
 
     @scenario_test
     async def test_old_entries_are_gone(self, h):
@@ -286,7 +294,7 @@ class MainMenuTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("help")
         text = h.screen_text()
-        self.assertIn("Создать для площадки", text)
+        self.assertIn("📝 Создать анонс", text)
         self.assertIn("Создать по личному шаблону", text)
         self.assertIn("Мои анонсы", text)
         self.assertIn("Управление", text)
@@ -297,7 +305,7 @@ class MainMenuTests(unittest.TestCase):
     f"интеграционное окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
 )
 class PlacePickTests(unittest.TestCase):
-    """«📍 Создать для площадки»: тап по площадке сразу начинает анонс."""
+    """«📝 Создать анонс»: тап по площадке сразу начинает анонс."""
 
     @scenario_test
     async def test_list_shows_places_and_tap_starts_immediately(self, h):
@@ -306,7 +314,7 @@ class PlacePickTests(unittest.TestCase):
         await h.callback("pick_place")
 
         # Список площадок — первый экран, без промежуточного «справочника».
-        self.assertIn("Создать для площадки", h.screen_text())
+        self.assertIn("📝 Создать анонс", h.screen_text())
         self.assertIn(f"pl_pick:{place_id}", _callbacks(h, "pl_pick:"))
 
         answers_before = len(h.answers())

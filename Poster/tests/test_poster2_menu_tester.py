@@ -54,8 +54,7 @@ OTHER_TG = 8_950_002
 SUPER_TG = 8_950_003
 
 MENU = [
-    ("📍 Создать для площадки", "pick_place"),
-    ("📝 Создать по личному шаблону", "pick_template"),
+    ("📝 Создать анонс", "pick_place"),
     ("📂 Мои анонсы", "my_announcements"),
     ("⚙️ Управление", "manage"),
     ("❓ Помощь", "help"),
@@ -224,13 +223,13 @@ class FullPathTests(unittest.TestCase):
         # Порядок как у живого пользователя: сначала первый контакт, потом
         # (админ/другой пользователь) появляется площадка.
         await h.text("/start")
-        self.assertEqual(_btns(h), MENU, "меню — ровно пять кнопок")
+        self.assertEqual(_btns(h), MENU, "меню — ровно три строки и четыре кнопки")
         self.assertEqual(len(_personal(h)), 1, "первый контакт дал один шаблон")
         place_id = _seed_place(h)
 
         await h.callback("pick_place")
         list_screen = h.screen_text()
-        self.assertIn("Создать для площадки", list_screen)
+        self.assertIn("📝 Создать анонс", list_screen)
         self.assertIn(f"pl_pick:{place_id}", _cb(h, "pl_pick:"))
 
         before_tap = len(h.screens())

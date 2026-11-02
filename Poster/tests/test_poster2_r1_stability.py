@@ -299,7 +299,7 @@ class ReplyKeyboardRemoveTests(unittest.TestCase):
         # Дальше UI живёт на inline-кнопках: главное меню на месте.
         self.assertIn("Что хотите сделать?", h.screen_text())
         labels = [label for label, _data in h.screen_buttons()]
-        self.assertIn("📍 Создать для площадки", labels)
+        self.assertIn("📝 Создать анонс", labels)
         # Служебное сообщение не остаётся в чате.
         self.assertTrue(h.deleted_ids(), "служебное сообщение не удалено")
 

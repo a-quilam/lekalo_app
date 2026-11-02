@@ -506,7 +506,9 @@ class PlacesBackMatrixTests(BackChecks):
             await self.click(h, "manage_places")
             for data in (
                 f"plm_open:{place_id}",
-                "plm_back",
+                # T2: управляющий попадает сразу в полную карточку кабинета;
+                # «К списку мест» возвращает в справочник.
+                "adm_places",
                 "plm_add",
                 "plm_back",
                 "plm_back",

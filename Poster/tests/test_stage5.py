@@ -252,12 +252,11 @@ class MainMenuKeyboardTests(unittest.TestCase):
         keyboard = main_menu_keyboard()
         self.assertIsInstance(keyboard, InlineKeyboardMarkup)
         texts = [button.text for row in keyboard.inline_keyboard for button in row]
-        # Poster 2.0 S2: главное меню — ровно пять кнопок.
+        # Poster 2.4.1 T3: главное меню — три строки и четыре кнопки.
         self.assertEqual(
             texts,
             [
-                "📍 Создать для площадки",
-                "📝 Создать по личному шаблону",
+                "📝 Создать анонс",
                 "📂 Мои анонсы",
                 "⚙️ Управление",
                 "❓ Помощь",
@@ -270,7 +269,6 @@ class MainMenuKeyboardTests(unittest.TestCase):
             callbacks,
             [
                 "pick_place",
-                "pick_template",
                 "my_announcements",
                 "manage",
                 "help",
@@ -293,9 +291,9 @@ class MainMenuKeyboardTests(unittest.TestCase):
         text = bot.calls[0]["text"]
         for command in ("/start", "/new_wizard", "/drafts", "/cancel", "/help"):
             self.assertIn(command, text)
-        # Poster 2.0 S2: справка описывает кнопки нового меню и то, что
+        # Poster 2.4.1 T3: справка описывает кнопки нового меню и то, что
         # готовый анонс приходит в личный чат.
-        self.assertIn("Создать для площадки", text)
+        self.assertIn("Создать анонс", text)
         self.assertIn("Создать по личному шаблону", text)
         self.assertIn("Мои анонсы", text)
         self.assertIn("Управление", text)

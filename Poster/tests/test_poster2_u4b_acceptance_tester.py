@@ -53,7 +53,6 @@ SUPER_TG = 9_960_004
 
 MAIN_MENU_BUTTONS = [
     "pick_place",
-    "pick_template",
     "my_announcements",
     "manage",
     "help",
@@ -132,11 +131,15 @@ def _token_from_screen(h) -> str:
 
 
 async def _open_invite_screen(h, place_id: int, *, user_id: int = DEFAULT_USER_ID):
-    """Карточка места → «🔗 Ссылка для создания анонса» → токен."""
+    """Полная карточка места → «🔗 Ссылка для создания анонса» → токен.
+
+    Poster 2.4.1 T2: раздел ссылки — часть полной карточки (`adm_invite`),
+    отдельной карточки справочника с `plm_invite` больше нет.
+    """
     await h.text("/start", user_id=user_id)
     await h.callback("manage_places", user_id=user_id)
     await h.callback(f"plm_open:{place_id}", user_id=user_id)
-    await h.callback(f"plm_invite:{place_id}", user_id=user_id)
+    await h.callback(f"adm_invite:{place_id}", user_id=user_id)
     return _token_from_screen(h)
 
 
@@ -245,12 +248,16 @@ class OwnerScenarioAcceptanceTests(unittest.TestCase):
         await h.text("/start", user_id=INVITED_TG)
         await h.callback("manage_places", user_id=INVITED_TG)
         await h.callback(f"plm_open:{place_id}", user_id=INVITED_TG)
-        self.assertEqual(_callbacks(h, "plm_edit:"), [], "чужое место не редактируется")
-        self.assertEqual(_callbacks(h, "plm_invite:"), [], "ссылку не перевыпускает")
+        self.assertEqual(
+            _callbacks(h, "adm_edit_place:"), [], "чужое место не редактируется"
+        )
+        self.assertEqual(_callbacks(h, "adm_invite:"), [], "ссылку не перевыпускает")
+        self.assertEqual(_callbacks(h, "plm_edit:"), [], "старой кнопки нет")
+        self.assertEqual(_callbacks(h, "plm_invite:"), [], "старой кнопки нет")
 
         # Подделанное нажатие: отказ, ничего не создаётся.
         invite_rows_before = len(_invites(h))
-        await h.callback(f"plm_invite:{place_id}", user_id=INVITED_TG)
+        await h.callback(f"adm_invite:{place_id}", user_id=INVITED_TG)
         self.assertTrue(h.answer_texts(), "подделанная кнопка должна получить отказ")
         self.assertEqual(len(_invites(h)), invite_rows_before)
 
@@ -300,7 +307,7 @@ class OwnerScenarioAcceptanceTests(unittest.TestCase):
         place_id = _seed_place(h)
         old_token = await _open_invite_screen(h, place_id)
 
-        await h.callback(f"plm_invite_regen:{place_id}", user_id=DEFAULT_USER_ID)
+        await h.callback(f"adm_invite_regen:{place_id}", user_id=DEFAULT_USER_ID)
         new_token = _token_from_screen(h)
         self.assertNotEqual(old_token, new_token)
 
@@ -370,13 +377,14 @@ class IssuanceRightsTests(unittest.TestCase):
         await h.text("/start", user_id=PLAIN_TG)
         await h.callback("manage_places", user_id=PLAIN_TG)
         await h.callback(f"plm_open:{place_id}", user_id=PLAIN_TG)
+        self.assertEqual(_callbacks(h, "adm_invite:"), [])
         self.assertEqual(_callbacks(h, "plm_invite:"), [])
-        await h.callback(f"plm_invite:{place_id}", user_id=PLAIN_TG)
+        await h.callback(f"adm_invite:{place_id}", user_id=PLAIN_TG)
 
         self.assertEqual(_invites(h), [], "обычный пользователь ссылку не выдаёт")
         self.assertNotIn("?start=", h.screen_text())
         # Перевыпуск тоже закрыт.
-        await h.callback(f"plm_invite_regen:{place_id}", user_id=PLAIN_TG)
+        await h.callback(f"adm_invite_regen:{place_id}", user_id=PLAIN_TG)
         self.assertEqual(_invites(h), [])
 
     @scenario_test
@@ -387,12 +395,13 @@ class IssuanceRightsTests(unittest.TestCase):
         await h.text("/start", user_id=OTHER_TG)
         await h.callback("manage_places", user_id=OTHER_TG)
         await h.callback(f"plm_open:{foreign_place}", user_id=OTHER_TG)
-        await h.callback(f"plm_invite:{foreign_place}", user_id=OTHER_TG)
+        self.assertEqual(_callbacks(h, "adm_invite:"), [], "чужой карточки нет кнопки")
+        await h.callback(f"adm_invite:{foreign_place}", user_id=OTHER_TG)
         self.assertEqual(_invites(h), [], "чужую ссылку админ не выдаёт")
 
         await h.callback("plm_back", user_id=OTHER_TG)
         await h.callback(f"plm_open:{own_place}", user_id=OTHER_TG)
-        await h.callback(f"plm_invite:{own_place}", user_id=OTHER_TG)
+        await h.callback(f"adm_invite:{own_place}", user_id=OTHER_TG)
         self.assertEqual(_active_tokens(h), [_token_from_screen(h)])
         self.assertEqual([row.place_id for row in _invites(h)], [own_place])
 
@@ -417,8 +426,9 @@ class IdempotencyAcceptanceTests(unittest.TestCase):
         place_id = _seed_place(h)
         first = await _open_invite_screen(h, place_id)
 
-        await h.callback(f"plm_card:{place_id}", user_id=DEFAULT_USER_ID)
-        await h.callback(f"plm_invite:{place_id}", user_id=DEFAULT_USER_ID)
+        # «◀️ К карточке» → снова «🔗 Ссылка для создания анонса».
+        await h.callback("adm_invite_back", user_id=DEFAULT_USER_ID)
+        await h.callback(f"adm_invite:{place_id}", user_id=DEFAULT_USER_ID)
         second = _token_from_screen(h)
 
         self.assertEqual(first, second)
@@ -430,10 +440,12 @@ class IdempotencyAcceptanceTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("manage_places")
         await h.callback(f"plm_open:{place_id}")
-        await h.callback(f"plm_invite:{place_id}")
+        await h.callback(f"adm_invite:{place_id}")
         first = _token_from_screen(h)
-        await h.callback(f"plm_invite:{place_id}")  # двойное нажатие
+        # Второй тап по уже ушедшей кнопке карточки: stale-ответ, без дублей.
+        await h.callback(f"adm_invite:{place_id}")
 
+        self.assertIn("больше не работает", h.answer_texts()[-1].lower())
         self.assertEqual(_token_from_screen(h), first)
         self.assertEqual(len(_invites(h)), 1)
 
@@ -442,7 +454,7 @@ class IdempotencyAcceptanceTests(unittest.TestCase):
         place_id = _seed_place(h)
         old_token = await _open_invite_screen(h, place_id)
 
-        await h.callback(f"plm_invite_regen:{place_id}")
+        await h.callback(f"adm_invite_regen:{place_id}")
         new_token = _token_from_screen(h)
 
         self.assertNotEqual(old_token, new_token)
@@ -454,7 +466,7 @@ class IdempotencyAcceptanceTests(unittest.TestCase):
         self.assertEqual(_active_tokens(h), [new_token])
         # Отзыв виден и после рестарта процесса.
         await h.restart()
-        await h.callback(f"plm_invite_regen:{place_id}", message_id=2)
+        await h.callback(f"adm_invite_regen:{place_id}", message_id=2)
         self.assertNotEqual(_token_from_screen(h), new_token)
 
 
