@@ -37,6 +37,7 @@ from brick_state import clear_brick_session
 from database import SessionLocal
 from models import PlaceName, User
 from permissions import can_manage_place
+from place_edit_store import PlaceEditValueError, clean_address_text
 from place_state import load_place_session, save_place_session
 from place_store import (
     PlaceDetails,
@@ -60,6 +61,7 @@ from utils import screen
 from utils import tg_context as ctx
 from utils.place_labels import place_title
 from utils.ui_texts import tr, tr_safe
+from utils.validators import normalize_url
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,9 @@ TEXT_INPUT_PHASES = {
     "search_input",
     "create_input",
     "create_city_input",
+    # Poster 2.5: необязательные шаги мастера — адрес и ссылка.
+    "create_address_input",
+    "create_url_input",
     "alias_input",
     "pick_search_input",
     "manage_search_input",
@@ -87,6 +92,9 @@ PHASES = {
     "create_check",
     # Poster 2.0 U1a: последовательный вопрос о городе при регистрации.
     "create_city_input",
+    # Poster 2.5: необязательные адрес и ссылка площадки.
+    "create_address_input",
+    "create_url_input",
     "existing_choice",
     "confirm",
     "names",
@@ -535,6 +543,42 @@ def _create_check_content(
     return text, InlineKeyboardMarkup(keyboard)
 
 
+def _create_optional_content(state: dict) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Необязательный шаг мастера создания (адрес/ссылка): значение или пропуск.
+
+    Клавиатура одна для обоих шагов: «◀️ Назад» к предыдущему шагу и
+    «⏭ Пропустить». Пропуск НЕ стирает уже сохранённое значение — оно
+    просто остаётся в состоянии и попадает в `create_place`.
+    """
+    phase = str(state.get("phase") or "")
+    name = str(state.get("candidate") or "")
+    city = str(state.get("city") or "")
+    if phase == "create_address_input":
+        text = tr("places.create_address_input", name=name, city=city)
+        current = state.get("address")
+        if isinstance(current, str) and current:
+            text += "\n\n" + tr("places.create_address_input.current", address=current)
+    else:
+        text = tr("places.create_url_input", name=name, city=city)
+        current = state.get("url")
+        if isinstance(current, str) and current:
+            text += "\n\n" + tr("places.create_url_input.current", url=current)
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    tr("buttons.nav.back"), callback_data="pl_create_back"
+                ),
+                InlineKeyboardButton(
+                    tr("buttons.wizard.skip"), callback_data="pl_create_skip"
+                ),
+            ]
+        ]
+    )
+    return text, keyboard
+
+
 def _existing_choice_content(
     details: PlaceDetails, state: dict
 ) -> tuple[str, InlineKeyboardMarkup]:
@@ -906,18 +950,38 @@ async def _render_phase(
                 "places.create_city_input",
                 name=str(state.get("candidate") or ""),
             )
+            current_city = state.get("city")
+            if isinstance(current_city, str) and current_city:
+                text += "\n\n" + tr(
+                    "places.create_city_input.current", city=current_city
+                )
             keyboard = InlineKeyboardMarkup(
                 [
                     [
                         InlineKeyboardButton(
                             tr("buttons.nav.back"),
-                            callback_data=(
-                                "plm_back" if state.get("manage_mode") else "pl_back"
-                            ),
+                            callback_data="pl_create_back",
                         )
                     ]
                 ]
             )
+        elif phase in {"create_address_input", "create_url_input"}:
+            if not state.get("candidate") or not state.get("city"):
+                # Снимок состояния без обязательных полей (старый/битый WIP):
+                # шаг не из чего продолжать — безопасно возвращаем точку входа.
+                manage_mode = bool(state.get("manage_mode"))
+                state.clear()
+                notice = notice or tr(
+                    "places.create_place_from_state.nazvanie_mesta_poteryano_nachni"
+                )
+                if manage_mode:
+                    state.update(_new_manage())
+                    text, keyboard = _manage_list_content(session, state)
+                else:
+                    state.update(_new_hub())
+                    text, keyboard = _hub_content()
+            else:
+                text, keyboard = _create_optional_content(state)
         elif phase == "admin_request":
             place_id = state.get("place_id")
             details = (
@@ -2386,21 +2450,100 @@ async def handle_create_edit(
     await _render_phase(update, context, state)
 
 
+# Poster 2.5: шаги мастера создания площадки. «Назад» ведёт к предыдущему
+# шагу того же мастера, а не сразу на точку входа (название и город уже
+# сохранены в состоянии и не теряются).
+CREATE_WIZARD_BACK_PHASES = {
+    "create_city_input": "create_check",
+    "create_address_input": "create_city_input",
+    "create_url_input": "create_address_input",
+}
+
+
+async def handle_create_back(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«◀️ Назад» внутри мастера создания: к предыдущему шагу мастера."""
+    state = load_place_session(ctx.user(update).id)
+    phase = state.get("phase") if state is not None else None
+    target = CREATE_WIZARD_BACK_PHASES.get(str(phase))
+    if state is None or target is None:
+        await _stale(update)
+        return
+    await ctx.query(update).answer()
+    state["phase"] = target
+    await _render_phase(update, context, state)
+
+
+async def handle_create_skip(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    «⏭ Пропустить» на необязательном шаге мастера (Poster 2.5).
+
+    Пропуск не стирает ранее введённое значение: адрес/ссылка просто
+    остаются такими, какими были (при первом пропуске — NULL). На последнем
+    шаге пропуск сразу сохраняет площадку — без экрана подтверждения.
+    """
+    state = load_place_session(ctx.user(update).id)
+    phase = state.get("phase") if state is not None else None
+    if state is None or phase not in {"create_address_input", "create_url_input"}:
+        await _stale(update)
+        return
+    if phase == "create_address_input":
+        await ctx.query(update).answer()
+        # Пропуск после неудачного ввода адреса: прежнее ошибочное сообщение
+        # больше не нужно — убираем его вместе с переходом дальше.
+        cleanup = _failed_take(state)
+        state["phase"] = "create_url_input"
+        await _render_phase(update, context, state, cleanup_ids=cleanup)
+        return
+
+    city = state.get("city")
+    if not isinstance(city, str) or not city:
+        await ctx.query(update).answer()
+        state.clear()
+        state.update(_new_hub())
+        await _render_phase(
+            update,
+            context,
+            state,
+            notice=tr("places.create_place_from_state.nazvanie_mesta_poteryano_nachni"),
+        )
+        return
+    await ctx.query(update).answer()
+    cleanup = _failed_take(state)
+    address = state.get("address")
+    url = state.get("url")
+    await _create_place_from_state(
+        update,
+        context,
+        state,
+        city=city,
+        address=address if isinstance(address, str) and address else None,
+        url=url if isinstance(url, str) and url else None,
+        cleanup_ids=cleanup,
+    )
+
+
 async def _create_place_from_state(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     state: dict,
     *,
     city: str,
+    address: str | None = None,
+    url: str | None = None,
     cleanup_ids: list[int] | None = None,
 ) -> None:
     """
-    Создаёт место с городом и продолжает сценарий по режиму входа (U1a).
+    Создаёт место с городом, адресом и ссылкой (U1a, Poster 2.5).
 
     Город спрашивается ПОСЛЕ проверки дублей и ДО создания строки: место без
-    города больше не появляется (инвариант владельца). Ошибка валидации
-    оставляет пользователя в фазе ввода города, ошибка БД — тоже, но с
-    отдельным сообщением: экран не должен ломаться.
+    города больше не появляется (инвариант владельца). Адрес и ссылка —
+    необязательные поля: при пропуске передаётся None, и в базе остаётся
+    NULL (никаких заглушек). Ошибка БД оставляет пользователя на текущем
+    шаге мастера: экран не должен ломаться.
     """
     candidate = state.get("candidate")
     if not isinstance(candidate, str) or not candidate:
@@ -2419,7 +2562,14 @@ async def _create_place_from_state(
     session = SessionLocal()
     try:
         user = _ensure_user(session, update)
-        place = create_place(session, candidate, city=city, created_by_user_id=user.id)
+        place = create_place(
+            session,
+            candidate,
+            city=city,
+            created_by_user_id=user.id,
+            address=address,
+            url=url,
+        )
         place_id = int(place.id)
         canonical = session.scalar(
             select(PlaceName).where(
@@ -2698,7 +2848,13 @@ async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     elif phase in {"search_input", "all_places"}:
         state.clear()
         state.update(_new_hub())
-    elif phase in {"create_input", "create_check", "create_city_input"}:
+    elif phase in {
+        "create_input",
+        "create_check",
+        "create_city_input",
+        "create_address_input",
+        "create_url_input",
+    }:
         if state.get("manage_mode"):
             state.clear()
             state.update(_new_manage())
@@ -2889,17 +3045,88 @@ async def handle_place_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await _render_phase(update, context, state, notice=str(exc))
             return
         cleanup = _failed_take(state)
+        # Poster 2.5: город принят, но площадка ещё не создана — мастер идёт
+        # дальше, к необязательному адресу. Ввод города удаляется после
+        # подтверждённого сохранения состояния.
+        state["city"] = city
+        state["phase"] = "create_address_input"
+        await _render_phase(
+            update,
+            context,
+            state,
+            cleanup_ids=cleanup,
+            drop_input=True,
+        )
+        return
+
+    if phase == "create_address_input":
+        try:
+            address = clean_address_text(raw)
+        except (PlaceNameError, PlaceEditValueError) as exc:
+            # Адрес не принят: сообщение остаётся в чате до исправления.
+            # В мастере нет кнопки «Удалить адрес» — пустой ввод подсказывает
+            # «⏭ Пропустить», а не действие из карточки места.
+            _failed_add(state, update)
+            notice = str(exc)
+            if isinstance(exc, PlaceEditValueError) and not raw.strip():
+                notice = tr("places.create_address_input.empty")
+            await _render_phase(update, context, state, notice=notice)
+            return
+        cleanup = _failed_take(state)
+        state["address"] = address
+        state["phase"] = "create_url_input"
+        await _render_phase(
+            update,
+            context,
+            state,
+            cleanup_ids=cleanup,
+            drop_input=True,
+        )
+        return
+
+    if phase == "create_url_input":
+        normalized = normalize_url(raw)
+        if normalized is None:
+            _failed_add(state, update)
+            await _render_phase(
+                update,
+                context,
+                state,
+                notice=tr("places.create_url_input.invalid"),
+            )
+            return
+        cleanup = _failed_take(state)
         message = getattr(update, "message", None)
         if message is not None and message.message_id is not None:
             cleanup.append(int(message.message_id))
+        saved_city = state.get("city")
+        if not isinstance(saved_city, str) or not saved_city:
+            state.clear()
+            state.update(_new_hub())
+            await _render_phase(
+                update,
+                context,
+                state,
+                notice=tr(
+                    "places.create_place_from_state.nazvanie_mesta_poteryano_nachni"
+                ),
+            )
+            return
+        state["url"] = normalized
+        saved_address = state.get("address")
         await _create_place_from_state(
             update,
             context,
             state,
-            city=city,
+            city=saved_city,
+            address=(
+                saved_address
+                if isinstance(saved_address, str) and saved_address
+                else None
+            ),
+            url=normalized,
             cleanup_ids=cleanup,
         )
-        # Город уже сохранён: вопрос и ответ убираются со экрана.
         return
 
     # alias_input
@@ -3055,6 +3282,9 @@ def places_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(handle_add_name, pattern=r"^pl_addname$"),
         CallbackQueryHandler(handle_create_edit, pattern=r"^pl_create_edit$"),
         CallbackQueryHandler(handle_create_confirm, pattern=r"^pl_create_confirm$"),
+        # Poster 2.5: шаги мастера — возврат к предыдущему шагу и пропуск.
+        CallbackQueryHandler(handle_create_back, pattern=r"^pl_create_back$"),
+        CallbackQueryHandler(handle_create_skip, pattern=r"^pl_create_skip$"),
         CallbackQueryHandler(handle_save_candidate, pattern=r"^pl_save_candidate$"),
         CallbackQueryHandler(handle_skip_candidate, pattern=r"^pl_skip_candidate$"),
         CallbackQueryHandler(handle_alias_force, pattern=r"^pl_alias_force$"),

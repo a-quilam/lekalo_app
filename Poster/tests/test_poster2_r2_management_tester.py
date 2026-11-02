@@ -735,6 +735,9 @@ class PlaceCreationFromHandbookTests(unittest.TestCase):
         self.assertIn("Проверьте, нет ли этого места", h.screen_text())
         await h.callback("pl_create_confirm")
         await h.text("Москва")
+        # Poster 2.5: адрес и ссылка — необязательные шаги мастера.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
 
         text = h.screen_text()
         self.assertIn("Новая площадка R2", text)

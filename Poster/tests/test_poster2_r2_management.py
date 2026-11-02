@@ -543,6 +543,9 @@ class PlaceManagementTests(unittest.TestCase):
         await h.text("Новая площадка R2b")
         await h.callback("pl_create_confirm")
         await h.text("Москва")
+        # Poster 2.5: необязательные шаги адреса и ссылки пропускаем.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
 
         text = h.screen_text()
         self.assertIn("Новая площадка R2b", text)

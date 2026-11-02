@@ -949,6 +949,9 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
         await h.text("Новая площадка R2")
         await h.callback("pl_create_confirm")
         await h.text("Москва")
+        # Poster 2.5: адрес и ссылка — необязательные шаги мастера.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
 
         self.assertIn("✅ Место и его стандартный шаблон добавлены", h.screen_text())
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))

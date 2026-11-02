@@ -706,6 +706,13 @@ class PlaceCityUiTests(unittest.TestCase):
             self.assertEqual(len(session.scalars(select(Place)).all()), 0)
 
         await h.text("Москва")
+        # Poster 2.5: город принят, но площадка ещё не создана — мастер
+        # спрашивает необязательные адрес и ссылку.
+        self.assertIn("Адрес площадки", h.screen_text())
+        with h.session_factory() as session:
+            self.assertEqual(len(session.scalars(select(Place)).all()), 0)
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
         with h.session_factory() as session:
             places = list(session.scalars(select(Place)).all())
             self.assertEqual(len(places), 1)
@@ -716,6 +723,9 @@ class PlaceCityUiTests(unittest.TestCase):
         """
         На экране вопроса о городе есть кнопка «◀️ Назад». Требование:
         кнопка навигации работает, а не отвечает «Кнопка устарела».
+
+        Poster 2.5: «Назад» ведёт к предыдущему шагу ТОГО ЖЕ мастера —
+        экрану проверки названия, а не сразу в список площадок.
         """
         with patch("config.SUPERADMIN_USER_IDS", (DEFAULT_USER_ID,)):
             await h.text("/start")
@@ -724,8 +734,8 @@ class PlaceCityUiTests(unittest.TestCase):
             await h.text("Клуб для отмены")
             await h.callback("pl_create_confirm")
             self.assertIn("В каком городе площадка", h.screen_text())
-            self.assertIn("plm_back", _callbacks(h))
-            await h.callback("plm_back")
+            self.assertIn("pl_create_back", _callbacks(h))
+            await h.callback("pl_create_back")
             answer = h.answers()[-1] if h.answers() else {}
         self.assertIsNone(
             answer.get("text"),
@@ -733,10 +743,11 @@ class PlaceCityUiTests(unittest.TestCase):
             f"экран = {h.screen_text()[:200]!r}",
         )
         self.assertIn(
-            "📍 Площадки",
+            "Проверьте, нет ли этого места",
             h.screen_text(),
-            "«Назад» не вернул в список площадок",
+            "«Назад» не вернул к шагу проверки названия",
         )
+        self.assertIn("Клуб для отмены", h.screen_text())
         with h.session_factory() as session:
             self.assertEqual(len(session.scalars(select(Place)).all()), 0)
 
@@ -749,6 +760,8 @@ class PlaceCityUiTests(unittest.TestCase):
             await h.text("Уникальное место")
             await h.callback("pl_create_confirm")
             await h.text("Москва")
+            await h.callback("pl_create_skip")
+            await h.callback("pl_create_skip")
             place_id = None
             with h.session_factory() as session:
                 places = list(session.scalars(select(Place)).all())

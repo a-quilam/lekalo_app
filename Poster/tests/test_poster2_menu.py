@@ -344,6 +344,9 @@ class PlacePickTests(unittest.TestCase):
         await h.callback("pl_create_confirm")
         # U1a: у новой площадки обязателен город; анонс стартует сразу после.
         await h.text("Москва")
+        # Poster 2.5: адрес и ссылка — необязательные шаги мастера.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
 
         # Площадка создана и сразу открыт анонс по её стандартному шаблону.
         draft = _latest_draft(h)

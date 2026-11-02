@@ -56,6 +56,7 @@ from brick_types import (
     BRICK_SCOPE_PLACE,
     BRICK_SCOPE_SYSTEM,
     BRICK_TYPE_TITLES,
+    brick_title_display,
 )
 from database import SessionLocal
 from models import AnnouncementDraft, Template, TemplateSnapshot, User
@@ -817,7 +818,8 @@ def _preview_content(
             lines.append(tr("templates.build.privyazki_kirpichikov"))
             for binding in version.bindings:
                 label = (
-                    f"• [{_h(binding.code)}] — {_h(binding.title)} "
+                    f"• [{_h(binding.code)}] — "
+                    f"{_h(brick_title_display(binding.title, binding.code))} "
                     f"({SCOPE_TITLES.get(binding.scope, binding.scope)})"
                 )
                 if not binding.is_active:
@@ -1367,7 +1369,9 @@ def _brick_list_content(
             type_title = BRICK_TYPE_TITLES.get(brick.value_type, brick.value_type)
             scope = SCOPE_TITLES.get(brick.scope, brick.scope)
             lines.append(
-                f"• [{_h(brick.code)}] — {_h(brick.title)} " f"· {type_title} · {scope}"
+                f"• [{_h(brick.code)}] — "
+                f"{_h(brick_title_display(brick.title, brick.code))} "
+                f"· {type_title} · {scope}"
             )
         if total > BRICK_PAGE_SIZE:
             lines.append(

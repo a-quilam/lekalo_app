@@ -335,11 +335,18 @@ class PlaceCreationFlowTests(unittest.TestCase):
         self.assertIn(("✏️ Исправить название", "pl_create_edit"), h.screen_buttons())
         self.assertEqual(place_count(h), 0, "до подтверждения место не создаётся")
 
-        # Poster 2.0 U1a: место создаётся только после ответа о городе.
+        # Poster 2.0 U1a / 2.5: место создаётся только после города и шагов
+        # адреса/ссылки (последние можно пропустить).
         await h.callback("pl_create_confirm")
         self.assertIn("В каком городе площадка", h.screen_text())
         self.assertEqual(place_count(h), 0, "город ещё не указан")
         await h.text("Москва")
+        self.assertIn("Адрес площадки", h.screen_text())
+        self.assertEqual(place_count(h), 0, "мастер ещё не завершён")
+        await h.callback("pl_create_skip")
+        self.assertIn("Ссылка площадки", h.screen_text())
+        self.assertEqual(place_count(h), 0, "мастер ещё не завершён")
+        await h.callback("pl_create_skip")
         self.assertEqual(place_count(h), 1)
         self.assertIn("✅ Место добавлено", h.screen_text())
         self.assertIn("Новый Театр", h.screen_text())
@@ -384,6 +391,9 @@ class PlaceCreationFlowTests(unittest.TestCase):
         await h.text("Новое место для списка")
         await h.callback("pl_create_confirm")
         await h.text("Москва")
+        # Poster 2.5: адрес и ссылка — необязательные шаги, пропускаем их.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
 
         await h.callback("pl_back")
         self.assertIn("📚 Все места", h.screen_text())
@@ -400,6 +410,9 @@ class PlaceCreationFlowTests(unittest.TestCase):
         await h.text("Общее место")
         await h.callback("pl_create_confirm")
         await h.text("Москва")
+        # Poster 2.5: адрес и ссылка — необязательные шаги, пропускаем их.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
         await h.callback(callback_for(h, "pl_confirm:"))
         await h.callback("main_menu")
 
@@ -415,6 +428,9 @@ class PlaceCreationFlowTests(unittest.TestCase):
         await h.text("Место для всех")
         await h.callback("pl_create_confirm")
         await h.text("Москва")
+        # Poster 2.5: адрес и ссылка — необязательные шаги, пропускаем их.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
 
         session = h.session_factory()
         try:
@@ -506,6 +522,9 @@ class PlaceCreationFlowTests(unittest.TestCase):
         await h.text("Кофейня Дом")
         await h.callback("pl_create_confirm")
         await h.text("Москва")
+        # Poster 2.5: адрес и ссылка — необязательные шаги, пропускаем их.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
 
         self.assertEqual(place_count(h), 2)
         self.assertIn("✅ Место добавлено", h.screen_text())
@@ -524,6 +543,9 @@ class PlaceCreationFlowTests(unittest.TestCase):
         self.assertEqual(place_count(h), 0)
         await h.callback("pl_create_confirm")
         await h.text("Москва")
+        # Poster 2.5: адрес и ссылка — необязательные шаги, пропускаем их.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
         self.assertEqual(place_count(h), 1)
 
 
@@ -654,6 +676,9 @@ class PlacesReliabilityTests(unittest.TestCase):
         self.assertEqual(place_count(h), 0)
         await h.callback("pl_create_confirm")
         await h.text("Москва")
+        # Poster 2.5: адрес и ссылка — необязательные шаги, пропускаем их.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
         self.assertEqual(place_count(h), 1)
 
     @scenario_test
@@ -829,6 +854,9 @@ class PlacesReliabilityTests(unittest.TestCase):
         await h.text("Однократное место")
         await h.callback("pl_create_confirm")
         await h.text("Москва")
+        # Poster 2.5: адрес и ссылка — необязательные шаги, пропускаем их.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
         # Устаревшая кнопка подтверждения названия больше не создаёт место.
         await h.callback("pl_create_confirm")
         self.assertEqual(place_count(h), 1)
@@ -906,6 +934,9 @@ class PlacesIsolationTests(unittest.TestCase):
         await h.text("Место рядом с анонсом")
         await h.callback("pl_create_confirm")
         await h.text("Москва")
+        # Poster 2.5: адрес и ссылка — необязательные шаги, пропускаем их.
+        await h.callback("pl_create_skip")
+        await h.callback("pl_create_skip")
         await h.callback("main_menu")
 
         with h.session_factory() as session:
