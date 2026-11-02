@@ -212,8 +212,13 @@ class FakeBot:
         return message
 
     async def send_media_group(self, *args: Any, **kwargs: Any) -> list:
+        # Реальный Bot API отвечает СООБЩЕНИЕМ на каждое вложение группы:
+        # количество message_id равно числу media, а не одной штуке.
         record = self._record("media_group", args, kwargs)
-        messages = [self._make_message({"chat_id": kwargs.get("chat_id")})]
+        media = kwargs.get("media") or ()
+        messages = [
+            self._make_message({"chat_id": kwargs.get("chat_id")}) for _ in media
+        ]
         self.call_message_ids[id(record)] = tuple(
             message.message_id for message in messages
         )
@@ -270,6 +275,53 @@ class FakeBot:
         self._record("edit_caption", args, kwargs)
         if kwargs.get("chat_id") is not None and kwargs.get("message_id") is not None:
             self._message_content[key] = ("caption", *proposed)
+
+    async def edit_message_media(self, *args: Any, **kwargs: Any) -> None:
+        """
+        Правка вложения (замена фото у одного сообщения, §28).
+
+        Как и подпись, media существует только у медиасообщения: у текстового
+        её нет, и Telegram отвечает BadRequest. Вид содержимого при этом не
+        меняется — `editMessageMedia` не превращает фото в текст.
+        """
+        injected = any(
+            "edit_message" in container
+            for container in (self.fail_types, self.errors_by_type, self.fail_after)
+        )
+        key = (int(kwargs.get("chat_id") or 0), int(kwargs.get("message_id") or 0))
+        current = self._message_content.get(key)
+        if not injected and kwargs.get("media") is None:
+            raise BadRequest("Bad Request: there is no media in the message")
+        if not injected and current is not None and current[0] == "text":
+            raise BadRequest("Bad Request: there is no media in the message")
+        self._record("edit_media", args, kwargs)
+        if kwargs.get("chat_id") is not None and kwargs.get("message_id") is not None:
+            kind, text, markup = (
+                current if current is not None else ("caption", None, None)
+            )
+            self._message_content[key] = (kind, text, markup)
+
+    async def edit_message_reply_markup(self, *args: Any, **kwargs: Any) -> None:
+        """
+        Правка ТОЛЬКО клавиатуры: текст и вид содержимого не меняются.
+
+        Используется снятием управления у архивного экземпляра (§30–31):
+        сообщение остаётся текстом/подписью, но кнопок больше нет.
+        `reply_markup=None` — допустимое «убрать клавиатуру», поэтому
+        BadRequest «not modified» здесь не эмулируется: вызов всегда
+        осмысленный (тест проверяет запись и итоговую подпись клавиатуры).
+        """
+        key = (int(kwargs.get("chat_id") or 0), int(kwargs.get("message_id") or 0))
+        self._record("edit_markup", args, kwargs)
+        if kwargs.get("chat_id") is None or kwargs.get("message_id") is None:
+            return
+        current = self._message_content.get(key)
+        kind, text = (current[0], current[1]) if current is not None else ("text", None)
+        self._message_content[key] = (
+            kind,
+            text,
+            self._markup_signature(kwargs.get("reply_markup")),
+        )
 
     async def delete_message(self, *args: Any, **kwargs: Any) -> None:
         self._record("delete_message", args, kwargs)

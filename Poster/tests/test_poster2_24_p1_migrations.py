@@ -99,18 +99,29 @@ class _Migration25TestCase(unittest.TestCase):
 
 class Migration25JournalTests(_Migration25TestCase):
     def test_version_25_follows_24_and_is_named(self) -> None:
-        self.assertEqual(LATEST_VERSION, 25)
-        self.assertEqual(DEFAULT_MIGRATIONS[-1].version, 25)
-        self.assertEqual(DEFAULT_MIGRATIONS[-1].name, MIGRATION_25_NAME)
+        # Poster 2.5 C1 добавила 26 (`announcement_instances`); миграция 25
+        # остаётся на своём месте и сохраняет имя.
+        self.assertEqual(LATEST_VERSION, 26)
+        self.assertEqual(
+            [(migration.version, migration.name) for migration in DEFAULT_MIGRATIONS],
+            [
+                *[
+                    (migration.version, migration.name)
+                    for migration in DEFAULT_MIGRATIONS[:-2]
+                ],
+                (25, MIGRATION_25_NAME),
+                (26, "announcement_instances"),
+            ],
+        )
         self.assertEqual(
             [migration.version for migration in DEFAULT_MIGRATIONS],
-            list(range(1, 26)),
+            list(range(1, 27)),
             "версии идут без пропусков и в порядке возрастания",
         )
 
     def test_upgrade_appends_version_25_after_24(self) -> None:
         self.migrate_to_24()
-        self.assertEqual(self.migrate_latest(), 25)
+        self.assertEqual(self.migrate_latest(), LATEST_VERSION)
         connection = sqlite3.connect(self.path)
         try:
             versions = connection.execute(
@@ -119,17 +130,18 @@ class Migration25JournalTests(_Migration25TestCase):
         finally:
             connection.close()
         self.assertEqual(
-            versions[-2], (24, "template_content_and_extras_without_sections")
+            versions[-3], (24, "template_content_and_extras_without_sections")
         )
-        self.assertEqual(versions[-1], (25, MIGRATION_25_NAME))
-        self.assertEqual(len(versions), 25)
+        self.assertEqual(versions[-2], (25, MIGRATION_25_NAME))
+        self.assertEqual(versions[-1], (26, "announcement_instances"))
+        self.assertEqual(len(versions), 26)
 
     def test_repeated_run_is_idempotent(self) -> None:
         self.migrate_to_24()
-        self.assertEqual(self.migrate_latest(), 25)
+        self.assertEqual(self.migrate_latest(), LATEST_VERSION)
         before = schema_objects(self.path)
         journal_before = count(self.path, "SELECT count(*) FROM schema_migrations")
-        self.assertEqual(self.migrate_latest(), 25)
+        self.assertEqual(self.migrate_latest(), LATEST_VERSION)
         self.assertEqual(schema_objects(self.path), before)
         self.assertEqual(
             count(self.path, "SELECT count(*) FROM schema_migrations"), journal_before
@@ -138,7 +150,7 @@ class Migration25JournalTests(_Migration25TestCase):
 
 class Migration25FreshInstallTests(_Migration25TestCase):
     def test_fresh_install_has_single_address_brick(self) -> None:
-        self.assertEqual(self.migrate_latest(), 25)
+        self.assertEqual(self.migrate_latest(), LATEST_VERSION)
         self.assertEqual(
             count(
                 self.path,
@@ -266,7 +278,7 @@ class Migration25LegacyDataTests(_Migration25TestCase):
             connection.commit()
         finally:
             connection.close()
-        self.assertEqual(self.migrate_latest(), 25)
+        self.assertEqual(self.migrate_latest(), LATEST_VERSION)
 
     def test_legacy_rows_are_removed_and_neighbours_untouched(self) -> None:
         connection = sqlite3.connect(self.path)
@@ -333,7 +345,7 @@ class Migration25TriggerTests(_Migration25TestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        self.assertEqual(self.migrate_latest(), 25)
+        self.assertEqual(self.migrate_latest(), LATEST_VERSION)
 
     def test_system_brick_is_still_protected(self) -> None:
         connection = self.connection()

@@ -2098,6 +2098,71 @@ ALTER TABLE drafts RENAME TO legacy_drafts_backup;
   администраторы, шаблоны, черновики и предложения (кроме аномальных
   строк из п. 4) остаются как есть.
 
+### Версия 26 (Poster 2.5) — `announcement_instances`
+
+Poster 2.5 §19–33: готовый анонс — цельное сообщение (или альбом плюс одна
+переиспользуемая панель управления), а повторное открытие из «Моих анонсов»
+отправляет НОВЫЙ экземпляр. Прежний остаётся в чате архивным снимком без
+кнопок. Экземпляр — надстройка над логическим черновиком
+`announcement_drafts`, а не история самого черновика: черновик по-прежнему
+один, а `publication_progress` продолжает отвечать за доставку
+(`ids`/`fingerprint`/`step`). Экземпляр регистрируется только ПОСЛЕ
+подтверждённой отправки и прогресс не переписывает.
+
+- Схема (одна транзакция `run_migrations`):
+  `id INTEGER PRIMARY KEY`, `draft_id INTEGER NOT NULL` (FK
+  `announcement_drafts.id ON DELETE CASCADE`), `chat_id INTEGER NOT NULL`,
+  `message_ids TEXT NOT NULL` (JSON-массив в порядке отправки; у альбома —
+  все сообщения группы), `panel_message_id INTEGER` (NULL у одиночного
+  сообщения: кнопки живут на нём самом), `generation INTEGER NOT NULL
+  DEFAULT 1`, `status TEXT NOT NULL DEFAULT 'active'`, `fingerprint TEXT`,
+  `created_at DATETIME NOT NULL`.
+- Ограничения: `status IN ('active', 'archived')`, `generation >= 1`,
+  `message_ids` — валидный JSON-массив (`json_valid` +
+  `json_type(...) = 'array'`), `panel_message_id` либо NULL, либо `> 0`.
+- Индексы:
+  - `CREATE UNIQUE INDEX ux_announcement_instances_active ON
+    announcement_instances (draft_id) WHERE status = 'active'` — ровно один
+    действующий экземпляр на логический анонс (§30). Прямой `INSERT`
+    второго `active` невозможен, поэтому `replace_instance` обязан сначала
+    архивировать старый — обе операции в одной транзакции.
+  - `ix_announcement_instances_draft (draft_id, generation)` — история
+    экземпляров черновика по поколению (§31).
+- Триггеры (пересоздаются в той же транзакции, окна без защиты нет):
+  - `trg_announcement_instances_identity_immutable` — `draft_id`, `chat_id`,
+    `message_ids`, `generation`, `created_at` после вставки не
+    переписываются: иначе архивный снимок перестал бы быть снимком, а
+    защита устаревших callback (`anp_{action}:{instance_id}`, §32)
+    опиралась бы на подменяемые данные;
+  - `trg_announcement_instances_status_flow` — терминальность статуса:
+    `archived → active` запрещён (`archived announcement instance is
+    immutable`). Иначе старая кнопка снова стала бы действующей.
+- **Отказ от backfill (осознанно).** В `publication_progress` сохранены
+  только `ids`/`fingerprint`/`step`/`total`; chat_id доставки нигде не
+  хранится надёжно (`user_states.chat_id` — состояние интерфейса, а не
+  факт отправки). Синтезировать `chat_id` значило бы угадывать адрес и
+  рискнуть архивом чужого экземпляра, поэтому:
+  - экземпляры накапливаются начиная с ПЕРВОЙ публикации после
+    обновления;
+  - уже доставленные анонсы продолжают читаться по `publication_progress`
+    (`delivered_message_ids`/`previous_message_ids`) — их поведение
+    не меняется;
+  - поведение 2.4.1 не затронуто: старые анонсы остаются редактируемыми по
+    прежним правилам, отсутствие строки в `announcement_instances` не
+    ошибка и не повод пересобирать блок.
+- `requires_tables=('announcement_drafts',)`: без черновиков миграция
+  пропускается и в журнал не попадает. Таблица намеренно не добавлена в
+  `models.py` (как `brick_conflicts` и `place_invite_links`), чтобы
+  `create_all` не создавал её в обход журнала миграций.
+- **Совместимость.** На базе версии 25 миграция только добавляет таблицу,
+  два индекса и два триггера; `PRAGMA integrity_check` = `ok`,
+  `foreign_key_check` пуст. Пользователи, площадки, администраторы,
+  шаблоны, черновики, фото и `publication_progress` остаются как есть.
+  Повторный запуск ничего не меняет — версия уже в журнале.
+- **Что не трогается.** Логика доставки (`delivery.send_announcement_post`)
+  и схема `announcement_drafts` не меняются: экземпляры читаются
+  приложением, старый путь публикации работает без них.
+
 ## 9. Как добавлять миграции в будущих этапах
 
 1. **Никогда** не редактировать применённую миграцию и не удалять строки

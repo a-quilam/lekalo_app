@@ -203,6 +203,10 @@ class PhotoLimitScenarioTests(unittest.TestCase):
             [f"limit-photo-{index}" for index in range(10)],
         )
         # Прошлые версии заменены: в чате ровно одна актуальная группа.
+        # Poster 2.5 C1: FakeBot отвечает как Bot API — по сообщению на
+        # каждое вложение, поэтому у группы из 10 фото десять адресов.
         live = [message_id for message_id in sent.delivered_message_ids]
-        self.assertEqual(len(live), 1)
-        self.assertNotIn(live[0], h.deleted_ids())
+        self.assertEqual(len(live), 10, "id каждого сообщения группы")
+        self.assertEqual(len(set(live)), 10)
+        for message_id in live:
+            self.assertNotIn(message_id, h.deleted_ids())

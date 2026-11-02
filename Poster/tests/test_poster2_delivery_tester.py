@@ -369,7 +369,11 @@ class RetryAfterMidGroupTests(unittest.TestCase):
             sent.publication_progress.get("total"),
             "прогресс закрыт полностью",
         )
-        self.assertEqual(len(sent.delivered_message_ids), 1)
+        # Poster 2.5 C1: FakeBot отвечает как настоящий Bot API — по сообщению
+        # на каждое вложение группы, поэтому подтверждены ОБА id. Важен не
+        # их счёт сам по себе, а то, что прогресс записан только после
+        # успешного ответа и все id принадлежат одной операции.
+        self.assertEqual(len(sent.delivered_message_ids), 2)
         self.assertEqual(
             int(sent.publication_progress["ids"][0]),
             sent.delivered_message_ids[0],

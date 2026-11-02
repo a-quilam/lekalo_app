@@ -108,6 +108,7 @@ class MigrationMechanismTests(unittest.TestCase):
                 (23, "place_invite_links"),
                 (24, "template_content_and_extras_without_sections"),
                 (25, "single_address_brick"),
+                (26, "announcement_instances"),
             ],
         )
 
@@ -217,6 +218,7 @@ class MigrationMechanismTests(unittest.TestCase):
                 (23, "place_invite_links"),
                 (24, "template_content_and_extras_without_sections"),
                 (25, "single_address_brick"),
+                (26, "announcement_instances"),
             ],
         )
 

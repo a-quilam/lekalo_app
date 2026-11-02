@@ -3840,6 +3840,103 @@ MIGRATION_25_SINGLE_ADDRESS_BRICK = Migration(
 )
 
 
+MIGRATION_26_ANNOUNCEMENT_INSTANCES = Migration(
+    version=26,
+    name="announcement_instances",
+    statements=(
+        # Poster 2.5 §24–31: готовый анонс — цельное сообщение (или альбом +
+        # одна переиспользуемая панель управления), а повторное открытие
+        # отправляет НОВЫЙ экземпляр. Логический черновик остаётся один:
+        # экземпляры — надстройка над `announcement_drafts`, а не история
+        # самого черновика. `publication_progress` продолжает отвечать за
+        # доставку (ids/fingerprint/step), экземпляр регистрируется ПОСЛЕ
+        # подтверждённой отправки.
+        #
+        # `id` — устойчивая привязка callback `anp_{action}:{instance_id}`:
+        # устаревший callback находит строку и видит `archived` (§32), не
+        # воскрешая старый редактор. `message_ids` — JSON-массив в порядке
+        # отправки (альбом — все сообщения группы). `panel_message_id` —
+        # отдельная панель управления для медиагруппы; у одного сообщения
+        # кнопки живут на нём самом, поэтому NULL. Частичный уникальный
+        # индекс ниже гарантирует ровно один `active` на черновик.
+        """
+        CREATE TABLE announcement_instances (
+            id INTEGER NOT NULL PRIMARY KEY,
+            draft_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            message_ids TEXT NOT NULL,
+            panel_message_id INTEGER,
+            generation INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'active',
+            fingerprint TEXT,
+            created_at DATETIME NOT NULL,
+            CONSTRAINT ck_announcement_instances_status
+                CHECK (status IN ('active', 'archived')),
+            CONSTRAINT ck_announcement_instances_generation
+                CHECK (generation >= 1),
+            CONSTRAINT ck_announcement_instances_message_ids
+                CHECK (
+                    json_valid(message_ids)
+                    AND json_type(message_ids) = 'array'
+                ),
+            CONSTRAINT ck_announcement_instances_panel
+                CHECK (panel_message_id IS NULL OR panel_message_id > 0),
+            CONSTRAINT fk_announcement_instances_draft
+                FOREIGN KEY (draft_id) REFERENCES announcement_drafts (id)
+                ON DELETE CASCADE
+        )
+        """,
+        # Ровно один действующий экземпляр на логический анонс (§30). Индекс
+        # проверяет это на уровне SQLite: даже прямой INSERT второго `active`
+        # невозможен, а `replace_instance` обязан сначала архивировать старый.
+        """
+        CREATE UNIQUE INDEX ux_announcement_instances_active
+            ON announcement_instances (draft_id) WHERE status = 'active'
+        """,
+        # История экземпляров одного черновика читается по поколению (§31).
+        """
+        CREATE INDEX ix_announcement_instances_draft
+            ON announcement_instances (draft_id, generation)
+        """,
+        # Идентичность экземпляра неизменяема: сообщения/чат/поколение не
+        # переписываются, иначе «архивный снимок» переставал бы быть снимком,
+        # а защита старых callback опиралась бы на подменяемые данные.
+        """
+        CREATE TRIGGER trg_announcement_instances_identity_immutable
+        BEFORE UPDATE OF draft_id, chat_id, message_ids, generation, created_at
+        ON announcement_instances
+        FOR EACH ROW
+        WHEN NEW.draft_id IS NOT OLD.draft_id
+            OR NEW.chat_id IS NOT OLD.chat_id
+            OR NEW.message_ids IS NOT OLD.message_ids
+            OR NEW.generation IS NOT OLD.generation
+            OR NEW.created_at IS NOT OLD.created_at
+        BEGIN
+            SELECT RAISE(ABORT, 'announcement instance identity is immutable');
+        END
+        """,
+        # Архивный экземпляр не возвращается в строй: иначе старая кнопка
+        # могла бы снова стать активной, а уникальный индекс пропустил бы
+        # два «действующих» в разное время.
+        """
+        CREATE TRIGGER trg_announcement_instances_status_flow
+        BEFORE UPDATE OF status ON announcement_instances
+        FOR EACH ROW
+        WHEN OLD.status = 'archived' AND NEW.status = 'active'
+        BEGIN
+            SELECT RAISE(ABORT, 'archived announcement instance is immutable');
+        END
+        """,
+    ),
+    # Backfill не выполняется: в `publication_progress` есть только
+    # `ids`/`fingerprint`, а chat_id доставки нигде не хранится надёжно
+    # (`user_states.chat_id` — состояние интерфейса, а не факт отправки).
+    # Экземпляры начинаются с первой публикации после обновления; уже
+    # доставленные анонсы продолжают читаться по `publication_progress`.
+    requires_tables=("announcement_drafts",),
+)
+
+
 DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_1_USERS_PLACES,
     MIGRATION_2_PLACE_CONTACTS_UI,
@@ -3866,6 +3963,7 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_23_PLACE_INVITE_LINKS,
     MIGRATION_24_TEMPLATE_CONTENT,
     MIGRATION_25_SINGLE_ADDRESS_BRICK,
+    MIGRATION_26_ANNOUNCEMENT_INSTANCES,
 )
 
 LATEST_VERSION = DEFAULT_MIGRATIONS[-1].version if DEFAULT_MIGRATIONS else 0
