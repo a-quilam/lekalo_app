@@ -349,8 +349,13 @@ class RebuildCleanupTests(RebuildCleanupTestCase):
 
     def test_replaced_database_preserved(self) -> None:
         """Восстановление при неудаче: прежняя база сохранена рядом."""
+        # Точный шаблон: только сама база `<имя>.replaced-<метка>`.
+        # WAL-сателлиты (`<имя>-wal.replaced-…`, `<имя>-shm.replaced-…`)
+        # тоже несут суффикс, но порядок scandir случаен — под них не годится.
         replaced = list(
-            Path(self.path).parent.glob("*" + db_maintenance._REPLACED_SUFFIX + "*")
+            Path(self.path).parent.glob(
+                Path(self.path).name + db_maintenance._REPLACED_SUFFIX + "*"
+            )
         )
         self.assertTrue(replaced, "файл .replaced- не найден")
         # Прежняя база содержит те же данные наполнения — это она и есть.
