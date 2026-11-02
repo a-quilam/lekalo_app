@@ -118,6 +118,7 @@ from brick_types import (
     BRICK_TYPE_TITLES,
 )
 from database import SessionLocal
+from handlers.place_invite_screen import invite_content
 from models import Brick, User
 from permissions import (
     can_access_admin_panel,
@@ -224,6 +225,8 @@ PHASES = {
     "brick_list",
     "brick_card",
     "brick_description_input",
+    # Poster 2.4.1 T2: ссылка для создания анонса — экран полной карточки.
+    "invite",
 }
 
 _SUPER_ONLY_PHASES = {
@@ -1485,6 +1488,20 @@ def _place_keyboard(
             )
     for start in range(0, len(admin_buttons), 2):
         rows.append(admin_buttons[start : start + 2])
+    # Poster 2.4.1 T2: ссылка на создание анонса переехала из справочника в
+    # полную карточку. Права не расширяются: кнопка видна управляющему
+    # местом (и суперадмину), а выдача ссылки перепроверяет права по БД.
+    if viewer_telegram_user_id is not None and can_manage_place(
+        session, viewer_telegram_user_id, details.place_id
+    ):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tr("buttons.places.invite"),
+                    callback_data=f"adm_invite:{details.place_id}",
+                )
+            ]
+        )
     # E4: навигация — тоже пара.
     rows.append(
         [
@@ -2642,6 +2659,31 @@ async def _render_phase(
                     access_kind=access_kind,
                     viewer_telegram_user_id=user_id,
                 )
+        elif phase == "invite":
+            # Poster 2.4.1 T2: экран ссылки на создание анонса — часть полной
+            # карточки. Права проверяются по БД, а не по факту прихода сюда.
+            if details is None:
+                state.clear()
+                state.update(_new_state())
+                notice = notice or tr(
+                    "admin.render_phase.mesto_suschestvuet_bylo_udaleno"
+                )
+                text, keyboard = _places_content(session, state, access_kind, user_id)
+            elif not can_manage_place(session, user_id, details.place_id):
+                state.clear()
+                state.update(_new_state())
+                notice = notice or tr(
+                    "admin.render_phase.dostup_etomu_mestu_podtverzhden"
+                )
+                text, keyboard = _places_content(session, state, access_kind, user_id)
+            else:
+                text, keyboard = await invite_content(
+                    context,
+                    session,
+                    details,
+                    telegram_user_id=user_id,
+                    regenerated=bool(state.get("invite_regenerated")),
+                )
         elif phase == "assign_search":
             if details is None:
                 state.clear()
@@ -3093,30 +3135,41 @@ async def open_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     state = load_admin_session(user_id)
     if not isinstance(state, dict) or state.get("phase") not in PHASES:
         state = _new_state()
+    # Явный вход в кабинет — снова «список кабинета»: запомненный возврат в
+    # справочник от прежней карточки больше не действует.
+    state.pop("return_to", None)
+    state.pop("manage_page", None)
     await _render_phase(update, context, state, drop_input=True)
 
 
-async def open_place_admin_editor(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, place_id: int
+async def open_place_admin_card_from_manage(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    place_id: int,
+    *,
+    manage_page: int = 0,
 ) -> None:
     """
-    Переход из карточки справочника в меню редактирования места кабинета.
+    «Управление → Площадки» → тап по площадке: сразу полная карточка места.
 
-    Вход в существующее меню правки (`adm_edit_name`/`adm_aliases`/
-    `adm_edit_address`/`adm_edit_url`), а не второй редактор. Роль и место
-    перепроверяются по БД: чужой id не открывает административный экран
-    (IDOR), даже если callback подделан.
+    Poster 2.4.1 T2: промежуточная карточка справочника для управляющего
+    больше не показывается. Допуск — управляющий ИМЕННО этого места
+    (`can_manage_place`) или суперадминистратор; права перепроверяются по БД
+    здесь, а не по факту нажатия кнопки (IDOR).
+
+    `return_to`/`manage_page` в состоянии кабинета помнят, что пользователь
+    пришёл из справочника: «◀️ К списку мест» вернёт его туда же, на ту же
+    страницу, а не в список кабинета.
     """
     query = ctx.query(update)
     user_id = ctx.user(update).id
+    allowed = False
     session = SessionLocal()
     try:
-        allowed = can_access_admin_panel(session, user_id) and can_manage_place(
-            session, user_id, place_id
-        )
+        allowed = can_manage_place(session, user_id, place_id)
         exists = get_place_details(session, place_id) is not None
     except Exception as e:  # noqa: BLE001 — отказ безопаснее открытия
-        logger.error("Не удалось проверить доступ к редактированию места: %s", e)
+        logger.error("Не удалось проверить доступ к карточке места: %s", e)
         allowed = False
         exists = False
     finally:
@@ -3134,45 +3187,112 @@ async def open_place_admin_editor(
     clear_brick_session(user_id)
     clear_template_session(user_id)
     state = _new_state()
-    state["phase"] = "edit_menu"
+    state["phase"] = "place"
     state["place_id"] = place_id
+    state["return_to"] = "manage"
+    state["manage_page"] = max(int(manage_page), 0)
     save_admin_session(user_id, state)
     await _render_phase(update, context, state, drop_input=True)
 
 
-async def open_place_admin_card(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, place_id: int
+async def handle_invite_open(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
     """
-    Карточка места кабинета из справочника: назначение/замена администратора.
+    «🔗 Ссылка для создания анонса» в полной карточке места.
 
-    Доступна только суперадминистратору (проверяется заново здесь и в
-    `_render_phase`); обычный админ места получает отказ.
+    Права проверяются по БД заново: подделанная кнопка по чужой площадке
+    получает отказ, и ссылка не выдаётся. Повторное открытие не создаёт
+    дублей — `ensure_invite` возвращает действующую ссылку.
     """
     query = ctx.query(update)
-    user_id = ctx.user(update).id
-    if not is_superadmin(user_id):
-        await query.answer(DENIED_ALERT, show_alert=True)
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "place":
+        await _stale(update)
         return
+    place_id = _proposal_callback_id(str(query.data or ""))
+    if place_id is None or state.get("place_id") != place_id:
+        await _stale(update)
+        return
+    user_id = ctx.user(update).id
     session = SessionLocal()
     try:
-        exists = get_place_details(session, place_id) is not None
+        details = get_place_details(session, place_id)
+        allowed = details is not None and can_manage_place(session, user_id, place_id)
     finally:
         session.close()
-    if not exists:
+    if details is None:
         await query.answer(
             tr("alerts.admin.mesto_suschestvuet_udaleno"), show_alert=True
         )
         return
+    if not allowed:
+        await query.answer(tr("places.invite.no_rights"), show_alert=True)
+        return
     await query.answer()
-    clear_place_session(user_id)
-    clear_brick_session(user_id)
-    clear_template_session(user_id)
-    state = _new_state()
+    state["phase"] = "invite"
+    state.pop("invite_regenerated", None)
+    await _render_phase(update, context, state)
+
+
+async def handle_invite_regenerate(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«🔁 Перевыпустить»: старый токен отзывается, выдаётся новый."""
+    query = ctx.query(update)
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "invite":
+        await _stale(update)
+        return
+    place_id = _proposal_callback_id(str(query.data or ""))
+    if place_id is None or state.get("place_id") != place_id:
+        await _stale(update)
+        return
+    user_id = ctx.user(update).id
+    from place_invite_store import PlaceInvitePermissionError, regenerate_invite
+
+    session = SessionLocal()
+    details = None
+    refused = True
+    try:
+        details = get_place_details(session, place_id)
+        if details is not None and can_manage_place(session, user_id, place_id):
+            regenerate_invite(
+                session, actor_telegram_user_id=user_id, place_id=place_id
+            )
+            refused = False
+    except PlaceInvitePermissionError:
+        refused = True
+    finally:
+        session.close()
+    if refused:
+        await query.answer(
+            (
+                tr("places.invite.no_rights")
+                if details is not None
+                else tr("alerts.admin.mesto_suschestvuet_udaleno")
+            ),
+            show_alert=True,
+        )
+        return
+    await query.answer(tr("alerts.places.ssylka_perevypuschena"))
+    state["invite_regenerated"] = True
+    await _render_phase(update, context, state)
+
+
+async def handle_invite_back(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«◀️ К карточке» с экрана ссылки: возврат в полную карточку места."""
+    query = ctx.query(update)
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "invite":
+        await _stale(update)
+        return
+    await query.answer()
+    state.pop("invite_regenerated", None)
     state["phase"] = "place"
-    state["place_id"] = place_id
-    save_admin_session(user_id, state)
-    await _render_phase(update, context, state, drop_input=True)
+    await _render_phase(update, context, state)
 
 
 async def handle_places_page(
@@ -3226,6 +3346,10 @@ async def handle_open_place(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
     state["place_id"] = place_id
     state["phase"] = "place"
+    # Вход из списка кабинета: «◀️ К списку мест» вернёт в кабинет, а не в
+    # справочник «Управление → Площадки» (Poster 2.4.1 T2).
+    state.pop("return_to", None)
+    state.pop("manage_page", None)
     await _render_phase(update, context, state)
 
 
@@ -4287,11 +4411,26 @@ async def handle_places_back(
 ) -> None:
     """Возврат из карточки/поиска к списку мест."""
     query = ctx.query(update)
-    state = load_admin_session(ctx.user(update).id)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
     if state is None or state.get("phase") not in PHASES - {"places"}:
         await _stale(update)
         return
     await query.answer()
+    return_to_manage = state.get("return_to") == "manage"
+    manage_page = state.get("manage_page")
+    if return_to_manage:
+        # Poster 2.4.1 T2: карточка открыта из справочника «Управление →
+        # Площадки» — «К списку мест» возвращает туда же, на ту же страницу.
+        clear_admin_session(user_id)
+        from handlers.places import open_manage_list
+
+        await open_manage_list(
+            update,
+            context,
+            page=manage_page if isinstance(manage_page, int) else 0,
+        )
+        return
     state.clear()
     state.update(_new_state())
     await _render_phase(update, context, state)
@@ -6414,6 +6553,14 @@ def admin_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(handle_cancel_confirm, pattern=r"^adm_cancel_confirm$"),
         CallbackQueryHandler(handle_cancel_flow, pattern=r"^adm_cancel$"),
         CallbackQueryHandler(handle_places_back, pattern=r"^adm_places$"),
+        # Poster 2.4.1 T2: ссылка на создание анонса — экран полной карточки.
+        # Регистрируется до финального `^adm_`: иначе кнопки получали бы
+        # «устаревшую» заглушку.
+        CallbackQueryHandler(handle_invite_open, pattern=r"^adm_invite:\d+$"),
+        CallbackQueryHandler(
+            handle_invite_regenerate, pattern=r"^adm_invite_regen:\d+$"
+        ),
+        CallbackQueryHandler(handle_invite_back, pattern=r"^adm_invite_back$"),
         CallbackQueryHandler(handle_confirm, pattern=r"^adm_confirm$"),
         # Редактирование данных места (Stage 20B).
         CallbackQueryHandler(handle_edit_open, pattern=r"^adm_edit_place:\d+$"),

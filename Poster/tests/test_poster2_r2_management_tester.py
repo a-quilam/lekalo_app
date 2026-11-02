@@ -22,7 +22,11 @@ R2 (Poster 2.1) — независимая проверка №25 и №26 (post
 Покрытие №26:
 - карточка справочника и действия трёх ролей (админ места, суперадмин,
   не-админ), экранирование данных;
-- IDOR: подделанные `plm_edit`/`plm_admins` по чужому id отклоняются;
+- Poster 2.4.1 T2: управляющий местом попадает из справочника сразу в полную
+  карточку кабинета (`adm_edit_place`/`tp_std`/`adm_invite`), не-управляющий —
+  в просмотровую карточку справочника;
+- IDOR: подделанные устаревшие `plm_edit`/`plm_admins` по чужому id получают
+  stale-ответ, данные и права не меняются;
 - stale-кнопки новых фаз получают явный ответ и не меняют данные;
 - создание места из справочника: стандартный шаблон есть и рендерится ровно
   в эталон v3, анонс не запускается;
@@ -491,7 +495,8 @@ class PlaceHandbookTests(unittest.TestCase):
         # Тап открывает карточку, а не конструктор.
         await h.callback(f"plm_open:{place_id}")
         self.assertIn("Дом культуры", h.screen_text())
-        self.assertIn("Альтернативные названия", h.screen_text())
+        # T2: у не-управляющего это карточка просмотра справочника.
+        self.assertIn("можно посмотреть", h.screen_text())
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))
         self.assertEqual(_draft_count(h), 0)
 
@@ -511,7 +516,9 @@ class PlaceHandbookTests(unittest.TestCase):
 
         text = h.screen_text()
         self.assertIn("Дом &lt;b&gt;&amp; Ко", text)
-        self.assertIn("Альтернативные названия: 1", text)
+        # T2: полная карточка места перечисляет альтернативные названия
+        # списком «— ДК», а не строкой «Альтернативные названия: 1».
+        self.assertIn("— ДК", text)
         self.assertIn("ул. &lt;i&gt;Ленина&lt;/i&gt;, 1", text)
         self.assertIn("https://example.com/a?x=1&amp;y=2", text)
         self.assertNotIn("<b>& Ко", text, "пользовательские данные не экранированы")
@@ -523,13 +530,18 @@ class PlaceHandbookTests(unittest.TestCase):
         await h.callback("manage_places")
         await h.callback(f"plm_open:{place_id}")
 
-        self.assertIn(f"plm_edit:{place_id}", _callbacks(h, "plm_edit:"))
+        # T2: управляющий местом попадает сразу в полную карточку кабинета.
+        self.assertIn(f"adm_edit_place:{place_id}", _callbacks(h, "adm_edit_place:"))
+        self.assertIn(f"tp_std:{place_id}", _callbacks(h, "tp_std:"))
+        self.assertIn(f"adm_invite:{place_id}", _callbacks(h, "adm_invite:"))
+        self.assertEqual(_callbacks(h, "plm_edit:"), [], "старой кнопки нет")
+        self.assertEqual(_callbacks(h, "plm_invite:"), [], "старой кнопки нет")
         self.assertEqual(_callbacks(h, "plm_admins:"), [], "не суперадмин")
         self.assertEqual(
             _callbacks(h, "plm_admin_request:"), [], "админу заявка не нужна"
         )
 
-        await h.callback(f"plm_edit:{place_id}")
+        await h.callback(f"adm_edit_place:{place_id}")
         admin_state = load_admin_session(DEFAULT_USER_ID)
         self.assertIsNotNone(admin_state)
         assert admin_state is not None
@@ -570,13 +582,18 @@ class PlaceHandbookTests(unittest.TestCase):
             await h.callback("manage_places", user_id=SUPERADMIN_TG)
             await h.callback(f"plm_open:{place_id}", user_id=SUPERADMIN_TG)
 
-            self.assertIn(f"plm_edit:{place_id}", _callbacks(h, "plm_edit:"))
-            self.assertIn(f"plm_admins:{place_id}", _callbacks(h, "plm_admins:"))
+            # T2: суперадмин сразу в полной карточке места кабинета.
+            self.assertIn(
+                f"adm_edit_place:{place_id}", _callbacks(h, "adm_edit_place:")
+            )
+            self.assertIn(f"adm_assign:{place_id}", _callbacks(h, "adm_assign:"))
+            self.assertIn(f"adm_invite:{place_id}", _callbacks(h, "adm_invite:"))
+            self.assertEqual(_callbacks(h, "plm_edit:"), [], "старой кнопки нет")
+            self.assertEqual(_callbacks(h, "plm_admins:"), [], "старой кнопки нет")
             self.assertEqual(
                 _callbacks(h, "plm_admin_request:"), [], "суперадмин не просит роль"
             )
 
-            await h.callback(f"plm_admins:{place_id}", user_id=SUPERADMIN_TG)
             admin_state = load_admin_session(SUPERADMIN_TG)
             self.assertIsNotNone(admin_state)
             assert admin_state is not None
@@ -585,18 +602,24 @@ class PlaceHandbookTests(unittest.TestCase):
 
     @scenario_test
     async def test_foreign_place_edit_and_admins_are_denied(self, h):
-        """IDOR: подделанные `plm_edit`/`plm_admins` чужого места отклоняются."""
+        """
+        IDOR: подделанные устаревшие `plm_edit`/`plm_admins` чужого места
+        получают stale-ответ и ничего не меняют.
+        """
         place_id = _seed_place(h, name="Чужое место", actor_tg=OTHER_TG)
         await h.text("/start")
         await h.callback("manage_places")
         await h.callback(f"plm_open:{place_id}")
 
+        # Не-управляющий остался в просмотровой карточке справочника.
+        self.assertIn("можно посмотреть", h.screen_text())
+
         await h.callback(f"plm_edit:{place_id}")
-        self.assertIn("Редактирование доступно администратору места", _last_alert(h))
+        self.assertIn(STALE_PLACES, _last_alert(h).lower())
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
 
         await h.callback(f"plm_admins:{place_id}")
-        self.assertIn("только суперадминистратору", _last_alert(h))
+        self.assertIn(STALE_PLACES, _last_alert(h).lower())
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
 
         with h.session_factory() as session:
@@ -619,7 +642,10 @@ class PlaceHandbookTests(unittest.TestCase):
 
     @scenario_test
     async def test_forged_edit_for_another_place_than_card_is_stale(self, h):
-        """Кнопка с id, отличным от открытой карточки, не открывает редактор."""
+        """
+        Устаревшая кнопка `plm_edit` с чужим id не открывает редактор и не
+        сбивает уже открытую полную карточку своего места (T2).
+        """
         own = _seed_place(h, name="Своё", admin=True)
         foreign = _seed_place(h, name="Чужое", actor_tg=OTHER_TG)
         await h.text("/start")
@@ -628,7 +654,11 @@ class PlaceHandbookTests(unittest.TestCase):
         await h.callback(f"plm_edit:{foreign}")
 
         self.assertIn(STALE_PLACES, _last_alert(h).lower())
-        self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
+        admin_state = load_admin_session(DEFAULT_USER_ID)
+        self.assertIsNotNone(admin_state)
+        assert admin_state is not None
+        self.assertEqual(admin_state["phase"], "place")
+        self.assertEqual(admin_state["place_id"], own, "карточка своего места цела")
 
     @scenario_test
     async def test_stale_callbacks_without_state_are_answered(self, h):

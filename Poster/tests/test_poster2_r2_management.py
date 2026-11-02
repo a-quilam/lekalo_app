@@ -405,15 +405,24 @@ class PlaceManagementTests(unittest.TestCase):
         await h.callback("manage_places")
         await h.callback(f"plm_open:{place_id}")
 
+        # Poster 2.4.1 T2: управляющий попадает сразу в полную карточку.
         text = h.screen_text()
         self.assertIn("Дом культуры", text)
-        self.assertIn("Альтернативные названия: 1", text)
-        self.assertIn("Адрес: ул. Тестовая, 1", text)
+        self.assertIn("ДК", text)
+        self.assertIn("ул. Тестовая, 1", text)
         self.assertIn("https://example.com/place", text)
-        self.assertIn(f"plm_edit:{place_id}", _callbacks(h, "plm_edit:"))
-        # Админу места заявка не нужна, а назначение чужих админов — не его.
+        self.assertIn(f"adm_edit_place:{place_id}", _callbacks(h, "adm_edit_place:"))
+        self.assertIn(f"tp_std:{place_id}", _callbacks(h, "tp_std:"))
+        self.assertIn(f"adm_invite:{place_id}", _callbacks(h, "adm_invite:"))
+        # Промежуточной карточки справочника больше нет.
+        self.assertEqual(_callbacks(h, "plm_edit:"), [])
+        self.assertEqual(_callbacks(h, "plm_invite:"), [])
         self.assertEqual(_callbacks(h, "plm_admin_request:"), [])
-        self.assertEqual(_callbacks(h, "plm_admins:"), [])
+        admin_state = load_admin_session(DEFAULT_USER_ID)
+        self.assertIsNotNone(admin_state)
+        assert admin_state is not None
+        self.assertEqual(admin_state["phase"], "place")
+        self.assertEqual(admin_state["place_id"], place_id)
 
     @scenario_test
     async def test_non_admin_sees_view_and_request_only(self, h):
@@ -435,7 +444,7 @@ class PlaceManagementTests(unittest.TestCase):
         self.assertIn("не выдаёт права.", h.screen_text())
 
     @scenario_test
-    async def test_superadmin_sees_admins_button(self, h):
+    async def test_superadmin_sees_full_card(self, h):
         place_id = _seed_place(h, name="Дом культуры", actor_tg=OTHER_TG)
         with patch("config.SUPERADMIN_USER_IDS", (SUPERADMIN_TG,)):
             await h.text("/start", user_id=SUPERADMIN_TG)
@@ -443,11 +452,10 @@ class PlaceManagementTests(unittest.TestCase):
             await h.callback(f"plm_open:{place_id}", user_id=SUPERADMIN_TG)
 
             self.assertIn("Дом культуры", h.screen_text())
-            self.assertIn(f"plm_admins:{place_id}", _callbacks(h, "plm_admins:"))
-            self.assertIn(f"plm_edit:{place_id}", _callbacks(h, "plm_edit:"))
-
-            # «👥 Администраторы» открывает существующий кабинет места.
-            await h.callback(f"plm_admins:{place_id}", user_id=SUPERADMIN_TG)
+            # T2: суперадмин сразу в полной карточке места кабинета.
+            self.assertEqual(_callbacks(h, "plm_admins:"), [])
+            self.assertEqual(_callbacks(h, "plm_edit:"), [])
+            self.assertIn(f"adm_assign:{place_id}", _callbacks(h, "adm_assign:"))
             admin_state = load_admin_session(SUPERADMIN_TG)
             self.assertIsNotNone(admin_state)
             assert admin_state is not None
@@ -462,9 +470,16 @@ class PlaceManagementTests(unittest.TestCase):
         await h.callback("manage_places")
         await h.callback(f"plm_open:{place_id}")
 
-        # Подделанная кнопка: id совпадает с карточкой, но прав нет.
+        # Не-управляющий остаётся в карточке просмотра справочника.
+        state = load_place_session(DEFAULT_USER_ID)
+        self.assertIsNotNone(state)
+        assert state is not None
+        self.assertEqual(state["phase"], "manage_card")
+        self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
+
+        # Подделанная устаревшая кнопка `plm_edit` — честный stale-ответ.
         await h.callback(f"plm_edit:{place_id}")
-        self.assertIn("Редактирование доступно администратору места", _last_alert(h))
+        self.assertIn("больше не работает", _last_alert(h).lower())
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
         # Место и его стандартный шаблон не тронуты, справочник не сброшен.
         with h.session_factory() as session:

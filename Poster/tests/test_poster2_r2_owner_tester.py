@@ -817,6 +817,8 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
         await h.callback(f"plm_open:{place_id}")
         card = h.screen_text()
         self.assertIn("Дом культуры", card)
+        # Не-управляющий видит просмотровую карточку справочника: она
+        # по-прежнему показывает число альтернативных названий.
         self.assertIn("Альтернативные названия: 1", card)
         self.assertIn("ул. Ленина, 1", card)
         self.assertIn("https://example.com/place", card)
@@ -826,19 +828,27 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
         own = _seed_place(h, name="Своё", admin=True)
         foreign = _seed_place(h, name="Чужое", actor_tg=OTHER_TG)
 
-        # Админ места: правка есть, назначения админов и заявки нет.
+        # Админ места: T2 — сразу полная карточка кабинета без выдачи прав
+        # на чужие места.
         await h.text("/start")
         await h.callback("manage_places")
         await h.callback(f"plm_open:{own}")
         buttons = _callbacks(h)
-        self.assertIn(f"plm_edit:{own}", buttons)
-        self.assertNotIn(f"plm_admins:{own}", buttons)
+        self.assertIn(f"adm_edit_place:{own}", buttons)
+        self.assertIn(f"tp_std:{own}", buttons)
+        self.assertIn(f"adm_invite:{own}", buttons)
+        self.assertNotIn(f"adm_assign:{own}", buttons, "не суперадмин")
+        self.assertNotIn(f"plm_edit:{own}", buttons, "старой кнопки нет")
+        self.assertNotIn(f"plm_invite:{own}", buttons, "старой кнопки нет")
         self.assertNotIn(f"plm_admin_request:{own}", buttons)
 
         # Не-админ: только просмотр и «Я администратор места».
-        await h.callback("plm_back")
+        await h.callback("adm_places")
         await h.callback(f"plm_open:{foreign}")
         buttons = _callbacks(h)
+        self.assertNotIn(f"adm_edit_place:{foreign}", buttons)
+        self.assertNotIn(f"adm_assign:{foreign}", buttons)
+        self.assertNotIn(f"adm_invite:{foreign}", buttons)
         self.assertNotIn(f"plm_edit:{foreign}", buttons)
         self.assertNotIn(f"plm_admins:{foreign}", buttons)
         self.assertIn(f"plm_admin_request:{foreign}", buttons)
@@ -864,8 +874,11 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
             await h.callback("manage_places", user_id=SUPERADMIN_TG)
             await h.callback(f"plm_open:{foreign}", user_id=SUPERADMIN_TG)
             buttons = _callbacks(h)
-            self.assertIn(f"plm_edit:{foreign}", buttons)
-            self.assertIn(f"plm_admins:{foreign}", buttons)
+            self.assertIn(f"adm_edit_place:{foreign}", buttons)
+            self.assertIn(f"adm_assign:{foreign}", buttons)
+            self.assertIn(f"adm_invite:{foreign}", buttons)
+            self.assertNotIn(f"plm_edit:{foreign}", buttons)
+            self.assertNotIn(f"plm_admins:{foreign}", buttons)
             self.assertNotIn(f"plm_admin_request:{foreign}", buttons)
 
     @scenario_test
@@ -876,9 +889,9 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
         await h.callback(f"plm_open:{foreign}")
         # Карточка открыта тем же id: проверяется именно роль, а не совпадение.
         await h.callback(f"plm_edit:{foreign}")
-        self.assertIn("Редактирование доступно администратору места", _alert(h))
+        self.assertIn("больше не работает", _alert(h).lower())
         await h.callback(f"plm_admins:{foreign}")
-        self.assertIn("только суперадминистратору", _alert(h))
+        self.assertIn("больше не работает", _alert(h).lower())
         from admin_state import load_admin_session
 
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))

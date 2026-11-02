@@ -16,7 +16,7 @@ Poster 2.2 U4b: регрессия исправленных дефектов н�
 
 Дефект 2 (п.4 приёмки «без внутренней ошибки»).
     Если права управляющего отозваны между проверкой в
-    `handle_manage_invite` и повторной проверкой в `ensure_invite` при
+    `handle_invite_open` и повторной проверкой в `ensure_invite` при
     отрисовке экрана, пользователь получал «⚠️ Произошла внутренняя
     ошибка»: `PlaceInvitePermissionError` не классифицирован в
     `errors.expected_domain_errors()`. Исправление: оба исключения слоя
@@ -95,10 +95,11 @@ def _token_from_screen(h) -> str:
 
 
 async def _open_invite_screen(h, place_id: int) -> str:
+    """Полная карточка места → «🔗 Ссылка для создания анонса» (T2)."""
     await h.text("/start")
     await h.callback("manage_places")
     await h.callback(f"plm_open:{place_id}")
-    await h.callback(f"plm_invite:{place_id}")
+    await h.callback(f"adm_invite:{place_id}")
     return _token_from_screen(h)
 
 
@@ -150,9 +151,11 @@ class LostRightsDuringRenderTests(unittest.TestCase):
     @scenario_test
     async def test_lost_rights_do_not_show_internal_error(self, h):
         """
-        Воспроизведение: администратор открывает карточку площадки, права
-        отзывают ровно между проверкой в `handle_manage_invite` и повторной
-        проверкой в `ensure_invite` при отрисовке экрана ссылки.
+        Воспроизведение: администратор попадает в полную карточку площадки
+        (T2: `plm_open` → фаза `place`), жмёт новую кнопку `adm_invite`, и
+        права отзывают ровно между проверкой в `handle_invite_open` и
+        повторной проверкой в `ensure_invite` при отрисовке экрана ссылки
+        (фаза `place` → `invite`).
 
         Ожидание (и оно же закрепляется тестом): понятный отказ (alert
         доменного fallback'а), ссылка не создаётся, никакой «внутренней
@@ -164,14 +167,26 @@ class LostRightsDuringRenderTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("manage_places")
         await h.callback(f"plm_open:{place_id}")
+        self.assertIn(
+            f"adm_invite:{place_id}",
+            [callback for _, callback in h.screen_buttons()],
+            "управляющий должен попасть в полную карточку места с кнопкой ссылки",
+        )
 
         with patch.object(
             place_invite_store, "can_manage_place", lambda *a, **k: False
         ):
-            await h.callback(f"plm_invite:{place_id}")
+            await h.callback(f"adm_invite:{place_id}")
+
+        import errors
 
         replies = " ".join(h.reply_texts())
         self.assertNotIn("внутренняя ошибка", replies.lower())
+        self.assertNotIn(
+            errors.error_notice_text(),
+            replies,
+            "доменный отказ не должен уходить в общий fallback «внутренней ошибки»",
+        )
         self.assertEqual(_invites(h), [], "ссылка не должна создаваться без прав")
         self.assertTrue(h.answer_texts(), "пользователь должен получить отказ в alert")
         self.assertNotIn("?start=", h.screen_text())
