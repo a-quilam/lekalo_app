@@ -1064,11 +1064,19 @@ def _brick_list_content(
         )
     if not bricks:
         text += "\n\n" + tr("admin.brick_list.net_kirpichikov")
-    back_data = (
-        f"adm_place:{place_id}"
-        if scope == "place" and isinstance(place_id, int)
-        else "adm_places"
-    )
+    place_scoped = scope == "place" and isinstance(place_id, int)
+    if place_scoped:
+        # Poster 2.5 A4 (§13): локальный кирпичик создаётся тем же
+        # конструктором, что и личный, но сразу в области площадки.
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tr("buttons.admin.sozdat_kirpichik"),
+                    callback_data=f"adm_brick_new:{place_id}",
+                )
+            ]
+        )
+    back_data = f"adm_place:{place_id}" if place_scoped else "adm_places"
     rows.append([InlineKeyboardButton(tr("buttons.nav.back"), callback_data=back_data)])
     return text, InlineKeyboardMarkup(rows)
 
@@ -3476,6 +3484,11 @@ async def handle_open_place(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # Раньше эта кнопка получала «Кнопка устарела»: фаза `conflicts_list`
         # не входила в allow-list, хотя экран предлагает такой переход.
         "conflicts_list",
+        # Poster 2.5 A4 (§13): «◀️ Назад» из списка кирпичиков площадки ведёт
+        # в административную карточку ЭТОЙ площадки. Раньше фаза `brick_list`
+        # отсутствовала в allow-list, и рабочая кнопка отвечала «Кнопка
+        # устарела»/«Откройте раздел администрирования заново».
+        "brick_list",
     }:
         await _stale(update)
         return
@@ -3500,9 +3513,16 @@ async def handle_open_place(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     state["place_id"] = place_id
     state["phase"] = "place"
     # Вход из списка кабинета: «◀️ К списку мест» вернёт в кабинет, а не в
-    # справочник «Управление → Площадки» (Poster 2.4.1 T2).
+    # справочник «Управление → Площадки» (Poster 2.4.1 T2). Возврат из
+    # подраздела кирпичиков тоже идёт в кабинетную карточку, поэтому
+    # контекст справочника сбрасывается в любом случае.
     state.pop("return_to", None)
     state.pop("manage_page", None)
+    # Область кирпичиков привязана к площадке: после возврата в карточку
+    # она не должна переживать переход в другой подраздел.
+    state.pop("brick_scope", None)
+    state.pop("brick_place_id", None)
+    state.pop("brick_id", None)
     await _render_phase(update, context, state)
 
 
@@ -6103,6 +6123,56 @@ async def handle_admin_bricks(
     await _render_phase(update, context, state)
 
 
+async def handle_brick_create(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    `adm_brick_new:<place_id>`: «➕ Создать кирпичик» площадки (Poster 2.5 §13).
+
+    Открывает СУЩЕСТВУЮЩИЙ конструктор кирпичиков с предустановкой области:
+    кирпичик сразу принадлежит площадке. Права проверяются здесь по БД, а не
+    по факту нажатия: посторонний не попадает в мастер даже с подделанным
+    callback.
+    """
+    query = ctx.query(update)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {"place", "brick_list"}:
+        await _stale(update)
+        return
+    place_id = _brick_callback_id(str(query.data or ""))
+    if place_id is None:
+        await _stale(update)
+        return
+    session = SessionLocal()
+    try:
+        allowed = can_manage_place(session, user_id, place_id)
+        available = get_place_details(session, place_id) is not None
+    except Exception as e:  # noqa: BLE001 — отказ безопаснее открытия
+        logger.error("Не удалось проверить права создания кирпичика: %s", e)
+        allowed = False
+        available = False
+    finally:
+        session.close()
+    if not available:
+        await query.answer(
+            tr("alerts.admin.mesto_suschestvuet_udaleno"), show_alert=True
+        )
+        return
+    if not allowed:
+        await query.answer(DENIED_ALERT, show_alert=True)
+        return
+    if state.get("brick_scope") == "place" and state.get("brick_place_id") != place_id:
+        await _stale(update)
+        return
+    await query.answer()
+    # Мастер живёт в `brick_sessions`; административное состояние остаётся
+    # подсказкой о том, откуда человек пришёл, а не источником полномочий.
+    from handlers.bricks import start_place_brick_create
+
+    await start_place_brick_create(update, context, place_id)
+
+
 async def handle_brick_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """`adm_bedit:<brick_id>`: карточка кирпичика с единственной правкой — описанием."""
     query = ctx.query(update)
@@ -6807,6 +6877,8 @@ def admin_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(
             handle_admin_bricks, pattern=r"^adm_bricks(?:_global|:\d+)$"
         ),
+        # Poster 2.5 A4 (§13): локальный кирпичик из списка площадки.
+        CallbackQueryHandler(handle_brick_create, pattern=r"^adm_brick_new:\d+$"),
         CallbackQueryHandler(handle_brick_card, pattern=r"^adm_bedit:\d+$"),
         CallbackQueryHandler(
             handle_brick_description, pattern=r"^adm_bedit_description:\d+$"

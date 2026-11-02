@@ -53,14 +53,16 @@ from brick_proposal_store import (
     list_own_proposals,
     withdraw_brick_proposal,
 )
-from brick_state import load_brick_session, save_brick_session
+from brick_state import clear_brick_session, load_brick_session, save_brick_session
 from brick_store import (
     BrickActorError,
     BrickConflictError,
+    BrickPermissionError,
     archive_personal_brick,
     check_code_availability,
     count_personal_bricks,
     create_personal_brick,
+    create_place_brick,
     delete_brick,
     get_personal_brick,
     list_personal_bricks,
@@ -228,6 +230,47 @@ def _new_create_state(*, page: int = 0, archive_page: int = 0) -> dict:
     }
 
 
+# --- Область создаваемого кирпичика (Poster 2.5 §13) ------------------------
+
+
+def _create_scope(state: dict) -> str:
+    """
+    Область создаваемого кирпичика: `personal` (по умолчанию) или `place`.
+
+    Локальный кирпичик площадки создаётся тем же мастером: меняется только
+    область записи и точка возврата после сохранения.
+    """
+    return "place" if state.get("create_scope") == "place" else "personal"
+
+
+def _create_place_id(state: dict) -> int | None:
+    """Площадка локального кирпичика; `None` для личного."""
+    if _create_scope(state) != "place":
+        return None
+    value = state.get("create_place_id")
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    return value
+
+
+def _new_place_create_state(place_id: int) -> dict:
+    """Мастер создания локального кирпичика конкретной площадки."""
+    state = _new_create_state()
+    state["create_scope"] = "place"
+    state["create_place_id"] = place_id
+    return state
+
+
+def _create_return_target(state: dict) -> tuple[str, int | None]:
+    """
+    Куда вернуться после сохранения/отмены создания.
+
+    Личный кирпичик — в «Мои кирпичики»; локальный — в список кирпичиков
+    ТОЙ ЖЕ площадки (`adm_bricks`), а не в личный хаб пользователя.
+    """
+    return _create_scope(state), _create_place_id(state)
+
+
 def _draft(state: dict) -> dict:
     draft = state.get("draft")
     if not isinstance(draft, dict):
@@ -317,17 +360,33 @@ def _code_available(
     user_id: int,
     code: str,
     exclude_brick_id: int | None = None,
+    scope: str = "personal",
+    place_id: int | None = None,
 ):
+    """
+    Проверка кода в области создаваемого/правимого кирпичика.
+
+    `personal` — личный кирпичик автора; `place` — локальный кирпичик
+    площадки (Poster 2.5 §13), тогда владелец — место, а не пользователь.
+    """
     return check_code_availability(
         session,
         code,
-        scope="personal",
-        owner_user_id=user_id,
+        scope=scope,
+        place_id=place_id if scope == "place" else None,
+        owner_user_id=user_id if scope != "place" else None,
         exclude_brick_id=exclude_brick_id,
     )
 
 
-def _suggest_code(session: Session, user_id: int, title: str) -> str:
+def _suggest_code(
+    session: Session,
+    user_id: int,
+    title: str,
+    *,
+    scope: str = "personal",
+    place_id: int | None = None,
+) -> str:
     """
     Предлагает свободный человекочитаемый код из названия.
 
@@ -352,7 +411,13 @@ def _suggest_code(session: Session, user_id: int, title: str) -> str:
     candidate = base
     counter = 2
     while True:
-        availability = _code_available(session, user_id=user_id, code=candidate)
+        availability = _code_available(
+            session,
+            user_id=user_id,
+            code=candidate,
+            scope=scope,
+            place_id=place_id,
+        )
         if availability.available:
             return candidate
         suffix = f"_{counter}"
@@ -1925,6 +1990,56 @@ async def _render_phase(
 # --- Вход и список ----------------------------------------------------------
 
 
+async def _render_place_brick_list(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    place_id: int,
+    *,
+    notice: str | None = None,
+) -> None:
+    """
+    Возврат к списку кирпичиков конкретной площадки (Poster 2.5 §13).
+
+    Экран принадлежит административному кабинету, поэтому состояние фазы и
+    проверка прав — его же (`handlers.admin`). После рестарта список
+    восстанавливается из `admin_sessions`, а не из `user_data`.
+    """
+    # Ленивый импорт: модуль кабинета не должен зависеть от раздела кирпичиков
+    # на уровне импорта (иначе цикл admin → bricks → admin).
+    from handlers.admin import _render_phase as render_admin_phase
+
+    state = {
+        "phase": "brick_list",
+        "brick_scope": "place",
+        "brick_place_id": place_id,
+    }
+    await render_admin_phase(update, context, state, notice=notice, drop_input=True)
+
+
+async def start_place_brick_create(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, place_id: int
+) -> None:
+    """
+    «➕ Создать кирпичик» площадки: вход в существующий конструктор.
+
+    Права уже проверены вызывающим слоем по актуальной строке `place_admins`;
+    доменный `create_place_brick` перепроверяет их ещё раз при сохранении.
+    """
+    user_id = ctx.user(update).id
+    await screen.reanchor_screen(update, context)
+    # Разделы взаимоисключающие: незавершённый черновик другого раздела не
+    # должен перехватывать ввод мастера (как при обычном входе в кирпичики).
+    clear_place_session(user_id)
+    clear_admin_session(user_id)
+    clear_template_session(user_id)
+    await _render_phase(
+        update,
+        context,
+        _new_place_create_state(place_id),
+        drop_input=True,
+    )
+
+
 async def open_bricks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Вход в раздел: кнопка меню, /bricks или возврат после рестарта."""
     query = getattr(update, "callback_query", None)
@@ -2563,6 +2678,14 @@ async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     elif phase == "title_input":
         if state.get("mode") == "edit":
             state["phase"] = "edit_menu"
+        elif _create_place_id(state) is not None:
+            # Первый шаг создания локального кирпичика: «Назад» возвращает в
+            # список кирпичиков той же площадки, а не в личный хаб.
+            place_id = _create_place_id(state)
+            assert place_id is not None
+            clear_brick_session(ctx.user(update).id)
+            await _render_place_brick_list(update, context, place_id)
+            return
         else:
             state.clear()
             state.update(_new_hub(page=page, archive_page=archive_page))
@@ -2622,6 +2745,17 @@ async def _cancel_preview(
             state,
             notice=tr("bricks.cancel_preview.izmeneniya_otmeneny_dannye"),
             cleanup_ids=cleanup,
+        )
+        return
+    place_create_id = _create_place_id(state)
+    if place_create_id is not None:
+        # Отмена создания локального кирпичика: обратно в список площадки.
+        clear_brick_session(ctx.user(update).id)
+        await _render_place_brick_list(
+            update,
+            context,
+            place_create_id,
+            notice=tr("bricks.cancel_preview.sozdanie_otmeneno_baze_nichego"),
         )
         return
     state.clear()
@@ -2695,7 +2829,14 @@ async def handle_brick_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             else:
                 draft["title"] = title
                 if state.get("mode") == "create" and not draft.get("code"):
-                    draft["code"] = _suggest_code(session, user.id, title)
+                    scope, place_id = _create_return_target(state)
+                    draft["code"] = _suggest_code(
+                        session,
+                        user.id,
+                        title,
+                        scope=scope,
+                        place_id=place_id,
+                    )
                 state["phase"] = (
                     "edit_menu" if state.get("mode") == "edit" else "code_input"
                 )
@@ -2709,11 +2850,14 @@ async def handle_brick_text(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             except BrickValidationError as exc:
                 notice = str(exc)
             else:
+                scope, place_id = _create_return_target(state)
                 available = _code_available(
                     session,
                     user_id=user.id,
                     code=validated,
                     exclude_brick_id=exclude_id or None,
+                    scope=scope,
+                    place_id=place_id,
                 )
                 if not available.available:
                     notice = (
@@ -2819,11 +2963,14 @@ async def handle_accept_code(
         exclude_id = (
             int(state.get("brick_id") or 0) if state.get("mode") == "edit" else None
         )
+        scope, place_id = _create_return_target(state)
         available = _code_available(
             session,
             user_id=user.id,
             code=code,
             exclude_brick_id=exclude_id or None,
+            scope=scope,
+            place_id=place_id,
         )
     except Exception:  # noqa: BLE001 — экран должен остаться рабочим
         logger.exception("Не удалось проверить код кирпичика.")
@@ -3140,20 +3287,41 @@ async def _handle_create_save(
     state: dict,
 ) -> None:
     draft = _draft(state)
+    scope, place_id = _create_return_target(state)
     session = SessionLocal()
     try:
         user = _ensure_user(session, update)
         try:
-            brick = create_personal_brick(
-                session,
-                actor_telegram_user_id=user.telegram_user_id,
-                code=draft.get("code") or "",
-                title=draft.get("title") or "",
-                value_type=draft.get("value_type") or "",
-                rules=draft.get("rules") or {},
-                description=draft.get("description") or None,
-            )
-        except (BrickConflictError, BrickValidationError, BrickActorError) as exc:
+            if scope == "place" and place_id is not None:
+                # Poster 2.5 §13: локальный кирпичик площадки. Права
+                # проверяются в сервисе по актуальной строке `place_admins`;
+                # запись не является ни личной, ни предложением.
+                brick = create_place_brick(
+                    session,
+                    actor_telegram_user_id=user.telegram_user_id,
+                    place_id=place_id,
+                    code=draft.get("code") or "",
+                    title=draft.get("title") or "",
+                    value_type=draft.get("value_type") or "",
+                    rules=draft.get("rules") or {},
+                    description=draft.get("description") or None,
+                )
+            else:
+                brick = create_personal_brick(
+                    session,
+                    actor_telegram_user_id=user.telegram_user_id,
+                    code=draft.get("code") or "",
+                    title=draft.get("title") or "",
+                    value_type=draft.get("value_type") or "",
+                    rules=draft.get("rules") or {},
+                    description=draft.get("description") or None,
+                )
+        except (
+            BrickConflictError,
+            BrickValidationError,
+            BrickActorError,
+            BrickPermissionError,
+        ) as exc:
             session.rollback()
             # Код мог занять конкурентный пользователь. Если он всё ещё
             # свободен, это ошибка БД: оставляем предпросмотр, не теряя ввод.
@@ -3162,6 +3330,8 @@ async def _handle_create_save(
                     session,
                     user_id=user.id,
                     code=draft.get("code") or "",
+                    scope=scope,
+                    place_id=place_id,
                 )
             except Exception:  # noqa: BLE001 — экран и черновик важнее запроса
                 logger.exception("Не удалось перепроверить код кирпичика.")
@@ -3189,7 +3359,7 @@ async def _handle_create_save(
             return
         except Exception:  # noqa: BLE001 — не теряем черновик и экран
             session.rollback()
-            logger.exception("Не удалось создать личный кирпичик.")
+            logger.exception("Не удалось создать кирпичик.")
             await _render_phase(
                 update,
                 context,
@@ -3201,6 +3371,16 @@ async def _handle_create_save(
     finally:
         session.close()
 
+    notice = tr_safe(
+        "bricks.handle_create_save.kirpichik_sozdan_oboznachenie_html",
+        title=_h(brick_title_display(brick.title, brick.code)),
+        code=_h(brick.code),
+    )
+    if scope == "place" and place_id is not None:
+        # Возврат — в список кирпичиков ТОЙ ЖЕ площадки, а не в личные.
+        clear_brick_session(ctx.user(update).id)
+        await _render_place_brick_list(update, context, place_id, notice=notice)
+        return
     page, archive_page = _saved_page(state)
     state.clear()
     state.update(_new_hub(page=page, archive_page=archive_page))
@@ -3208,13 +3388,7 @@ async def _handle_create_save(
         update,
         context,
         state,
-        notice=(
-            tr_safe(
-                "bricks.handle_create_save.kirpichik_sozdan_oboznachenie_html",
-                title=_h(brick_title_display(brick.title, brick.code)),
-                code=_h(brick.code),
-            )
-        ),
+        notice=notice,
         drop_input=True,
     )
 

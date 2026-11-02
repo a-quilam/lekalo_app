@@ -1927,18 +1927,22 @@ async def handle_manage_back(
     Фазы карточки, заявки на админа места и создания из справочника входят в
     allow-list: у каждого экрана раздела должна быть рабочая навигация, а не
     ответ «Кнопка устарела» и тупик (дефекты №26).
+
+    Poster 2.5 A4: `create_city_input` из allow-list убран — на этом шаге
+    мастера кнопка «◀️ Назад» отправляет `pl_create_back` (к предыдущему шагу
+    мастера), а не `plm_back`, поэтому фаза здесь недостижима и лишь маскировала
+    бы настоящие устаревшие нажатия. `create_input` остаётся: «➕ Добавить
+    место» из справочника по-прежнему открывает ввод названия в режиме
+    `manage_mode`.
     """
     query = ctx.query(update)
     state = load_place_session(ctx.user(update).id)
     phase = state.get("phase") if state is not None else None
-    allowed = MANAGE_ONLY_PHASES | {"create_input", "create_city_input"}
+    allowed = MANAGE_ONLY_PHASES | {"create_input"}
     if (
         state is None
         or phase not in allowed
-        or (
-            phase in {"create_input", "create_city_input"}
-            and not state.get("manage_mode")
-        )
+        or (phase == "create_input" and not state.get("manage_mode"))
     ):
         await query.answer(tr("errors.stale.manage"), show_alert=True)
         return
