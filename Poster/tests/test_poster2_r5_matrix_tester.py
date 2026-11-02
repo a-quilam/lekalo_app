@@ -546,17 +546,18 @@ class R5ScenarioIdorTests(unittest.TestCase):
             conflict_id = int(conflict.id)
             self.assertEqual(conflict.status, CONFLICT_STATUS_OPEN)
 
-        await self._outsider_cabinet(h)
+        own_place = await self._outsider_cabinet(h)
         # Чужая карточка места и чужие задачи не открываются.
         await h.callback(f"adm_bconflicts:{place_id}", user_id=OTHER_ADMIN_TG)
         self.assertEqual(last_alert(h), STALE_ALERT)
         # После stale экран остаётся карточкой СВОЕГО места: входим в свой
         # список конфликтов и подделываем там чужой id задачи.
-        own_place = int(
-            next(
-                data.split(":", 1)[1]
+        # Poster 2.5 A3 (§12): у своего места открытых конфликтов нет, поэтому
+        # кнопки в карточке нет — пустой раздел не показывается.
+        self.assertFalse(
+            any(
+                data and data.startswith("adm_bconflicts:")
                 for _label, data in buttons(h)
-                if data and data.startswith("adm_bconflicts:")
             )
         )
         await h.callback(f"adm_bconflicts:{own_place}", user_id=OTHER_ADMIN_TG)

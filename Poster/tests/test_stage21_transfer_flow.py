@@ -318,12 +318,23 @@ def last_alert(h) -> str | None:
     return record.get("text")
 
 
+async def open_place_admins(h) -> None:
+    """Из карточки места открывает подраздел «Управление администратором»."""
+    labels = [label for label, _ in h.screen_buttons()]
+    if "👤 Управлять администратором" not in labels:
+        raise AssertionError(
+            f"нет входа в управление админом: {labels!r}\n{h.screen_text()}"
+        )
+    await h.callback(screen_callback(h, "adm_place_admins:"))
+
+
 async def open_transfer_input(h, place_id: int) -> None:
     """Из главного меню открывает карточку места и экран передачи."""
     await h.text("/admin")
     await h.callback(screen_callback(h, "adm_place:"))
+    await open_place_admins(h)
     labels = [label for label, _ in h.screen_buttons()]
-    if "🔁 Передать права" not in labels:
+    if "📤 Передать админку" not in labels:
         raise AssertionError(f"нет кнопки передачи: {labels!r}\n{h.screen_text()}")
     await h.callback(f"adm_transfer:{place_id}")
     if "Введите @username" not in h.screen_text():
@@ -357,8 +368,9 @@ class TransferScreenTests(unittest.TestCase):
 
         await h.text("/admin")
         await h.callback(screen_callback(h, "adm_place:"))
+        await open_place_admins(h)
         labels = [label for label, _ in h.screen_buttons()]
-        self.assertIn("🔁 Передать права", labels)
+        self.assertIn("📤 Передать админку", labels)
 
         await h.callback(f"adm_transfer:{place_id}")
         text = h.screen_text()
@@ -377,7 +389,12 @@ class TransferScreenTests(unittest.TestCase):
             await h.text("/admin")
             await h.callback(screen_callback(h, "adm_place:"))
             labels = [label for label, _ in h.screen_buttons()]
-            self.assertNotIn("🔁 Передать права", labels)
+            self.assertNotIn("📤 Передать админку", labels)
+            self.assertIn("👤 Управлять администратором", labels)
+
+            await open_place_admins(h)
+            labels = [label for label, _ in h.screen_buttons()]
+            self.assertNotIn("📤 Передать админку", labels)
             self.assertIn("🔁 Заменить администратора", labels)
 
 
@@ -823,6 +840,7 @@ class SafetyAndAuditFlowTests(unittest.TestCase):
             user_id=INITIATOR_TG,
             chat_id=INITIATOR_TG,
         )
+        await open_place_admins(h)
         await h.callback(
             f"adm_transfer:{place_id}", user_id=INITIATOR_TG, chat_id=INITIATOR_TG
         )
@@ -942,6 +960,7 @@ class SafetyAndAuditFlowTests(unittest.TestCase):
 
         await h.text("/admin")
         await h.callback(screen_callback(h, "adm_place:"))
+        await open_place_admins(h)
         await h.callback(f"adm_transfer:{own_place}")
         await h.text("@newadmin")
         await h.callback("adm_transfer_confirm")

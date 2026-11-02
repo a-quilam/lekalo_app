@@ -462,10 +462,16 @@ class SuperadminReplaceRevokeTests(unittest.TestCase):
             h.user_id = SUPERADMIN_TG
             await h.text("/admin")
             await h.callback(screen_callback(h, "adm_place:"))
+            # Poster 2.5 A3: админ-действия живут в подразделе карточки.
+            self.assertIn(
+                "👤 Управлять администратором",
+                [label for label, _ in h.screen_buttons()],
+            )
+            self.assertIn("Первый Админ (@target)", h.screen_text())
+            await h.callback(f"adm_place_admins:{place_id}")
             self.assertIn(
                 "🔁 Заменить администратора", [label for label, _ in h.screen_buttons()]
             )
-            self.assertIn("Первый Админ (@target)", h.screen_text())
 
             await h.callback(f"adm_replace:{place_id}")
             await h.text("@second")
@@ -512,6 +518,7 @@ class SuperadminReplaceRevokeTests(unittest.TestCase):
             h.user_id = SUPERADMIN_TG
             await h.text("/admin")
             await h.callback(screen_callback(h, "adm_place:"))
+            await h.callback(f"adm_place_admins:{place_id}")
             self.assertIn(
                 "🚫 Снять администратора", [label for label, _ in h.screen_buttons()]
             )
@@ -546,6 +553,7 @@ class SuperadminReplaceRevokeTests(unittest.TestCase):
             h.user_id = SUPERADMIN_TG
             await h.text("/admin")
             await h.callback(screen_callback(h, "adm_place:"))
+            await h.callback(f"adm_place_admins:{place_id}")
             await h.callback(f"adm_revoke:{place_id}")
             self.assertIn("Подтвердите снятие", h.screen_text())
 

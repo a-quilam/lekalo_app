@@ -1141,8 +1141,9 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.kirpichiki": "🧩 Кирпичики",
     "buttons.admin.k_konfliktam": "◀️ К конфликтам",
     "buttons.admin.k_ocheredi": "◀️ К очереди",
+    "buttons.admin.k_kartochke_mesta": "◀️ К карточке места",
     "buttons.admin.k_spisku_mest": "◀️ К списку мест",
-    "buttons.admin.konflikty_kodov": "⚔️ Конфликты кодов ({open_conflicts})",
+    "buttons.admin.konflikty_kodov": "⚔️ Конфликты кодов",
     "buttons.admin.naznachit_administratora": "👤 Назначить администратора",
     "buttons.admin.net_nazad": "◀️ Нет, назад",
     "buttons.admin.obnovit_status": "🔄 Обновить статус",
@@ -1154,11 +1155,12 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.otmena_2": "◀️ Отмена",
     "buttons.admin.otmenit_peredachu": "❌ Отменить передачу",
     "buttons.admin.peredat_adminku": "🔁 Передать права",
+    "buttons.admin.peredat_adminku_2": "📤 Передать админку",
     "buttons.admin.pereimenovat_mestnyy": "✏️ Изменить код местного",
     "buttons.admin.pereklyuchitsya_globalnyy": "🌍 Переключиться на глобальный",
     "buttons.admin.podtverdit": "✅ Подтвердить",
     "buttons.admin.podtverzhdayu": "✅ Подтверждаю",
-    "buttons.admin.predlozheniya_kirpichikov": "🧩 Предложения кирпичиков ({pending_proposals})",
+    "buttons.admin.predlozheniya_kirpichikov": "🧩 Предложения кирпичиков",
     "buttons.admin.predlozheniya_mestam": "📍 Предложения по местам ({places_pending})",
     "buttons.admin.redaktirovat_mesto": "✏️ Редактировать место",
     "buttons.admin.snyat_administratora": "🚫 Снять администратора",
@@ -1167,6 +1169,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.ssylka": "✏️ Ссылка",
     "buttons.admin.standartnyy_shablon": "📄 Стандартный шаблон",
     "buttons.admin.udalit": "🗑 Удалить",
+    "buttons.admin.upravlyat_administratorom": "👤 Управлять администратором",
     "buttons.admin.utverdit_poluchatelya": "✅ Утвердить получателя",
     "buttons.admin.uvedomit_poluchatelya_raz": "🔔 Уведомить получателя ещё раз",
     "buttons.admin.zamenit_administratora": "🔁 Заменить администратора",
@@ -1681,6 +1684,9 @@ DEFAULTS: dict[str, str] = {
     "admin.notify_proposal_author.prichina": "\nПричина: {decision_note}",
     "admin.notify_proposal_author.status_dostupen_razdele_moi": "\n\nПосмотреть статус можно в «Мои кирпичики» → «Мои предложения».",
     "admin.place.administrator_naznachen": "\n\nАдминистратор: не назначен.",
+    "admin.place_admins.upravlenie_administratorom": (
+        "👤 Управление администратором\n\n📍 {canonical_name}"
+    ),
     "admin.place.administrator_naznachen_2": "\n\nАдминистратор: {user_label}\nНазначен: {date_label}",
     "admin.place.aktivnye_zadachi_konfliktov_kodov": (
         "\n\n"

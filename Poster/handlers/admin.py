@@ -228,7 +228,13 @@ PHASES = {
     "brick_description_input",
     # Poster 2.4.1 T2: ссылка для создания анонса — экран полной карточки.
     "invite",
+    # Poster 2.5 A3: служебный подраздел управления администратором места.
+    "place_admins",
 }
+
+# Poster 2.5 A3: действия администратора доступны и с карточки места, и из
+# подраздела «Управление администратором» — это один и тот же механизм.
+PLACE_ACTION_PHASES = frozenset({"place", "place_admins"})
 
 _SUPER_ONLY_PHASES = {
     "assign_search",
@@ -1421,6 +1427,7 @@ def _place_keyboard(
             ),
         ]
     )
+    active = get_active_place_admin(session, details.place_id)
     if viewer_telegram_user_id is not None:
         try:
             pending_proposals = count_pending_for_place(
@@ -1429,22 +1436,26 @@ def _place_keyboard(
         except ProposalPermissionError:
             pending_proposals = 0
         open_conflicts = count_open_conflicts_for_place(session, details.place_id)
-        # E4: счётчики-действия рядом: предложения и конфликты — одна тема.
-        rows.append(
-            [
+        # Poster 2.5 A3 (§12): динамическая строка без пустых разделов.
+        # Кнопка показывается только при актуальных записях, счётчик на
+        # кнопке не выводится: (0) — это пустой раздел.
+        dynamic_row: list[InlineKeyboardButton] = []
+        if pending_proposals > 0:
+            dynamic_row.append(
                 InlineKeyboardButton(
-                    tr(
-                        "buttons.admin.predlozheniya_kirpichikov",
-                        pending_proposals=pending_proposals,
-                    ),
+                    tr("buttons.admin.predlozheniya_kirpichikov"),
                     callback_data=f"adm_bprop_place:{details.place_id}",
-                ),
+                )
+            )
+        if open_conflicts > 0:
+            dynamic_row.append(
                 InlineKeyboardButton(
-                    tr("buttons.admin.konflikty_kodov", open_conflicts=open_conflicts),
+                    tr("buttons.admin.konflikty_kodov"),
                     callback_data=f"adm_bconflicts:{details.place_id}",
-                ),
-            ]
-        )
+                )
+            )
+        if dynamic_row:
+            rows.append(dynamic_row)
         # Poster 2.4 P1: кирпичики площадки — отдельная строка сразу после
         # действий места. Вставка не сдвигает первую строку, навигацию и
         # последнюю административную строку (контракт E4).
@@ -1456,39 +1467,31 @@ def _place_keyboard(
                 )
             ]
         )
-    active = get_active_place_admin(session, details.place_id)
-    # E4: админ-действия собираются списком и укладываются в строки по две.
-    admin_buttons: list[InlineKeyboardButton] = []
-    if active is not None and viewer_telegram_user_id == active.user.telegram_user_id:
-        admin_buttons.append(
-            InlineKeyboardButton(
-                tr("buttons.admin.peredat_adminku"),
-                callback_data=f"adm_transfer:{details.place_id}",
-            )
-        )
-    if access_kind == "superadmin":
-        if active is None:
-            admin_buttons.append(
-                InlineKeyboardButton(
-                    tr("buttons.admin.naznachit_administratora"),
-                    callback_data=f"adm_assign:{details.place_id}",
-                )
+    # Poster 2.5 A3: админ-действия карточки сведены к одной точке входа.
+    # Суперадмин без администратора сразу назначает; замена, снятие и
+    # передача прав живут в подразделе «Управление администратором».
+    manages_admin = access_kind == "superadmin" or (
+        active is not None and viewer_telegram_user_id == active.user.telegram_user_id
+    )
+    if manages_admin:
+        if access_kind == "superadmin" and active is None:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.admin.naznachit_administratora"),
+                        callback_data=f"adm_assign:{details.place_id}",
+                    )
+                ]
             )
         else:
-            admin_buttons.append(
-                InlineKeyboardButton(
-                    tr("buttons.admin.zamenit_administratora"),
-                    callback_data=f"adm_replace:{details.place_id}",
-                )
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.admin.upravlyat_administratorom"),
+                        callback_data=f"adm_place_admins:{details.place_id}",
+                    )
+                ]
             )
-            admin_buttons.append(
-                InlineKeyboardButton(
-                    tr("buttons.admin.snyat_administratora"),
-                    callback_data=f"adm_revoke:{details.place_id}",
-                )
-            )
-    for start in range(0, len(admin_buttons), 2):
-        rows.append(admin_buttons[start : start + 2])
     # Poster 2.4.1 T2: ссылка на создание анонса переехала из справочника в
     # полную карточку. Права не расширяются: кнопка видна управляющему
     # местом (и суперадмину), а выдача ссылки перепроверяет права по БД.
@@ -1515,6 +1518,76 @@ def _place_keyboard(
         ]
     )
     return InlineKeyboardMarkup(rows)
+
+
+def _place_admins_content(
+    session: Session,
+    details: PlaceDetails,
+    *,
+    access_kind: str,
+    viewer_telegram_user_id: int,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Poster 2.5 A3 (§12): служебный подраздел «Управление администратором».
+
+    Второго механизма назначения нет: кнопки ведут в существующие
+    `adm_assign` / `adm_replace` / `adm_revoke` / `adm_transfer`.
+    """
+    active = get_active_place_admin(session, details.place_id)
+    text = tr_safe(
+        "admin.place_admins.upravlenie_administratorom",
+        canonical_name=_h(details.canonical_name),
+    )
+    if active is None:
+        text += tr("admin.place.administrator_naznachen")
+    else:
+        text += tr_safe(
+            "admin.place.administrator_naznachen_2",
+            user_label=_h(_user_label(active.user, with_id=True)),
+            date_label=_h(_date_label(active.assigned_at)),
+        )
+    rows: list[list[InlineKeyboardButton]] = []
+    if access_kind == "superadmin":
+        if active is None:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.admin.naznachit_administratora"),
+                        callback_data=f"adm_assign:{details.place_id}",
+                    )
+                ]
+            )
+        else:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.admin.zamenit_administratora"),
+                        callback_data=f"adm_replace:{details.place_id}",
+                    ),
+                    InlineKeyboardButton(
+                        tr("buttons.admin.snyat_administratora"),
+                        callback_data=f"adm_revoke:{details.place_id}",
+                    ),
+                ]
+            )
+    if active is not None and viewer_telegram_user_id == active.user.telegram_user_id:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tr("buttons.admin.peredat_adminku_2"),
+                    callback_data=f"adm_transfer:{details.place_id}",
+                )
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                tr("buttons.admin.k_kartochke_mesta"),
+                callback_data="adm_place_admins_back",
+            )
+        ]
+    )
+    return text, InlineKeyboardMarkup(rows)
 
 
 _PROPOSAL_STATUS_UI = {
@@ -2664,6 +2737,30 @@ async def _render_phase(
                     access_kind=access_kind,
                     viewer_telegram_user_id=user_id,
                 )
+        elif phase == "place_admins":
+            # Poster 2.5 A3: подраздел управления администратором места.
+            # Права проверяются по БД: управляющий местом или суперадмин.
+            if details is None:
+                state.clear()
+                state.update(_new_state())
+                notice = notice or tr(
+                    "admin.render_phase.mesto_suschestvuet_bylo_udaleno"
+                )
+                text, keyboard = _places_content(session, state, access_kind, user_id)
+            elif not can_manage_place(session, user_id, details.place_id):
+                state.clear()
+                state.update(_new_state())
+                notice = notice or tr(
+                    "admin.render_phase.dostup_etomu_mestu_podtverzhden"
+                )
+                text, keyboard = _places_content(session, state, access_kind, user_id)
+            else:
+                text, keyboard = _place_admins_content(
+                    session,
+                    details,
+                    access_kind=access_kind,
+                    viewer_telegram_user_id=user_id,
+                )
         elif phase == "invite":
             # Poster 2.4.1 T2: экран ссылки на создание анонса — часть полной
             # карточки. Права проверяются по БД, а не по факту прихода сюда.
@@ -3300,6 +3397,57 @@ async def handle_invite_back(
     await _render_phase(update, context, state)
 
 
+async def handle_place_admins_open(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    Poster 2.5 A3: «👤 Управлять администратором» — служебный подраздел.
+
+    Второго механизма нет: внутри живут существующие `adm_replace`,
+    `adm_revoke` (суперадмин) и `adm_transfer` (админ места).
+    """
+    query = ctx.query(update)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in PLACE_ACTION_PHASES:
+        await _stale(update)
+        return
+    place_id = _proposal_callback_id(str(query.data or ""))
+    state_place_id = state.get("place_id")
+    if (
+        place_id is None
+        or not isinstance(state_place_id, int)
+        or state_place_id != place_id
+    ):
+        await _stale(update)
+        return
+    session = SessionLocal()
+    try:
+        allowed = can_manage_place(session, user_id, place_id)
+    finally:
+        session.close()
+    if not allowed:
+        await query.answer(DENIED_ALERT, show_alert=True)
+        return
+    await query.answer()
+    state["phase"] = "place_admins"
+    await _render_phase(update, context, state)
+
+
+async def handle_place_admins_back(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«◀️ К карточке места»: возврат из подраздела администратора."""
+    query = ctx.query(update)
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "place_admins":
+        await _stale(update)
+        return
+    await query.answer()
+    state["phase"] = "place"
+    await _render_phase(update, context, state)
+
+
 async def handle_places_page(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -3364,7 +3512,7 @@ async def handle_assign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.answer(DENIED_ALERT, show_alert=True)
         return
     state = load_admin_session(ctx.user(update).id)
-    if state is None or state.get("phase") != "place":
+    if state is None or state.get("phase") not in PLACE_ACTION_PHASES:
         await _stale(update)
         return
     data = query.data or ""
@@ -3402,7 +3550,7 @@ async def handle_replace(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await query.answer(DENIED_ALERT, show_alert=True)
         return
     state = load_admin_session(ctx.user(update).id)
-    if state is None or state.get("phase") != "place":
+    if state is None or state.get("phase") not in PLACE_ACTION_PHASES:
         await _stale(update)
         return
     data = query.data or ""
@@ -3438,7 +3586,7 @@ async def handle_revoke(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await query.answer(DENIED_ALERT, show_alert=True)
         return
     state = load_admin_session(ctx.user(update).id)
-    if state is None or state.get("phase") != "place":
+    if state is None or state.get("phase") not in PLACE_ACTION_PHASES:
         await _stale(update)
         return
     data = query.data or ""
@@ -4635,7 +4783,7 @@ async def handle_transfer_open(
     """Кнопка «Передать админку»: активное предложение или ввод username."""
     query = ctx.query(update)
     state = load_admin_session(ctx.user(update).id)
-    if state is None or state.get("phase") != "place":
+    if state is None or state.get("phase") not in PLACE_ACTION_PHASES:
         await _stale(update)
         return
     state_place_id = state.get("place_id")
@@ -6566,6 +6714,13 @@ def admin_handlers() -> list[BaseHandler]:
             handle_invite_regenerate, pattern=r"^adm_invite_regen:\d+$"
         ),
         CallbackQueryHandler(handle_invite_back, pattern=r"^adm_invite_back$"),
+        # Poster 2.5 A3: подраздел «Управление администратором» (вход/возврат).
+        CallbackQueryHandler(
+            handle_place_admins_open, pattern=r"^adm_place_admins:\d+$"
+        ),
+        CallbackQueryHandler(
+            handle_place_admins_back, pattern=r"^adm_place_admins_back$"
+        ),
         CallbackQueryHandler(handle_confirm, pattern=r"^adm_confirm$"),
         # Редактирование данных места (Stage 20B).
         CallbackQueryHandler(handle_edit_open, pattern=r"^adm_edit_place:\d+$"),

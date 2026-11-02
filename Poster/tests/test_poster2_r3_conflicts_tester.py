@@ -832,7 +832,9 @@ class R3UiTests(unittest.TestCase):
         card = h.screen_text()
         self.assertIn("Нерешённых конфликтов кодов", card)
         buttons = " ".join(label for label, _ in h.screen_buttons())
-        self.assertIn("Конфликты кодов (1)", buttons)
+        # Poster 2.5 A3 (§12): индикация без счётчика, только при задаче.
+        self.assertIn("Конфликты кодов", buttons)
+        self.assertNotIn("Конфликты кодов (1)", buttons)
 
         await h.callback(f"adm_bconflicts:{place_id}", user_id=AUTHOR_TG)
         self.assertIn("Конфликты кодов", h.screen_text())
@@ -857,7 +859,8 @@ class R3UiTests(unittest.TestCase):
         card_after = h.screen_text()
         self.assertNotIn("Нерешённых конфликтов кодов", card_after)
         buttons_after = " ".join(label for label, _ in h.screen_buttons())
-        self.assertIn("Конфликты кодов (0)", buttons_after)
+        # Poster 2.5 A3 (§12): пустой раздел не показывается вовсе.
+        self.assertNotIn("Конфликты кодов", buttons_after)
         # В списке задач тоже нет активных.
         await h.callback(f"adm_bconflicts:{place_id}", user_id=AUTHOR_TG)
         self.assertIn("Нерешённых задач нет", h.screen_text())

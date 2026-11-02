@@ -803,7 +803,11 @@ class BrickProposalFlowTests(unittest.TestCase):
         first = self.direct_proposal(h, OWNER_TG, source.id, place_id=place_id)
         second = self.direct_proposal(h, OWNER_TG, source.id, place_id=place_id)
         await self.open_place_card(h, place_id)
-        self.assertIn("(2)", " ".join(self.button_labels(h)))
+        # Poster 2.5 A3 (§12): на кнопке нет счётчика, само наличие записи
+        # показывает, что очередь предложений не пуста.
+        labels = " ".join(self.button_labels(h))
+        self.assertIn("Предложения кирпичиков", labels)
+        self.assertNotIn("Предложения кирпичиков (", labels)
         self.assertIn(f"adm_bprop_place:{place_id}", " ".join(self.callbacks(h)))
         await h.callback(f"adm_bprop_place:{place_id}", user_id=ADMIN_TG)
         callbacks = self.callbacks(h, "adm_bprop_open:")
