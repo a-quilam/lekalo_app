@@ -37,6 +37,54 @@ Developer → Tester (MEDIUM/HIGH) → Reviewer (HIGH) → checkpoint → ком
 пагинация 5/страница с no-op индикатором; ui_texts.yaml сохраняется и обновляется
 согласованно.
 
+## 2026-11-02 — Этап A (2.5) ЗАВЕРШЁН: commits fcd8364 → d58b318 → dc5c027 → ffea77e → 330fe40
+
+- A1: 🧩 + эмодзи системных кирпичиков + компактное меню (§9–10).
+- A2: мастер площадки 4 поля (§11); тесты test_poster2_25_place_wizard (13).
+- A3: динамическая карточка места (§12): скрытие пустых предложений/конфликтов,
+  подраздел «Управлять администратором» (adm_place_admins), без счётчиков (0).
+- A4: «➕ Создать кирпичик» scope=place (§13) + фикс возврата из кирпичиков
+  площадки в админ-карточку (в т.ч. после рестарта); create_city_input убран
+  из allow-list handle_manage_back (плм-вопрос закрыт).
+- LOW-фикс: кнопка «📄 Шаблон» (раскладка §12).
+- Независимая приёмка: A1+A2 (Tester 1: дефект A1-D1 → исправлен, 25/25 OK),
+  A3+A4 (Tester 1: 21/21 PASS, блокеров нет; наблюдение о подписи «📄 Шаблон»
+  закрыто LOW-фиксом). Тесты приёмки: test_stage25_acceptance_a1a2.py (25),
+  test_stage25_acceptance_a3a4.py (21) — закоммичены.
+- Показатели этапа A: Developer 4 (+1 LOW), Tester 2, Architect 0, Reviewer 0.
+  Повторы 0; повторных ревизий 0; steps достигнут 2 раза (A2, A3 — завершены
+  функционально; менеджер закрывал проверки: black/mypy/повторный прогон);
+  permission.rejected 2 (black/make fmt — обход через .venv/bin/python -m black).
+- Полный make check — не запускался (граница этапа = релиз; запустим перед
+  релизом и после HIGH-этапов C/D).
+- Далее: этап B — единая пагинация (§14, no-op индикатор), контекст списков
+  (§15, plm_back/tp_pick_back), выбор площадки при создании (§16), формат
+  даты ДД.ММ (дн) (§17).
+
+## 2026-11-02 — 2.5 A1+A2 выполнены (commits fcd8364, d58b318)
+
+- A1 (Developer 1 + фикс A1-D1 1): 🧱→🧩 в 17 значениях ui_texts (ключи не менялись);
+  SYSTEM_BRICK_EMOJIS + system_brick_emoji/brick_title_display в brick_types.py
+  (слой отображения, каталог не тронут); компактное manage_keyboard (§10);
+  эмодзи применены в bricks/admin/announcement_wizard/wizard_questions/templates
+  (последняя — фикс по приёмке: _brick_list_content/_preview_content).
+  Новый тест tests/test_stage25_brick_emoji.py.
+- A2 (Developer 1): мастер площадки 4 шага: название → город → адрес → ссылка;
+  фазы create_address_input/create_url_input; pl_create_back/pl_create_skip;
+  «Пропустить» не стирает заполненное; NULL при пропуске; валидация
+  clean_address_text/normalize_url; создание без экрана подтверждения;
+  pick/manage режимы сохранены. Новый тест tests/test_poster2_25_place_wizard.py (13).
+- Независимая приёмка (Tester 1): 19/25 PASS, 6 падений = один дефект A1-D1
+  (эмодзи в двух местах templates.py) → исправлен, повторный прогон 25/25 OK.
+  Тест-файл приёмки tests/test_stage25_acceptance_a1a2.py (25) — закоммичен.
+- Целевые наборы зелёные (итоги в отчётах); make check — на границе этапа A.
+- Вызовы: Developer 2, Tester 1, Reviewer 0. Повторы 0, permission.rejected 0,
+  steps достигнут 1 раз (Developer A2 — функционально завершён).
+- Открытый вопрос по A2 RISKS: allow-list handle_manage_back содержит
+  create_city_input/create_input при manage_mode — кнопка недостижима из UI,
+  решение приму в A3 (карточка/навигация).
+- Далее: A3 (динамическая карточка места §12), A4 (локальные кирпичики + возврат §13).
+
 ## 2026-11-02 — T2+T3 выполнены, приёмка/ревизия пройдены, make check зелёный — релизный diff готов к коммитам
 
 - T3 (Developer, 1 вызов, blocked по steps на финальной docstring-правке; менеджер
