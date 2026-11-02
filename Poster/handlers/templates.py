@@ -1966,14 +1966,25 @@ async def open_template_picker(
     await screen.reanchor_screen(update, context)
     telegram_user_id = ctx.user(update).id
     place_state = load_place_session(telegram_user_id)
-    place_page = 0
-    if isinstance(place_state, dict) and place_state.get("phase") == "pick":
-        place_page = _page_value(place_state.get("pick_page"))
+    # Poster 2.5 §15–16: запоминаем фактический экран пикера площадок — и
+    # список с его страницей, и результаты поиска (запрос + страница), —
+    # чтобы «◀️ Назад» вернула туда же, а не в первую страницу списка.
+    place_context: dict[str, Any] = {"place_page": 0, "place_phase": "pick"}
+    if isinstance(place_state, dict):
+        phase = place_state.get("phase")
+        if phase in {"pick", "pick_search_results"}:
+            place_context["place_page"] = _page_value(place_state.get("pick_page"))
+            place_context["place_phase"] = phase
+            if phase == "pick_search_results":
+                place_context["place_query"] = str(place_state.get("query") or "")
+                place_context["place_search_page"] = _page_value(
+                    place_state.get("page")
+                )
     clear_place_session(telegram_user_id)
     clear_admin_session(telegram_user_id)
     clear_brick_session(telegram_user_id)
     state = _new_pick()
-    state["place_page"] = place_page
+    state.update(place_context)
     await _render_phase(update, context, state, drop_input=True)
 
 
@@ -1984,20 +1995,38 @@ async def handle_pick_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     Единственный вход в анонс — «📝 Создать анонс» (выбор площадки), поэтому
     возврат ведёт туда, а не в главное меню. `place_page` из сессии
     шаблонов восстанавливает страницу списка площадок.
+
+    Poster 2.5 §15: если пикер площадок был открыт в результатах поиска,
+    возвращаемся в тот же поиск на ту же страницу. Если сессия шаблонов
+    потеряна (рестарт/старый снимок) — открываем пикер заново без
+    stale-alert: рабочий экран важнее формального отказа (спека §15).
     """
-    query = ctx.query(update)
     telegram_user_id = ctx.user(update).id
     state = load_template_session(telegram_user_id)
     if not _valid_state(state) or state.get("phase") != PHASE_PICK:
-        await query.answer(STALE_TEXT, show_alert=True)
+        from handlers.places import open_place_picker
+
+        clear_template_session(telegram_user_id)
+        # Ответ на callback делает сам общий вход выбора площадок.
+        await open_place_picker(update, context)
         return
     place_page = _page_value(state.get("place_page"))
+    place_phase = state.get("place_phase")
+    place_query = state.get("place_query")
+    place_search_page = _page_value(state.get("place_search_page"))
     clear_template_session(telegram_user_id)
     from handlers.places import open_place_picker_with_page
 
     # Ответ на callback и отрисовку делает общий вход выбора площадок:
     # повторный `answer` в Telegram считается ошибкой запроса.
-    await open_place_picker_with_page(update, context, place_page)
+    await open_place_picker_with_page(
+        update,
+        context,
+        place_page,
+        phase=place_phase,
+        query=place_query,
+        search_page=place_search_page,
+    )
 
 
 async def handle_pick_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

@@ -1061,9 +1061,7 @@ def _brick_list_content(
         )
     if not bricks:
         text += "\n\n" + tr("admin.brick_list.net_kirpichikov")
-    nav = pagination.nav_keyboard_for_offset(
-        offset, len(bricks), "adm_bricks_page"
-    )
+    nav = pagination.nav_keyboard_for_offset(offset, len(bricks), "adm_bricks_page")
     if nav:
         rows.append(nav)
     place_scoped = scope == "place" and isinstance(place_id, int)
@@ -1952,9 +1950,10 @@ def _conflicts_list_content(
     # Poster 2.5 §14: конфликты — тоже длинный список, пять записей на
     # страницу. Смещение хранится в состоянии кабинета и приводится к
     # допустимому при рендере.
-    offset = pagination.clamp_page(
-        _page_value(state, "conflict_page"), len(conflicts)
-    ) * pagination.PAGE_SIZE
+    offset = (
+        pagination.clamp_page(_page_value(state, "conflict_page"), len(conflicts))
+        * pagination.PAGE_SIZE
+    )
     state["conflict_page"] = offset
     page_conflicts = conflicts[offset : offset + pagination.PAGE_SIZE]
     text = tr_safe(
@@ -3218,6 +3217,8 @@ async def open_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # справочник от прежней карточки больше не действует.
     state.pop("return_to", None)
     state.pop("manage_page", None)
+    state.pop("manage_phase", None)
+    state.pop("manage_query", None)
     await _render_phase(update, context, state, drop_input=True)
 
 
@@ -3227,6 +3228,8 @@ async def open_place_admin_card_from_manage(
     place_id: int,
     *,
     manage_page: int = 0,
+    manage_phase: str = "manage_list",
+    manage_query: str | None = None,
 ) -> None:
     """
     «Управление → Площадки» → тап по площадке: сразу полная карточка места.
@@ -3239,6 +3242,10 @@ async def open_place_admin_card_from_manage(
     `return_to`/`manage_page` в состоянии кабинета помнят, что пользователь
     пришёл из справочника: «◀️ К списку мест» вернёт его туда же, на ту же
     страницу, а не в список кабинета.
+
+    Poster 2.5 §15: `manage_phase`/`manage_query` дополнительно помнят, что
+    карточку открыли из результатов поиска, — возврат восстанавливает тот же
+    поиск и ту же страницу. Состояние кабинета переживает рестарт.
     """
     query = ctx.query(update)
     user_id = ctx.user(update).id
@@ -3270,6 +3277,10 @@ async def open_place_admin_card_from_manage(
     state["place_id"] = place_id
     state["return_to"] = "manage"
     state["manage_page"] = max(int(manage_page), 0)
+    if manage_phase == "manage_search_results" and isinstance(manage_query, str):
+        if manage_query:
+            state["manage_phase"] = "manage_search_results"
+            state["manage_query"] = manage_query
     save_admin_session(user_id, state)
     await _render_phase(update, context, state, drop_input=True)
 
@@ -3487,6 +3498,8 @@ async def handle_open_place(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # контекст справочника сбрасывается в любом случае.
     state.pop("return_to", None)
     state.pop("manage_page", None)
+    state.pop("manage_phase", None)
+    state.pop("manage_query", None)
     # Область кирпичиков привязана к площадке: после возврата в карточку
     # она не должна переживать переход в другой подраздел.
     state.pop("brick_scope", None)
@@ -4561,9 +4574,12 @@ async def handle_places_back(
     await query.answer()
     return_to_manage = state.get("return_to") == "manage"
     manage_page = state.get("manage_page")
+    manage_phase = state.get("manage_phase")
+    manage_query = state.get("manage_query")
     if return_to_manage:
         # Poster 2.4.1 T2: карточка открыта из справочника «Управление →
         # Площадки» — «К списку мест» возвращает туда же, на ту же страницу.
+        # Poster 2.5 §15: если открывали из поиска — в тот же поиск.
         clear_admin_session(user_id)
         from handlers.places import open_manage_list
 
@@ -4571,6 +4587,12 @@ async def handle_places_back(
             update,
             context,
             page=manage_page if isinstance(manage_page, int) else 0,
+            query=(
+                manage_query
+                if manage_phase == "manage_search_results"
+                and isinstance(manage_query, str)
+                else None
+            ),
         )
         return
     state.clear()

@@ -17,7 +17,6 @@ from datetime import date, timedelta
 from sqlalchemy import text
 
 from template_compiler import TemplateCompileError
-from utils.calendar_view import format_announcement_date
 from template_store import (
     TemplateNotFoundError,
     create_personal_template,
@@ -32,6 +31,7 @@ from tests.stage23_helpers import (
     OWNER_TG,
     TemplateDatabaseTestCase,
 )
+from utils.calendar_view import format_announcement_date
 
 
 class Stage24IntegrationTests(TemplateDatabaseTestCase):

@@ -246,8 +246,9 @@ class TemplateRenderTests(unittest.TestCase):
         self.assertEqual(result, '<a href="tg://resolve?domain=poster">Канал</a>')
 
     def test_render_date_value(self) -> None:
+        # Poster 2.5 §17: системный кирпичик [дата] рендерится как ДД.ММ (дн).
         result = self._render("Когда: [дата]", {4: "10.10.2026"})
-        self.assertEqual(result, "Когда: 10.10.2026")
+        self.assertEqual(result, "Когда: 10.10 (сб)")
 
     def test_render_time_value(self) -> None:
         result = self._render("Время: [время_начала]", {5: "19:00"})

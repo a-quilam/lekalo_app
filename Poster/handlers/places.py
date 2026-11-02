@@ -826,12 +826,10 @@ async def _render_phase(
                 else None
             )
             if details is None:
-                state.clear()
-                state.update(_new_manage())
                 notice = notice or tr(
                     "admin.render_phase.mesto_suschestvuet_bylo_udaleno"
                 )
-                text, keyboard = _manage_list_content(session, state)
+                text, keyboard = _manage_back_to_source(session, state)
             else:
                 text, keyboard = _manage_card_content(session, details)
         elif phase == "manage_admin_request":
@@ -842,12 +840,10 @@ async def _render_phase(
                 else None
             )
             if details is None:
-                state.clear()
-                state.update(_new_manage())
                 notice = notice or tr(
                     "admin.render_phase.mesto_suschestvuet_bylo_udaleno"
                 )
-                text, keyboard = _manage_list_content(session, state)
+                text, keyboard = _manage_back_to_source(session, state)
             else:
                 text = _admin_request_text(details)
                 keyboard = InlineKeyboardMarkup(
@@ -1136,11 +1132,16 @@ def _pick_content(session: Session, state: dict) -> tuple[str, InlineKeyboardMar
         text = f"{tr('places.pick.title')}\n\n{tr('places.pick.empty')}"
         keyboard = InlineKeyboardMarkup(
             [
+                # Poster 2.5 §16: поиск и создание — ОДНОЙ строкой под списком.
                 [
+                    InlineKeyboardButton(
+                        tr("buttons.places.nayti_ploschadku"),
+                        callback_data="pl_pick_search",
+                    ),
                     InlineKeyboardButton(
                         tr("buttons.places.novaya_ploschadka"),
                         callback_data="pl_pick_add",
-                    )
+                    ),
                 ],
                 [
                     InlineKeyboardButton(
@@ -1176,18 +1177,16 @@ def _pick_content(session: Session, state: dict) -> tuple[str, InlineKeyboardMar
     )
     if nav:
         rows.append(nav)
+    # Poster 2.5 §16: под списком `🔎 Найти площадку` | `➕ Новая площадка`
+    # одной строкой, затем личный шаблон и последняя строка «◀️ Назад».
     rows.append(
         [
             InlineKeyboardButton(
                 tr("buttons.places.nayti_ploschadku"), callback_data="pl_pick_search"
-            )
-        ]
-    )
-    rows.append(
-        [
+            ),
             InlineKeyboardButton(
                 tr("buttons.places.novaya_ploschadka"), callback_data="pl_pick_add"
-            )
+            ),
         ]
     )
     # Poster 2.4.1 T3: единый вход в анонс — личный шаблон доступен отсюда же.
@@ -1218,21 +1217,21 @@ def _pick_search_content(
         text = tr("places.pick_search.empty", query=query)
         keyboard = InlineKeyboardMarkup(
             [
+                # Poster 2.5 §16: поиск и создание — одной строкой и здесь.
                 [
+                    InlineKeyboardButton(
+                        tr("buttons.places.nayti_ploschadku"),
+                        callback_data="pl_pick_search",
+                    ),
                     InlineKeyboardButton(
                         tr("buttons.places.novaya_ploschadka"),
                         callback_data="pl_pick_add",
-                    )
+                    ),
                 ],
                 [
                     InlineKeyboardButton(
                         tr("buttons.main.create_template"),
                         callback_data="pick_template",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        tr("buttons.nav.retry_search"), callback_data="pl_pick_search"
                     )
                 ],
                 [
@@ -1268,17 +1267,22 @@ def _pick_search_content(
     )
     if nav:
         rows.append(nav)
+    # Poster 2.5 §16: под результатами — те же строки, что в списке:
+    # `🔎 Найти площадку` | `➕ Новая площадка`, личный шаблон, «◀️ К списку».
     rows.append(
         [
             InlineKeyboardButton(
-                tr("buttons.main.create_template"), callback_data="pick_template"
-            )
+                tr("buttons.places.nayti_ploschadku"), callback_data="pl_pick_search"
+            ),
+            InlineKeyboardButton(
+                tr("buttons.places.novaya_ploschadka"), callback_data="pl_pick_add"
+            ),
         ]
     )
     rows.append(
         [
             InlineKeyboardButton(
-                tr("buttons.nav.retry_search"), callback_data="pl_pick_search"
+                tr("buttons.main.create_template"), callback_data="pick_template"
             )
         ]
     )
@@ -1294,6 +1298,33 @@ def _pick_search_content(
 
 def _new_pick() -> dict:
     return {"phase": "pick", "pick_page": 0}
+
+
+def _pick_return_context(state: dict) -> dict:
+    """
+    Контекст экрана пикера площадок для возврата (Poster 2.5 §15–16).
+
+    Запоминаем, откуда именно начали действие: полный список с его страницей
+    или результаты поиска с запросом и страницей. Возврат восстанавливает
+    ровно этот экран, а не первую страницу общего списка.
+    """
+    phase = state.get("phase")
+    if phase == "pick_search_results":
+        query = state.get("query")
+        if isinstance(query, str) and query:
+            return {
+                "return_phase": "pick_search_results",
+                "return_query": query,
+                "return_page": _page_value(state),
+                "return_pick_page": _page_value(state, "pick_page"),
+            }
+    if phase in {"pick", "pick_search_input", "pick_search_results"}:
+        return {
+            "return_phase": "pick",
+            "return_page": 0,
+            "return_pick_page": _page_value(state, "pick_page"),
+        }
+    return {}
 
 
 # --- Poster 2.1 R2: справочник «Управление → Площадки» ----------------------
@@ -1553,7 +1584,13 @@ async def open_place_picker(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def open_place_picker_with_page(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, page: object = 0
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    page: object = 0,
+    *,
+    phase: object = "pick",
+    query: object = None,
+    search_page: object = 0,
 ) -> None:
     """
     Возврат в выбор площадки с сохранённой позицией списка (Poster 2.4.1 T3).
@@ -1562,16 +1599,24 @@ async def open_place_picker_with_page(
     площадок сохраняется «по возможности» — битое значение безопасно
     превращается в первую страницу. Состояние шаблонов вызывающий очищает
     сам, здесь остаётся только сессия мест.
+
+    Poster 2.5 §15–16: если пикер был открыт в результатах поиска, возврат
+    восстанавливает тот же запрос и ту же страницу результатов; иначе —
+    список площадок на сохранённой странице.
     """
-    query = getattr(update, "callback_query", None)
-    if query is not None:
-        await query.answer()
+    query_obj = getattr(update, "callback_query", None)
+    if query_obj is not None:
+        await query_obj.answer()
     await screen.reanchor_screen(update, context)
     user_id = ctx.user(update).id
     clear_admin_session(user_id)
     clear_brick_session(user_id)
     state = _new_pick()
     state["pick_page"] = _pick_page_value(page)
+    if phase == "pick_search_results" and isinstance(query, str) and query:
+        state["phase"] = "pick_search_results"
+        state["query"] = query
+        state["page"] = _pick_page_value(search_page)
     save_place_session(user_id, state)
     await _render_phase(update, context, state, drop_input=True)
 
@@ -1650,8 +1695,12 @@ async def handle_pick_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await query.answer(tr("errors.stale.pick"), show_alert=True)
         return
     await query.answer()
+    # Poster 2.5 §15: страница полного списка не сбрасывается на первую —
+    # поиск открывали именно с неё.
+    pick_page = _page_value(state, "pick_page")
     state.clear()
     state.update(_new_pick())
+    state["pick_page"] = pick_page
     await _render_phase(update, context, state)
 
 
@@ -1676,8 +1725,13 @@ async def handle_pick_add(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.answer(tr("errors.stale.pick"), show_alert=True)
         return
     await query.answer()
+    # Poster 2.5 §16: сохраняем контекст исходного действия (список/поиск и
+    # страницу), чтобы возврат из мастера создания вёл в тот же экран пикера.
+    # `pick_mode` остаётся: после создания площадки анонс запускается сам.
+    return_context = _pick_return_context(state)
     state.clear()
     state.update({"phase": "create_input", "pick_mode": True})
+    state.update(return_context)
     await _render_phase(update, context, state, drop_input=True)
 
 
@@ -1726,7 +1780,11 @@ async def open_places_manage(
 
 
 async def open_manage_list(
-    update: Update, context: ContextTypes.DEFAULT_TYPE, *, page: int = 0
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    page: int = 0,
+    query: str | None = None,
 ) -> None:
     """
     Возврат в список справочника «Управление → Площадки» на нужную страницу.
@@ -1734,14 +1792,21 @@ async def open_manage_list(
     Poster 2.4.1 T2: полная карточка места помнит, что её открыли из
     справочника, и «◀️ К списку мест» возвращает пользователя туда же, а не
     в список кабинета.
+
+    Poster 2.5 §15: если карточку открыли из результатов поиска, возврат ведёт
+    в те же результаты того же запроса и на ту же страницу.
     """
     user_id = ctx.user(update).id
     state = load_place_session(user_id)
     if not isinstance(state, dict):
         state = _new_manage()
+    source = _manage_source_state(
+        return_phase=("manage_search_results" if query else "manage_list"),
+        return_query=query,
+        page=page,
+    )
     state.clear()
-    state.update(_new_manage())
-    state["page"] = max(int(page), 0)
+    state.update(source)
     await _render_phase(update, context, state)
 
 
@@ -1795,6 +1860,71 @@ async def handle_manage_search_page(
     await query.answer()
     state["page"] = offset
     await _render_phase(update, context, state)
+
+
+def _manage_return_context(state: dict) -> dict:
+    """
+    Контекст списка-источника справочника для возврата из карточки (2.5 §15).
+
+    Карточка помнит, откуда её открыли: полный список (`manage_list`) или
+    результаты поиска (`manage_search_results`), вместе со страницей и
+    запросом. Без этого «◀️ К списку» сбрасывала поиск и страницу на первую.
+    """
+    phase = state.get("phase")
+    if phase not in {"manage_list", "manage_search_results"}:
+        return {}
+    context: dict = {
+        "return_phase": phase,
+        "return_page": _page_value(state),
+    }
+    query = state.get("query")
+    if phase == "manage_search_results" and isinstance(query, str) and query:
+        context["return_query"] = query
+    return context
+
+
+def _manage_source_state(
+    *, return_phase: object = "manage_list", return_query: object = None, page: int = 0
+) -> dict:
+    """
+    Состояние экрана-источника справочника из сохранённого контекста (2.5 §15).
+
+    Источник — либо полный список (`manage_list`), либо результаты поиска
+    (`manage_search_results`) с прежним запросом; страница сохраняется в обоих
+    случаях. Битые значения безопасно превращаются в первую страницу списка.
+    """
+    state = _new_manage()
+    state["page"] = max(int(page), 0)
+    if (
+        return_phase == "manage_search_results"
+        and isinstance(return_query, str)
+        and return_query
+    ):
+        state["phase"] = "manage_search_results"
+        state["query"] = return_query
+    return state
+
+
+def _manage_back_to_source(
+    session: Session, state: dict
+) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Экран-источник справочника, когда сама карточка больше недоступна.
+
+    Место удалено (или пропало из выдачи): вместо сброса на первую страницу
+    возвращаемся в фактический источник — тот же список/поиск на той же
+    странице (Poster 2.5 §15).
+    """
+    source = _manage_source_state(
+        return_phase=state.get("return_phase"),
+        return_query=state.get("return_query"),
+        page=_page_value(state, "return_page"),
+    )
+    state.clear()
+    state.update(source)
+    if state["phase"] == "manage_search_results":
+        return _manage_search_content(session, state)
+    return _manage_list_content(session, state)
 
 
 def _manage_visible_place_ids(session: Session, state: dict) -> set[int] | None:
@@ -1851,7 +1981,22 @@ async def handle_manage_back(
     await query.answer()
     if phase == "manage_admin_request":
         # «◀️ К карточке»: место то же, возвращаем карточку без сброса id.
+        # Контекст списка-источника (return_*) остаётся в состоянии.
         state["phase"] = "manage_card"
+        await _render_phase(update, context, state)
+        return
+    return_phase = state.get("return_phase")
+    return_query = state.get("return_query")
+    if return_phase in {"manage_list", "manage_search_results"}:
+        # Poster 2.5 §15: возврат восстанавливает фактический источник —
+        # тот же список/поиск на той же странице с тем же запросом.
+        source = _manage_source_state(
+            return_phase=return_phase,
+            return_query=return_query,
+            page=_page_value(state, "return_page"),
+        )
+        state.clear()
+        state.update(source)
         await _render_phase(update, context, state)
         return
     state.clear()
@@ -1903,6 +2048,9 @@ async def handle_manage_open(
             update, context, state, notice=tr("alerts.admin.mesto_suschestvuet_udaleno")
         )
         return
+    # Poster 2.5 §15: карточка помнит список-источник (фаза, страница, запрос),
+    # чтобы «◀️ Назад» вернула туда же, а не на первую страницу без поиска.
+    return_context = _manage_return_context(state)
     if manages:
         # Переход сам отвечает на callback: повторный `answer` на тот же
         # callback Telegram отклоняет.
@@ -1913,11 +2061,14 @@ async def handle_manage_open(
             context,
             place_id,
             manage_page=_page_value(state),
+            manage_phase=return_context.get("return_phase", "manage_list"),
+            manage_query=return_context.get("return_query"),
         )
         return
     await query.answer()
     state["phase"] = "manage_card"
     state["place_id"] = place_id
+    state.update(return_context)
     await _render_phase(update, context, state)
 
 
@@ -2757,6 +2908,24 @@ async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if state.get("manage_mode"):
             state.clear()
             state.update(_new_manage())
+        elif state.get("pick_mode"):
+            # Poster 2.5 §16: выход из создания площадки возвращает в тот же
+            # экран пикера (список/поиск и страница), а не в меню.
+            return_phase = state.get("return_phase")
+            return_query = state.get("return_query")
+            return_page = _page_value(state, "return_page")
+            return_pick_page = _page_value(state, "return_pick_page")
+            state.clear()
+            state.update(_new_pick())
+            state["pick_page"] = return_pick_page
+            if (
+                return_phase == "pick_search_results"
+                and isinstance(return_query, str)
+                and return_query
+            ):
+                state["phase"] = "pick_search_results"
+                state["query"] = return_query
+                state["page"] = return_page
         else:
             state.clear()
             state.update(_new_hub())
