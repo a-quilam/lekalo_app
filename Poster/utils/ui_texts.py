@@ -1168,7 +1168,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.sozdat_predlozhenie": "✅ Создать предложение",
     "buttons.admin.sozdat_ssylku_priglashenie": "🔗 Создать ссылку-приглашение",
     "buttons.admin.ssylka": "✏️ Ссылка",
-    "buttons.admin.standartnyy_shablon": "📄 Стандартный шаблон",
+    "buttons.admin.standartnyy_shablon": "📄 Шаблон",
     "buttons.admin.udalit": "🗑 Удалить",
     "buttons.admin.upravlyat_administratorom": "👤 Управлять администратором",
     "buttons.admin.utverdit_poluchatelya": "✅ Утвердить получателя",
