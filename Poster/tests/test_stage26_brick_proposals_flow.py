@@ -595,18 +595,18 @@ class BrickProposalFlowTests(unittest.TestCase):
         )
 
     @scenario_test
-    async def test_11_my_proposals_pagination_uses_eight_items(
-        self, h: Harness
-    ) -> None:
+    async def test_11_my_proposals_pagination_uses_five_items(self, h: Harness) -> None:
         place_id = self.make_place(h, "Зал страниц")
         source = self.make_personal(h, OWNER_TG, code="страницы_26")
         for _index in range(9):
             self.direct_proposal(h, OWNER_TG, source.id, place_id=place_id)
         await self.open_my(h)
-        self.assertEqual(len(self.callbacks(h, "bp_open:")), 8)
-        self.assertIn("bp_mpage:8", " ".join(self.callbacks(h)))
-        await h.callback("bp_mpage:8", user_id=OWNER_TG)
-        self.assertEqual(len(self.callbacks(h, "bp_open:")), 1)
+        self.assertEqual(len(self.callbacks(h, "bp_open:")), 5)
+        self.assertIn("bp_mpage:5", " ".join(self.callbacks(h)))
+        self.assertIn("1/2", " ".join(self.button_labels(h)))
+        await h.callback("bp_mpage:5", user_id=OWNER_TG)
+        self.assertEqual(len(self.callbacks(h, "bp_open:")), 4)
+        self.assertIn("2/2", " ".join(self.button_labels(h)))
 
     @scenario_test
     async def test_12_author_card_requires_withdraw_confirmation(
@@ -839,16 +839,18 @@ class BrickProposalFlowTests(unittest.TestCase):
         self.assertNotIn(str(first_terminal), " ".join(callbacks))
 
     @scenario_test
-    async def test_23_place_queue_pagination_uses_eight_items(self, h: Harness) -> None:
+    async def test_23_place_queue_pagination_uses_five_items(self, h: Harness) -> None:
         place_id = self.make_place(h, "Зал пагинации", admin_tg=ADMIN_TG)
         source = self.make_personal(h, OWNER_TG, code="пагинация_ui_26")
         for _index in range(9):
             self.direct_proposal(h, OWNER_TG, source.id, place_id=place_id)
         await self.open_place_queue(h, place_id)
-        self.assertEqual(len(self.callbacks(h, "adm_bprop_open:")), 8)
-        self.assertIn("adm_bprop_places_page:8", " ".join(self.callbacks(h)))
-        await h.callback("adm_bprop_places_page:8", user_id=ADMIN_TG)
-        self.assertEqual(len(self.callbacks(h, "adm_bprop_open:")), 1)
+        self.assertEqual(len(self.callbacks(h, "adm_bprop_open:")), 5)
+        self.assertIn("adm_bprop_places_page:5", " ".join(self.callbacks(h)))
+        self.assertIn("1/2", " ".join(self.button_labels(h)))
+        await h.callback("adm_bprop_places_page:5", user_id=ADMIN_TG)
+        self.assertEqual(len(self.callbacks(h, "adm_bprop_open:")), 4)
+        self.assertIn("2/2", " ".join(self.button_labels(h)))
 
     @scenario_test
     async def test_24_admin_card_shows_snapshot_author_and_settings(

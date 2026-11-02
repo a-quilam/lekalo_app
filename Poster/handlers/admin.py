@@ -71,7 +71,6 @@ from admin_transfer_store import (
     transfer_status_label,
 )
 from brick_proposal_store import (
-    PROPOSAL_PAGE_SIZE,
     PROPOSAL_SCOPE_SYSTEM,
     PROPOSAL_STATUS_APPROVED,
     PROPOSAL_STATUS_PENDING,
@@ -129,7 +128,6 @@ from permissions import (
     is_superadmin,
 )
 from place_admin_store import (
-    ADMIN_PLACES_PAGE_SIZE,
     AdminMutationResult,
     AdminPermissionError,
     AdminUser,
@@ -171,13 +169,16 @@ from place_store import (
 )
 from template_state import clear_template_session
 from user_store import get_or_create_user
-from utils import current_value, screen
+from utils import current_value, pagination, screen
 from utils import tg_context as ctx
 from utils.ui_texts import tr, tr_safe
 
 logger = logging.getLogger(__name__)
 
 BUTTON_TEXT_LIMIT = 60
+# Poster 2.5 §14: единый размер страницы для всех длинных списков.
+ADMIN_PLACES_PAGE_SIZE = pagination.PAGE_SIZE
+PROPOSAL_PAGE_SIZE = pagination.PAGE_SIZE
 STALE_TEXT = tr("errors.stale.admin")
 DENIED_TEXT = tr("admin.module.razdel_dostupen_tolko")
 DENIED_ALERT = tr("admin.module.dostup_administrativnomu_razdelu")
@@ -826,18 +827,6 @@ def _clamp_offset(offset: int, total: int, page_size: int) -> int:
     return min(max(offset, 0), max_offset)
 
 
-def _page_note(offset: int, count: int, total: int) -> str:
-    if total <= 0:
-        return ""
-    return tr(
-        "admin.page_note.pokazano_stranica",
-        value=offset + 1,
-        value_2=offset + count,
-        total=total,
-        value_3=offset // ADMIN_PLACES_PAGE_SIZE + 1,
-    )
-
-
 def _failed_add(state: dict, update: Update) -> None:
     message = getattr(update, "message", None)
     message_id = getattr(message, "message_id", None)
@@ -1048,9 +1037,17 @@ def _brick_list_content(
         bricks = list_system_bricks(session, include_archived=True)
     state["brick_scope"] = scope
 
+    # Poster 2.5 §14: системный каталог и кирпичики площадки — длинные
+    # списки, пять записей на страницу. Смещение приводится к допустимому.
+    offset = _clamp_offset(
+        _page_value(state, "brick_page"), len(bricks), pagination.PAGE_SIZE
+    )
+    state["brick_page"] = offset
+    page_bricks = bricks[offset : offset + pagination.PAGE_SIZE]
+
     text = tr_safe("admin.brick_list.kirpichiki_html", scope_line=scope_line)
     rows: list[list[InlineKeyboardButton]] = []
-    for brick in bricks:
+    for brick in page_bricks:
         label = f"[{brick.code}] {brick_title_display(brick.title, brick.code)}"
         if brick.status != BRICK_STATUS_ACTIVE:
             label += " · " + tr("admin.brick_card.status_arxiv")
@@ -1064,6 +1061,11 @@ def _brick_list_content(
         )
     if not bricks:
         text += "\n\n" + tr("admin.brick_list.net_kirpichikov")
+    nav = pagination.nav_keyboard_for_offset(
+        offset, len(bricks), "adm_bricks_page"
+    )
+    if nav:
+        rows.append(nav)
     place_scoped = scope == "place" and isinstance(place_id, int)
     if place_scoped:
         # Poster 2.5 A4 (§13): локальный кирпичик создаётся тем же
@@ -1274,23 +1276,10 @@ def _places_content(
                 )
             ]
         )
-    text += "\n" + _page_note(offset, len(items), total)
 
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.prev"),
-                callback_data=f"adm_page:{max(offset - ADMIN_PLACES_PAGE_SIZE, 0)}",
-            )
-        )
-    if offset + len(items) < total:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.next"),
-                callback_data=f"adm_page:{offset + len(items)}",
-            )
-        )
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "adm_page", page_size=ADMIN_PLACES_PAGE_SIZE
+    )
     if nav:
         rows.append(nav)
     if access_kind == "superadmin":
@@ -1653,21 +1642,6 @@ def _proposal_target_label(proposal: BrickProposalSnapshot) -> str:
     )
 
 
-def _proposal_page_note(offset: int, count: int, total: int) -> str:
-    if total <= 0:
-        return ""
-    pages = max((total + PROPOSAL_PAGE_SIZE - 1) // PROPOSAL_PAGE_SIZE, 1)
-    page = offset // PROPOSAL_PAGE_SIZE + 1
-    return tr(
-        "admin.proposal_page_note.pokazano_stranica",
-        value=offset + 1,
-        value_2=offset + count,
-        total=total,
-        page=page,
-        pages=pages,
-    )
-
-
 def _proposal_admin_list_content(
     session: Session,
     telegram_user_id: int,
@@ -1750,7 +1724,7 @@ def _proposal_admin_list_content(
     if not total:
         text += tr("admin.proposal_admin_list.ozhidayuschih_predlozheniy_net")
     else:
-        text += "\n\n" + _proposal_page_note(offset, len(proposals), total)
+        text += "\n"
         for index, proposal in enumerate(proposals, start=offset + 1):
             text += tr_safe(
                 "admin.proposal_admin_list.avtor_oblast_otpravleno_html",
@@ -1774,21 +1748,9 @@ def _proposal_admin_list_content(
         ]
         for index, proposal in enumerate(proposals, start=offset + 1)
     ]
-    navigation: list[InlineKeyboardButton] = []
-    if offset > 0:
-        navigation.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.prev"),
-                callback_data=f"{page_prefix}:{max(offset - PROPOSAL_PAGE_SIZE, 0)}",
-            )
-        )
-    if offset + len(proposals) < total:
-        navigation.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.next"),
-                callback_data=f"{page_prefix}:{offset + PROPOSAL_PAGE_SIZE}",
-            )
-        )
+    navigation = pagination.nav_keyboard_for_offset(
+        offset, total, page_prefix, page_size=PROPOSAL_PAGE_SIZE
+    )
     if navigation:
         rows.append(navigation)
     rows.append([InlineKeyboardButton(back_label, callback_data="adm_bprop_back")])
@@ -1982,10 +1944,19 @@ def _conflicts_list_content(
     telegram_user_id: int,
     view: BrickConflictView | None,
     place_id: int,
+    state: dict,
 ) -> tuple[str, InlineKeyboardMarkup]:
     details = get_place_details(session, place_id)
     place_label = details.canonical_name if details is not None else f"#{place_id}"
     conflicts = list_place_conflicts(session, telegram_user_id, place_id)
+    # Poster 2.5 §14: конфликты — тоже длинный список, пять записей на
+    # страницу. Смещение хранится в состоянии кабинета и приводится к
+    # допустимому при рендере.
+    offset = pagination.clamp_page(
+        _page_value(state, "conflict_page"), len(conflicts)
+    ) * pagination.PAGE_SIZE
+    state["conflict_page"] = offset
+    page_conflicts = conflicts[offset : offset + pagination.PAGE_SIZE]
     text = tr_safe(
         "admin.conflicts_list.konflikty_kodov_globalnyy", place_label=_h(place_label)
     )
@@ -1995,13 +1966,13 @@ def _conflicts_list_content(
         text += tr(
             "admin.conflicts_list.aktivnyh_zadach", count_conflicts=len(conflicts)
         )
-        for index, item in enumerate(conflicts, start=1):
+        for index, item in enumerate(page_conflicts, start=offset + 1):
             text += (
                 f"\n{index}. <b>{_h(item.local_brick_title)}</b> "
                 f"<code>[{_h(item.code)}]</code>"
             )
     rows: list[list[InlineKeyboardButton]] = []
-    for item in conflicts:
+    for item in page_conflicts:
         rows.append(
             [
                 InlineKeyboardButton(
@@ -2010,6 +1981,11 @@ def _conflicts_list_content(
                 )
             ]
         )
+    nav = pagination.nav_keyboard_for_offset(
+        offset, len(conflicts), "adm_bconflicts_page"
+    )
+    if nav:
+        rows.append(nav)
     rows.append(
         [
             InlineKeyboardButton(
@@ -2247,7 +2223,7 @@ def _assign_results_content(
     return text, InlineKeyboardMarkup(keyboard)
 
 
-ALIAS_PAGE_SIZE = 6
+ALIAS_PAGE_SIZE = pagination.PAGE_SIZE
 
 
 def _edit_menu_content(
@@ -2543,11 +2519,15 @@ def _edit_aliases_content(
 ) -> tuple[str, InlineKeyboardMarkup]:
     """Список альтернативных названий с пагинацией и действиями."""
     aliases = list_place_aliases(session, details.place_id)
-    offset = max(_page_value(state, "alias_page"), 0)
-    offset = min(offset, max(len(aliases) - 1, 0) // ALIAS_PAGE_SIZE * ALIAS_PAGE_SIZE)
+    total = len(aliases)
+    # Poster 2.5 §14: страница приводится к допустимой и сохраняется в
+    # состоянии — после удаления последней записи пустой страницы не остаётся.
+    offset = _clamp_offset(
+        max(_page_value(state, "alias_page"), 0), total, ALIAS_PAGE_SIZE
+    )
+    state["alias_page"] = offset
     page_items = aliases[offset : offset + ALIAS_PAGE_SIZE]
 
-    total = len(aliases)
     if total == 0:
         text = tr_safe(
             "admin.edit_aliases.alternativnye_nazvaniya_poka_net",
@@ -2578,21 +2558,10 @@ def _edit_aliases_content(
                 ),
             ]
         )
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.prev"),
-                callback_data=f"adm_alias_page:{offset - ALIAS_PAGE_SIZE}",
-            )
-        )
-    if offset + ALIAS_PAGE_SIZE < total:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.admin.dalee"),
-                callback_data=f"adm_alias_page:{offset + ALIAS_PAGE_SIZE}",
-            )
-        )
+    # Poster 2.5 §14: тот же компонент пагинации, callback прежний.
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "adm_alias_page", page_size=ALIAS_PAGE_SIZE
+    )
     if nav:
         keyboard.append(nav)
     keyboard.append(
@@ -3089,13 +3058,13 @@ async def _render_phase(
                 text, keyboard = _places_content(session, state, access_kind, user_id)
             elif phase == "conflicts_list":
                 text, keyboard = _conflicts_list_content(
-                    session, user_id, view, place_for_conflicts
+                    session, user_id, view, place_for_conflicts, state
                 )
             elif view is None:
                 state["phase"] = "conflicts_list"
                 notice = notice or tr("admin.render_phase.zadacha_konflikta_nedostupna")
                 text, keyboard = _conflicts_list_content(
-                    session, user_id, None, place_for_conflicts
+                    session, user_id, None, place_for_conflicts, state
                 )
             elif phase == "conflict_card":
                 text, keyboard = _conflict_card_content(view)
@@ -6268,6 +6237,25 @@ async def handle_brick_description(
     await _render_phase(update, context, state, drop_input=True)
 
 
+async def handle_admin_bricks_page(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Пагинация списка кирпичиков административного кабинета."""
+    query = ctx.query(update)
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "brick_list":
+        await _stale(update)
+        return
+    try:
+        offset = int(str(query.data or "").rsplit(":", 1)[1])
+    except (IndexError, TypeError, ValueError):
+        await _stale(update)
+        return
+    await query.answer()
+    state["brick_page"] = max(offset, 0)
+    await _render_phase(update, context, state)
+
+
 async def handle_brick_card_back(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -6431,6 +6419,26 @@ async def handle_conflicts_open(
         return
     await query.answer()
     state["phase"] = "conflicts_list"
+    state["conflict_page"] = 0
+    await _render_phase(update, context, state)
+
+
+async def handle_conflicts_page(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Пагинация списка конфликтов кодов (Poster 2.5 §14)."""
+    query = ctx.query(update)
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "conflicts_list":
+        await _stale(update)
+        return
+    try:
+        offset = int(str(query.data or "").rsplit(":", 1)[1])
+    except (IndexError, TypeError, ValueError):
+        await _stale(update)
+        return
+    await query.answer()
+    state["conflict_page"] = max(offset, 0)
     await _render_phase(update, context, state)
 
 
@@ -6877,6 +6885,9 @@ def admin_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(
             handle_admin_bricks, pattern=r"^adm_bricks(?:_global|:\d+)$"
         ),
+        CallbackQueryHandler(
+            handle_admin_bricks_page, pattern=r"^adm_bricks_page:\d+$"
+        ),
         # Poster 2.5 A4 (§13): локальный кирпичик из списка площадки.
         CallbackQueryHandler(handle_brick_create, pattern=r"^adm_brick_new:\d+$"),
         CallbackQueryHandler(handle_brick_card, pattern=r"^adm_bedit:\d+$"),
@@ -6893,6 +6904,9 @@ def admin_handlers() -> list[BaseHandler]:
         ),
         # Конфликты кодов (Poster 2.1 R3).
         CallbackQueryHandler(handle_conflicts_open, pattern=r"^adm_bconflicts:\d+$"),
+        CallbackQueryHandler(
+            handle_conflicts_page, pattern=r"^adm_bconflicts_page:\d+$"
+        ),
         CallbackQueryHandler(handle_conflict_open, pattern=r"^adm_bconflict:\d+$"),
         CallbackQueryHandler(
             handle_conflict_rename, pattern=r"^adm_bconflict_rename:\d+$"

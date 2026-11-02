@@ -321,25 +321,31 @@ class PlacesBackDestinationTests(unittest.TestCase):
 
     @scenario_test
     async def test_back_from_handbook_card_returns_to_handbook(self, h):
-        # Девять мест: вторая страница справочника (размер страницы 8).
+        # Девять мест: вторая страница справочника (5 записей на страницу).
         ids = [_seed_place(h, name=f"Место {index}", admin=True) for index in range(9)]
         target = ids[-1]
 
         await _open_handbook(h)
-        await h.callback("plm_page:8")
-        self.assertIn("Страница 2", h.screen_text())
+        await h.callback("plm_page:5")
+        self.assertIn(
+            ("2/2", "noop:2:2"), h.screen_buttons(), "индикатор второй страницы"
+        )
         await h.callback(f"plm_open:{target}")
         self.assertIn("🛡 Место", h.screen_text())
 
         await h.callback("adm_places")
         # Вернулись в справочник, а не в список кабинета.
         self.assertIn("📍 Площадки", h.screen_text())
-        self.assertIn("Страница 2", h.screen_text(), "страница справочника сохранена")
+        self.assertIn(
+            ("2/2", "noop:2:2"),
+            h.screen_buttons(),
+            "страница справочника сохранена",
+        )
         state = load_place_session(DEFAULT_USER_ID)
         self.assertIsNotNone(state)
         assert state is not None
         self.assertEqual(state["phase"], "manage_list")
-        self.assertEqual(state.get("page"), 8)
+        self.assertEqual(state.get("page"), 5)
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
 
     @scenario_test

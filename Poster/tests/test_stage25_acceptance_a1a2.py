@@ -239,7 +239,29 @@ class ManageScreenAcceptanceTests(unittest.TestCase):
             await h.text("/start")
             await h.callback("admin_panel")
             await h.callback("adm_bricks_global")
-            labels = [label for label, _data in h.screen_buttons()]
+            # Poster 2.5 §14: пять записей на страницу — собираем ярлыки
+            # со всех страниц, иначе проверка зависит от размера страницы.
+            labels: dict[str, None] = {}
+            seen_offsets: set[str] = set()
+            while True:
+                for label, _data in h.screen_buttons():
+                    if label.startswith("["):
+                        labels.setdefault(label, None)
+                next_page = next(
+                    (
+                        data
+                        for label, data in h.screen_buttons()
+                        if data
+                        and data.startswith("adm_bricks_page:")
+                        and label == "▶️"
+                    ),
+                    None,
+                )
+                if next_page is None or next_page in seen_offsets:
+                    break
+                seen_offsets.add(next_page)
+                await h.callback(next_page)
+        labels = list(labels)
 
         for code, emoji in SYSTEM_EMOJIS.items():
             with self.subTest(code=code):
@@ -696,7 +718,24 @@ class SystemEmojiCoverageDefectTests(unittest.TestCase):
         template_id = await self._template_with_bindings(h)
         await h.callback(f"tp_open:{template_id}")
         await h.callback(f"tp_bricks:{template_id}")
-        listed = h.screen_text()
+        # Poster 2.5 §14: пять записей на страницу — смотрим все страницы.
+        listed: list[str] = []
+        seen: set[str] = set()
+        while True:
+            listed.append(h.screen_text())
+            next_page = next(
+                (
+                    data
+                    for _label, data in h.screen_buttons()
+                    if data and data.startswith("tp_bpage:")
+                ),
+                None,
+            )
+            if next_page is None or next_page in seen:
+                break
+            seen.add(next_page)
+            await h.callback(next_page)
+        listed_text = "\n".join(listed)
         for code, emoji in (
             ("название", "🏷"),
             ("место", "📍"),
@@ -705,7 +744,7 @@ class SystemEmojiCoverageDefectTests(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertIn(
                     f"[{code}] — {emoji}",
-                    listed,
+                    listed_text,
                     f"в списке кирпичиков шаблона [{code}] без эмодзи {emoji}",
                 )
 

@@ -441,11 +441,10 @@ class CompletenessTests(_Case):
     @scenario_test
     async def test_pagination_labels_come_from_catalog(self, h: Harness) -> None:
         """
-        reproduces D2. Ожидание: `buttons.nav.prev` / `buttons.nav.next` /
-        `buttons.nav.retry_search` — живые ключи каталога: владелец правит
-        их в YAML, и кнопки «⬅️ Назад / Вперёд ➡️ / 🔁 Искать снова» меняются.
-        Факт: эти ключи нигде не читаются (в `handlers/places.py` стоят
-        литералы), поэтому правка файла не меняет ни одну кнопку.
+        reproduces D2. Ожидание: `buttons.pagination.prev` /
+        `buttons.pagination.next` / `buttons.nav.retry_search` — живые ключи
+        каталога: владелец правит их в YAML, и стрелки строки пагинации
+        «◀️ | 2/4 | ▶️», а также «🔁 Искать снова» меняются.
         """
         from place_store import create_place
         from tests.test_stage27b_announcement_ui import _user
@@ -453,8 +452,8 @@ class CompletenessTests(_Case):
         self.write(
             _full_catalog(
                 **{
-                    "buttons.nav.prev": "НАЗАД-КАТАЛОГ",
-                    "buttons.nav.next": "ВПЕРЁД-КАТАЛОГ",
+                    "buttons.pagination.prev": "НАЗАД-КАТАЛОГ",
+                    "buttons.pagination.next": "ВПЕРЁД-КАТАЛОГ",
                     "buttons.nav.retry_search": "ИСКАТЬ-КАТАЛОГ",
                 }
             )

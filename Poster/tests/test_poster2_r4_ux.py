@@ -621,13 +621,17 @@ class HubProposalButtonTests(R4HarnessCase):
             )
         await self.open_hub(h)
         first_page = [data for data in _callbacks(h) if data.startswith("bp_start:")]
-        self.assertEqual(len(first_page), 8, "на странице 8 строк")
-        self.assertTrue(_has_button(h, "bk_page:8"), "нет кнопки следующей страницы")
+        self.assertEqual(len(first_page), 5, "на странице 5 строк")
+        self.assertTrue(_has_button(h, "bk_page:5"), "нет кнопки следующей страницы")
 
-        await h.callback("bk_page:8", user_id=OWNER_TG)
+        await h.callback("bk_page:5", user_id=OWNER_TG)
         second_page = [data for data in _callbacks(h) if data.startswith("bp_start:")]
-        self.assertEqual(len(second_page), 1)
-        self.assertEqual(second_page[0], f"bp_start:{created[8].id}")
+        self.assertEqual(len(second_page), 4)
+        self.assertEqual(
+            second_page,
+            [f"bp_start:{brick.id}" for brick in created[5:]],
+            "вторая страница потеряла строки",
+        )
 
     @scenario_test
     async def test_archived_row_has_no_offer_button(self, h: Harness) -> None:

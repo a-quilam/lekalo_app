@@ -38,7 +38,6 @@ from telegram.ext import (
 
 from admin_state import clear_admin_session
 from brick_proposal_store import (
-    PROPOSAL_PAGE_SIZE,
     PROPOSAL_SCOPE_PLACE,
     PROPOSAL_SCOPE_SYSTEM,
     PROPOSAL_STATUS_APPROVED,
@@ -94,7 +93,7 @@ from place_state import clear_place_session
 from place_store import get_place_details, list_places
 from template_state import clear_template_session
 from user_store import get_or_create_user
-from utils import current_value, keyboard_layouts, screen
+from utils import current_value, keyboard_layouts, pagination, screen
 from utils import tg_context as ctx
 from utils.ui_texts import tr, tr_safe
 
@@ -107,7 +106,9 @@ PROPOSAL_ROW_ONLY_HINT = tr("bricks.module.vyberite_kirpichik_spiske_sprava")
 # U3a: у нового пользователя кирпичиков нет — ссылаться на «📨» не на что,
 # подсказка ведёт к кнопке, которая на экране действительно есть.
 PROPOSAL_CREATE_HINT = tr("bricks.module.snachala_sozdayte_kirpichik")
-PAGE_SIZE = 8
+# Poster 2.5 §14: единый размер страницы для всех длинных списков.
+PAGE_SIZE = pagination.PAGE_SIZE
+PROPOSAL_PAGE_SIZE = pagination.PAGE_SIZE
 _BUTTON_TITLE_LIMIT = 48
 
 TYPE_UI_TITLES = {
@@ -560,24 +561,6 @@ def _settings_text(value_type: str, rules: dict) -> str:
     return tr("admin.proposal_settings.bez_dopolnitelnyh_nastroek")
 
 
-def _page_note(offset: int, count: int, total: int) -> str:
-    if total <= 0:
-        return ""
-    last = offset + count
-    pages = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
-    page = offset // PAGE_SIZE + 1
-    return tr(
-        "bricks.page_note",
-        **{
-            "from": offset + 1,
-            "to": last,
-            "total": total,
-            "page": page,
-            "pages": pages,
-        },
-    )
-
-
 def _list_keyboard(bricks, *, offset: int, total: int, archive: bool):
     """
     Список кирпичиков: строка = «название» + компактная кнопка действия.
@@ -601,18 +584,10 @@ def _list_keyboard(bricks, *, offset: int, total: int, archive: bool):
         )
         for brick in bricks
     )
-    rows += keyboard_layouts.nav_row(
-        (
-            keyboard_layouts.button("◀️", f"{prefix}:{max(offset - PAGE_SIZE, 0)}")
-            if offset > 0
-            else None
-        ),
-        (
-            keyboard_layouts.button("▶️", f"{prefix}:{offset + PAGE_SIZE}")
-            if offset + len(bricks) < total
-            else None
-        ),
-    )
+    # Poster 2.5 §14: одна строка «◀️ | 2/4 | ▶️» вместо пары стрелок.
+    nav = pagination.nav_keyboard_for_offset(offset, total, prefix, page_size=PAGE_SIZE)
+    if nav:
+        rows.append(nav)
     return rows
 
 
@@ -625,8 +600,8 @@ def _hub_content(session: Session, user: User, state: dict):
         session, user.telegram_user_id, status_filter=BRICK_STATUS_ARCHIVED
     )
     offset = _page_value(state.get("page"))
-    if total and offset >= total:
-        offset = ((total - 1) // PAGE_SIZE) * PAGE_SIZE
+    if total:
+        offset = pagination.clamp_page(offset // PAGE_SIZE, total) * PAGE_SIZE
     bricks = list_personal_bricks(
         session,
         user.telegram_user_id,
@@ -644,7 +619,7 @@ def _hub_content(session: Session, user: User, state: dict):
         parts.extend(["", tr("bricks.hub.active_count", count=total)])
         parts.extend(["", tr("bricks.hub.propose_hint")])
         if bricks:
-            parts.extend(["", _page_note(offset, len(bricks), total)])
+            parts.append("")
     elif archived_total:
         parts.extend(["", tr("bricks.hub.empty_archive", archived=archived_total)])
     else:
@@ -678,8 +653,8 @@ def _archive_content(session: Session, user: User, state: dict):
         session, user.telegram_user_id, status_filter=BRICK_STATUS_ARCHIVED
     )
     offset = _page_value(state.get("archive_page"))
-    if total and offset >= total:
-        offset = ((total - 1) // PAGE_SIZE) * PAGE_SIZE
+    if total:
+        offset = pagination.clamp_page(offset // PAGE_SIZE, total) * PAGE_SIZE
     bricks = list_personal_bricks(
         session,
         user.telegram_user_id,
@@ -694,8 +669,6 @@ def _archive_content(session: Session, user: User, state: dict):
         tr("bricks.archive.title_html"),
         "",
         tr("bricks.archive.intro"),
-        "",
-        _page_note(offset, len(bricks), total),
     ]
     rows = _list_keyboard(bricks, offset=offset, total=total, archive=True)
     rows.append([InlineKeyboardButton(tr("buttons.nav.back"), callback_data="bk_hub")])
@@ -870,24 +843,6 @@ def _proposal_back_label(state: dict) -> str:
     return tr("bricks.proposal_back_label.k_vyboru_kirpichika")
 
 
-def _proposal_page_note(offset: int, count: int, total: int) -> str:
-    if total <= 0:
-        return ""
-    last = offset + count
-    pages = max((total + PROPOSAL_PAGE_SIZE - 1) // PROPOSAL_PAGE_SIZE, 1)
-    page = offset // PROPOSAL_PAGE_SIZE + 1
-    return tr(
-        "bricks.page_note",
-        **{
-            "from": offset + 1,
-            "to": last,
-            "total": total,
-            "page": page,
-            "pages": pages,
-        },
-    )
-
-
 def _proposal_reset_hub(state: dict, notice: str) -> None:
     page, archive_page = _saved_page(state)
     state.clear()
@@ -941,10 +896,8 @@ def _proposal_select_brick_content(session: Session, user: User, state: dict):
         offset=offset,
     )
     state["proposal_page"] = offset
-    text = (
-        _proposal_header(tr("bricks.proposal_select_brick.vyberite_kirpichik"))
-        + tr("bricks.proposal_select_brick.vyberite_svoy_lichnyy_kirpichik")
-        + _proposal_page_note(offset, len(bricks), total)
+    text = _proposal_header(tr("bricks.proposal_select_brick.vyberite_kirpichik")) + tr(
+        "bricks.proposal_select_brick.vyberite_svoy_lichnyy_kirpichik"
     )
     rows = [
         [
@@ -955,20 +908,11 @@ def _proposal_select_brick_content(session: Session, user: User, state: dict):
         ]
         for brick in bricks
     ]
-    rows += keyboard_layouts.nav_row(
-        (
-            keyboard_layouts.button(
-                "◀️", f"bp_page:{max(offset - PROPOSAL_PAGE_SIZE, 0)}"
-            )
-            if offset > 0
-            else None
-        ),
-        (
-            keyboard_layouts.button("▶️", f"bp_page:{offset + PROPOSAL_PAGE_SIZE}")
-            if offset + len(bricks) < total
-            else None
-        ),
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "bp_page", page_size=PROPOSAL_PAGE_SIZE
     )
+    if nav:
+        rows.append(nav)
     rows.append(
         [
             InlineKeyboardButton(
@@ -1045,24 +989,11 @@ def _proposal_select_place_content(session: Session, user: User, state: dict):
     ]
     if not places:
         text += tr("bricks.proposal_select_place.v_spravochnike_poka_net")
-    if total:
-        text += "\n\n" + _proposal_page_note(offset, len(places), total)
-    navigation: list[InlineKeyboardButton] = []
-    if offset > 0:
-        navigation.append(
-            InlineKeyboardButton(
-                "◀️",
-                callback_data=(f"bp_ppage:{max(offset - PROPOSAL_PAGE_SIZE, 0)}"),
-            )
-        )
-    if offset + len(places) < total:
-        navigation.append(
-            InlineKeyboardButton(
-                "▶️", callback_data=f"bp_ppage:{offset + PROPOSAL_PAGE_SIZE}"
-            )
-        )
-    if navigation:
-        rows.append(navigation)
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "bp_ppage", page_size=PROPOSAL_PAGE_SIZE
+    )
+    if nav:
+        rows.append(nav)
     rows.append(
         [InlineKeyboardButton(tr("buttons.bricks.k_oblasti"), callback_data="bp_back")]
     )
@@ -1184,7 +1115,7 @@ def _proposal_list_content(session: Session, user: User, state: dict):
         else:
             text += tr("bricks.proposal_list.vy_otpravlyali_predlozheniy_2")
     else:
-        text += "\n\n" + _proposal_page_note(offset, len(proposals), total)
+        text += "\n"
     rows = keyboard_layouts.list_rows(
         (
             keyboard_layouts.button(
@@ -1200,20 +1131,11 @@ def _proposal_list_content(session: Session, user: User, state: dict):
         )
         for proposal in proposals
     )
-    rows += keyboard_layouts.nav_row(
-        (
-            keyboard_layouts.button(
-                "◀️", f"bp_mpage:{max(offset - PROPOSAL_PAGE_SIZE, 0)}"
-            )
-            if offset > 0
-            else None
-        ),
-        (
-            keyboard_layouts.button("▶️", f"bp_mpage:{offset + PROPOSAL_PAGE_SIZE}")
-            if offset + len(proposals) < total
-            else None
-        ),
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "bp_mpage", page_size=PROPOSAL_PAGE_SIZE
     )
+    if nav:
+        rows.append(nav)
     rows.append(
         [
             InlineKeyboardButton(

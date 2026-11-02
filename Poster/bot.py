@@ -20,6 +20,7 @@ from handlers.admin import admin_handlers
 from handlers.announcement_wizard import announcement_wizard_handlers
 from handlers.bricks import bricks_handlers
 from handlers.main_menu import main_menu_handlers
+from handlers.noop import noop_handlers
 from handlers.places import places_handlers
 from handlers.templates import templates_handlers
 from handlers.user_tracking import track_user
@@ -186,6 +187,13 @@ def build_application() -> Application:
     # Регистрация известных пользователей (Stage 20A): отдельная группа -1,
     # выполняется до сценариев, не отвечает в чат и не меняет порядок групп 0.
     application.add_handler(TypeHandler(Update, track_user), group=-1)
+
+    # Безопасный no-op индикатора пагинации (`noop:<page>:<total>`) — самым
+    # первым в группе 0. Индикатор «2/4» — обычная кнопка (PTB 22.8 не знает
+    # `disabled`), и если пропустить нажатие в активный ConversationHandler,
+    # его fallback `.*` покажет «кнопка устарела» вместо спокойного ответа.
+    for handler in noop_handlers():
+        application.add_handler(handler)
 
     # Адаптивный мастер анонсов Stage 27B — первым: у него собственные
     # entry-точка aw_start и команда /new_wizard. Явный вход завершает

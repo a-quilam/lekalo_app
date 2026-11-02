@@ -793,10 +793,13 @@ class TemplatesUiTests(unittest.TestCase):
         self.assertIn("Для личного шаблона", first_page)
         self.assertNotIn("чужой_код", first_page)
         self.assertNotIn("местный_код", first_page)
-        self.assertIn("tp_bpage:8", self.screen_callbacks(h))
-        await h.callback("tp_bpage:8", user_id=owner_tg)
+        self.assertIn("tp_bpage:5", self.screen_callbacks(h))
+        # Poster 2.5 §14: пять записей на страницу; личный кирпичик — на
+        # последней странице (10 системных + 1 личный).
+        await h.callback("tp_bpage:10", user_id=owner_tg)
         second_page = h.screen_text()
         self.assertIn("[мой_код]", second_page)
+        self.assertIn(("3/3", "noop:3:3"), h.screen_buttons())
         self.assertNotIn("чужой_код", second_page)
         self.assertNotIn("местный_код", second_page)
         self.assertIn("tp_back", self.screen_callbacks(h))
@@ -829,12 +832,12 @@ class TemplatesUiTests(unittest.TestCase):
         self.assertNotIn("личный_админа", first_page)
         self.assertNotIn("ID", first_page)
         # Системных кирпичиков больше страницы: доступна вторая страница.
-        self.assertIn("tp_bpage:8", self.screen_callbacks(h))
-        await h.callback("tp_bpage:8", user_id=admin_tg)
+        self.assertIn("tp_bpage:5", self.screen_callbacks(h))
+        await h.callback("tp_bpage:10", user_id=admin_tg)
         second_page = h.screen_text()
         self.assertIn("[местовой_код]", second_page)
         self.assertNotIn("личный_админа", second_page)
-        self.assertIn("tp_bpage:0", self.screen_callbacks(h))
+        self.assertIn("tp_bpage:5", self.screen_callbacks(h))
 
     @scenario_test
     async def test_template_list_pagination(self, h) -> None:

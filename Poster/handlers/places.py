@@ -57,7 +57,7 @@ from place_store import (
 )
 from template_state import clear_template_session
 from user_store import get_or_create_user
-from utils import screen
+from utils import pagination, screen
 from utils import tg_context as ctx
 from utils.place_labels import place_title
 from utils.ui_texts import tr, tr_safe
@@ -65,9 +65,10 @@ from utils.validators import normalize_url
 
 logger = logging.getLogger(__name__)
 
-PLACES_PAGE_SIZE = 8
-SEARCH_PAGE_SIZE = 8
-NAMES_PAGE_SIZE = 6
+# Poster 2.5 §14: единый размер страницы для всех длинных списков.
+PLACES_PAGE_SIZE = pagination.PAGE_SIZE
+SEARCH_PAGE_SIZE = pagination.PAGE_SIZE
+NAMES_PAGE_SIZE = pagination.PAGE_SIZE
 CARD_ALIASES_LIMIT = 5
 BUTTON_TEXT_LIMIT = 60
 
@@ -190,22 +191,6 @@ def _page_value(state: dict, key: str = "page") -> int:
     except (TypeError, ValueError):
         return 0
     return max(value, 0)
-
-
-def _page_note(
-    offset: int, count: int, total: int, page_size: int = SEARCH_PAGE_SIZE
-) -> str:
-    if total <= 0:
-        return ""
-    return tr(
-        "places.page_note",
-        **{
-            "from": offset + 1,
-            "to": offset + count,
-            "total": total,
-            "page": offset // page_size + 1,
-        },
-    )
 
 
 def _ensure_user(session: Session, update: Update) -> User:
@@ -361,9 +346,12 @@ def _all_places_content(
 ) -> tuple[str, InlineKeyboardMarkup]:
     offset = _page_value(state)
     places, total = list_places(session, offset=max(offset, 0), limit=PLACES_PAGE_SIZE)
-    if not places and total > 0 and offset > 0:
-        offset = 0
-        places, total = list_places(session, offset=0, limit=PLACES_PAGE_SIZE)
+    # Poster 2.5 §14: исчезнувшая последняя страница заменяется новой
+    # последней, а не пустым экраном с активными стрелками.
+    safe_offset = _clamp_offset(offset, total, PLACES_PAGE_SIZE)
+    if safe_offset != offset:
+        offset = safe_offset
+        places, total = list_places(session, offset=offset, limit=PLACES_PAGE_SIZE)
     state["page"] = offset
 
     if total == 0:
@@ -377,7 +365,6 @@ def _all_places_content(
     text = f"{tr('places.all.title', total=total)}\n\n"
     for index, item in enumerate(places, start=offset + 1):
         text += f"{index}. {_h(_place_title(item.canonical_name, item.city))}\n"
-    text += "\n" + _page_note(offset, len(places), total, PLACES_PAGE_SIZE)
 
     keyboard: list[list[InlineKeyboardButton]] = []
     for index, item in enumerate(places, start=offset + 1):
@@ -392,21 +379,9 @@ def _all_places_content(
                 )
             ]
         )
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.prev"),
-                callback_data=f"pl_page:{max(offset - PLACES_PAGE_SIZE, 0)}",
-            )
-        )
-    if offset + len(places) < total:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.next"),
-                callback_data=f"pl_page:{offset + len(places)}",
-            )
-        )
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "pl_page", page_size=PLACES_PAGE_SIZE
+    )
     if nav:
         keyboard.append(nav)
     keyboard.append(
@@ -447,7 +422,6 @@ def _search_results_content(
             f"{index}. {_h(_place_title(result.canonical_name, result.city))} — "
             f"{_result_label(result)}\n"
         )
-    text += "\n" + _page_note(offset, len(page_results), total)
 
     keyboard: list[list[InlineKeyboardButton]] = []
     for index, result in enumerate(page_results, start=offset + 1):
@@ -462,21 +436,9 @@ def _search_results_content(
                 )
             ]
         )
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.prev"),
-                callback_data=f"pl_spage:{max(offset - SEARCH_PAGE_SIZE, 0)}",
-            )
-        )
-    if offset + len(page_results) < total:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.next"),
-                callback_data=f"pl_spage:{offset + len(page_results)}",
-            )
-        )
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "pl_spage", page_size=SEARCH_PAGE_SIZE
+    )
     if nav:
         keyboard.append(nav)
     keyboard.append(
@@ -647,14 +609,6 @@ def _names_content(
             marks.append(tr("places.names.vybrano"))
         suffix = f" — {', '.join(marks)}" if marks else ""
         text += f"{index}. {_h(item.name)}{suffix}\n"
-    if total > len(page):
-        text += tr(
-            "templates.brick_list.pokazany",
-            value=offset + 1,
-            value_2=offset + len(page),
-            total=total,
-        )
-
     keyboard: list[list[InlineKeyboardButton]] = []
     for index, item in enumerate(page, start=offset + 1):
         mark = "✓ " if item.id == selected.id else ""
@@ -666,21 +620,9 @@ def _names_content(
                 )
             ]
         )
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.prev"),
-                callback_data=f"pl_names:{max(offset - NAMES_PAGE_SIZE, 0)}",
-            )
-        )
-    if offset + len(page) < total:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.next"),
-                callback_data=f"pl_names:{offset + len(page)}",
-            )
-        )
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "pl_names", page_size=NAMES_PAGE_SIZE
+    )
     if nav:
         keyboard.append(nav)
     keyboard.append(
@@ -1176,16 +1118,18 @@ async def _stale(update: Update, text: str | None = None) -> None:
 
 # --- Poster 2.0 S2: выбор площадки для немедленного старта анонса -------------
 
-PICK_PAGE_SIZE = 8
+PICK_PAGE_SIZE = pagination.PAGE_SIZE
 
 
 def _pick_content(session: Session, state: dict) -> tuple[str, InlineKeyboardMarkup]:
     """Список зарегистрированных площадок; тап по названию сразу начинает анонс."""
     offset = _page_value(state, "pick_page")
     places, total = list_places(session, offset=offset, limit=PICK_PAGE_SIZE)
-    if not places and total > 0 and offset > 0:
-        offset = 0
-        places, total = list_places(session, offset=0, limit=PICK_PAGE_SIZE)
+    # Poster 2.5 §14: страница приводится к новой последней после удаления.
+    safe_offset = _clamp_offset(offset, total, PICK_PAGE_SIZE)
+    if safe_offset != offset:
+        offset = safe_offset
+        places, total = list_places(session, offset=offset, limit=PICK_PAGE_SIZE)
     state["pick_page"] = offset
 
     if total == 0:
@@ -1216,7 +1160,6 @@ def _pick_content(session: Session, state: dict) -> tuple[str, InlineKeyboardMar
     text = f"{tr('places.pick.title')}\n\n{tr('places.pick.intro')}\n\n"
     for number, item in enumerate(places, start=offset + 1):
         text += f"{number}. {_h(_place_title(item.canonical_name, item.city))}\n"
-    text += "\n" + _page_note(offset, len(places), total, PICK_PAGE_SIZE)
 
     rows: list[list[InlineKeyboardButton]] = []
     for item in places:
@@ -1228,21 +1171,9 @@ def _pick_content(session: Session, state: dict) -> tuple[str, InlineKeyboardMar
                 )
             ]
         )
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.prev"),
-                callback_data=f"pl_pickp:{max(offset - PICK_PAGE_SIZE, 0)}",
-            )
-        )
-    if offset + len(places) < total:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.next"),
-                callback_data=f"pl_pickp:{offset + len(places)}",
-            )
-        )
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "pl_pickp", page_size=PICK_PAGE_SIZE
+    )
     if nav:
         rows.append(nav)
     rows.append(
@@ -1319,7 +1250,6 @@ def _pick_search_content(
             f"{number}. {_h(_place_title(result.canonical_name, result.city))} — "
             f"{_result_label(result)}\n"
         )
-    text += "\n" + _page_note(offset, len(page_results), total)
 
     rows: list[list[InlineKeyboardButton]] = []
     for result in page_results:
@@ -1333,21 +1263,9 @@ def _pick_search_content(
                 )
             ]
         )
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.prev"),
-                callback_data=f"pl_picksp:{max(offset - SEARCH_PAGE_SIZE, 0)}",
-            )
-        )
-    if offset + len(page_results) < total:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.next"),
-                callback_data=f"pl_picksp:{offset + len(page_results)}",
-            )
-        )
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "pl_picksp", page_size=SEARCH_PAGE_SIZE
+    )
     if nav:
         rows.append(nav)
     rows.append(
@@ -1418,9 +1336,12 @@ def _manage_list_content(
     """Список площадок справочника: пагинация как в «Все места»."""
     offset = _page_value(state)
     places, total = list_places(session, offset=max(offset, 0), limit=PLACES_PAGE_SIZE)
-    if not places and total > 0 and offset > 0:
-        offset = 0
-        places, total = list_places(session, offset=0, limit=PLACES_PAGE_SIZE)
+    # Poster 2.5 §14: исчезнувшая последняя страница заменяется новой
+    # последней (тот же инвариант, что в «Все места»).
+    safe_offset = _clamp_offset(offset, total, PLACES_PAGE_SIZE)
+    if safe_offset != offset:
+        offset = safe_offset
+        places, total = list_places(session, offset=offset, limit=PLACES_PAGE_SIZE)
     state["page"] = offset
 
     if total == 0:
@@ -1440,7 +1361,6 @@ def _manage_list_content(
     text = f"{tr('places.manage.title', total=total)}\n\n"
     for index, item in enumerate(places, start=offset + 1):
         text += f"{index}. {_h(_place_title(item.canonical_name, item.city))}\n"
-    text += "\n" + _page_note(offset, len(places), total, PLACES_PAGE_SIZE)
     text += f"\n{tr('places.manage.hint')}"
 
     rows: list[list[InlineKeyboardButton]] = []
@@ -1456,21 +1376,9 @@ def _manage_list_content(
                 )
             ]
         )
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.prev"),
-                callback_data=f"plm_page:{max(offset - PLACES_PAGE_SIZE, 0)}",
-            )
-        )
-    if offset + len(places) < total:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.next"),
-                callback_data=f"plm_page:{offset + len(places)}",
-            )
-        )
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "plm_page", page_size=PLACES_PAGE_SIZE
+    )
     if nav:
         rows.append(nav)
     rows.append(
@@ -1523,7 +1431,6 @@ def _manage_search_content(
             f"{index}. {_h(_place_title(result.canonical_name, result.city))} — "
             f"{_result_label(result)}\n"
         )
-    text += "\n" + _page_note(offset, len(page_results), total)
 
     rows: list[list[InlineKeyboardButton]] = []
     for index, result in enumerate(page_results, start=offset + 1):
@@ -1538,21 +1445,9 @@ def _manage_search_content(
                 )
             ]
         )
-    nav: list[InlineKeyboardButton] = []
-    if offset > 0:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.prev"),
-                callback_data=f"plm_spage:{max(offset - SEARCH_PAGE_SIZE, 0)}",
-            )
-        )
-    if offset + len(page_results) < total:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.nav.next"),
-                callback_data=f"plm_spage:{offset + len(page_results)}",
-            )
-        )
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "plm_spage", page_size=SEARCH_PAGE_SIZE
+    )
     if nav:
         rows.append(nav)
     rows.append(

@@ -99,7 +99,7 @@ from template_types import (
     validate_template_name,
 )
 from user_store import get_or_create_user
-from utils import current_value
+from utils import current_value, pagination
 from utils.tg_html import entities_to_template_markup, escape_html
 from utils.ui_texts import tr, tr_safe
 
@@ -107,8 +107,9 @@ logger = logging.getLogger(__name__)
 
 # --- Константы ---------------------------------------------------------------
 
-PAGE_SIZE = 8
-BRICK_PAGE_SIZE = 8
+# Poster 2.5 §14: единый размер страницы для всех длинных списков.
+PAGE_SIZE = pagination.PAGE_SIZE
+BRICK_PAGE_SIZE = pagination.PAGE_SIZE
 BUTTON_TITLE_LIMIT = 42
 # H3 (требование D): превью значения больше не режется «для красоты».
 # Единственный предел — физический лимит сообщения Telegram; он живёт в
@@ -526,21 +527,15 @@ def _hub_content(
         )
         return text, keyboard
 
-    page = min(_page_value(page), (total - 1) // PAGE_SIZE)
-    offset = page * PAGE_SIZE
-    page_items = templates[offset : offset + PAGE_SIZE]
+    # Poster 2.5 §14: пять шаблонов на страницу, 0–5 — без навигации и
+    # служебных счётчиков. Страница приводится к допустимой при рендере.
+    page_slice = pagination.page_items(templates, page)
+    page = page_slice.page
+    offset = page_slice.offset
+    page_items = page_slice.items
     lines = [tr("templates.hub.moi_shablony_vsego", total=total)]
     for index, template in enumerate(page_items, start=offset + 1):
         lines.append(f"{index}. {_h(template.display_name)} · v{template.revision}")
-    if total > PAGE_SIZE:
-        lines.append(
-            tr(
-                "templates.hub.pokazany",
-                value=offset + 1,
-                value_2=offset + len(page_items),
-                total=total,
-            )
-        )
     rows: list[list[InlineKeyboardButton]] = [
         [
             InlineKeyboardButton(
@@ -550,15 +545,9 @@ def _hub_content(
         ]
         for template in page_items
     ]
-    navigation: list[InlineKeyboardButton] = []
-    if page > 0:
-        navigation.append(
-            InlineKeyboardButton("◀️", callback_data=f"tp_page:{page - 1}")
-        )
-    if offset + PAGE_SIZE < total:
-        navigation.append(
-            InlineKeyboardButton("▶️", callback_data=f"tp_page:{page + 1}")
-        )
+    navigation = pagination.nav_keyboard(
+        page, page_slice.total_pages, "tp_page", as_offset=False
+    )
     if navigation:
         rows.append(navigation)
     rows.append(
@@ -606,9 +595,11 @@ def _pick_content(
         )
         return text, keyboard
 
-    page = min(_page_value(page), (total - 1) // PAGE_SIZE)
-    offset = page * PAGE_SIZE
-    page_items = templates[offset : offset + PAGE_SIZE]
+    # Poster 2.5 §14: та же единая пагинация, что и в «Моих шаблонах».
+    page_slice = pagination.page_items(templates, page)
+    page = page_slice.page
+    offset = page_slice.offset
+    page_items = page_slice.items
     lines = [
         tr("buttons.main.create_template"),
         "",
@@ -618,15 +609,6 @@ def _pick_content(
     ]
     for index, template in enumerate(page_items, start=offset + 1):
         lines.append(f"{index}. {_h(template.display_name)} · v{template.revision}")
-    if total > PAGE_SIZE:
-        lines.append(
-            tr(
-                "templates.hub.pokazany",
-                value=offset + 1,
-                value_2=offset + len(page_items),
-                total=total,
-            )
-        )
 
     rows: list[list[InlineKeyboardButton]] = []
     for template in page_items:
@@ -641,15 +623,9 @@ def _pick_content(
                 ),
             ]
         )
-    navigation: list[InlineKeyboardButton] = []
-    if page > 0:
-        navigation.append(
-            InlineKeyboardButton("◀️", callback_data=f"tp_pickpage:{page - 1}")
-        )
-    if offset + PAGE_SIZE < total:
-        navigation.append(
-            InlineKeyboardButton("▶️", callback_data=f"tp_pickpage:{page + 1}")
-        )
+    navigation = pagination.nav_keyboard(
+        page, page_slice.total_pages, "tp_pickpage", as_offset=False
+    )
     if navigation:
         rows.append(navigation)
     rows.append(
@@ -1356,9 +1332,11 @@ def _brick_list_content(
         place_id=place_id,
     )
     total = len(bricks)
-    max_offset = ((total - 1) // BRICK_PAGE_SIZE) * BRICK_PAGE_SIZE if total else 0
-    offset = min(max(0, offset), max_offset)
-    page_items = bricks[offset : offset + BRICK_PAGE_SIZE]
+    brick_slice = pagination.page_items(
+        bricks, max(0, offset) // BRICK_PAGE_SIZE, BRICK_PAGE_SIZE
+    )
+    offset = brick_slice.offset
+    page_items = brick_slice.items
     lines = [
         tr("templates.brick_list.dostupnye_kirpichiki", scope_hint=scope_hint),
         tr("templates.brick_list.vsego", total=total),
@@ -1373,31 +1351,12 @@ def _brick_list_content(
                 f"{_h(brick_title_display(brick.title, brick.code))} "
                 f"· {type_title} · {scope}"
             )
-        if total > BRICK_PAGE_SIZE:
-            lines.append(
-                tr(
-                    "templates.brick_list.pokazany",
-                    value=offset + 1,
-                    value_2=offset + len(page_items),
-                    total=total,
-                )
-            )
+
     else:
         lines.append(tr("templates.brick_list.net_dostupnyh_kirpichikov"))
-    navigation: list[InlineKeyboardButton] = []
-    if offset > 0:
-        navigation.append(
-            InlineKeyboardButton(
-                "◀️",
-                callback_data=f"tp_bpage:{max(0, offset - BRICK_PAGE_SIZE)}",
-            )
-        )
-    if offset + BRICK_PAGE_SIZE < total:
-        navigation.append(
-            InlineKeyboardButton(
-                "▶️", callback_data=f"tp_bpage:{offset + BRICK_PAGE_SIZE}"
-            )
-        )
+    navigation = pagination.nav_keyboard_for_offset(
+        offset, total, "tp_bpage", page_size=BRICK_PAGE_SIZE
+    )
     rows: list[list[InlineKeyboardButton]] = []
     if navigation:
         rows.append(navigation)
@@ -1653,10 +1612,18 @@ async def _render_phase(
 
         if phase == PHASE_HUB:
             templates = list_personal_templates(session, telegram_user_id)
-            text, keyboard = _hub_content(templates, _page_value(state.get("page")))
+            # Poster 2.5 §14: страница приводится к новой последней сразу в
+            # состоянии — после удаления пустой страницы в снимке не остаётся.
+            state["page"] = pagination.clamp_page(
+                _page_value(state.get("page")), len(templates)
+            )
+            text, keyboard = _hub_content(templates, state["page"])
         elif phase == PHASE_PICK:
             templates = list_personal_templates(session, telegram_user_id)
-            text, keyboard = _pick_content(templates, _page_value(state.get("page")))
+            state["page"] = pagination.clamp_page(
+                _page_value(state.get("page")), len(templates)
+            )
+            text, keyboard = _pick_content(templates, state["page"])
         elif phase in _CREATE_PHASES:
             if phase == PHASE_AWAIT_NAME:
                 text, keyboard = _create_name_content(state)
@@ -2502,14 +2469,16 @@ async def handle_delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             expected_revision=int(state.get("revision") or 0),
         )
         page = _page_value(state.get("page"))
+        # Poster 2.5 §14: если после удаления последняя страница исчезла,
+        # в состоянии сохраняется новая последняя, а не пустая.
+        templates = list_personal_templates(session, telegram_user_id)
+        page = pagination.clamp_page(page, len(templates))
         if outcome == "deleted":
             new_state = _new_hub(page)
-            templates = list_personal_templates(session, telegram_user_id)
             text, keyboard = _hub_content(templates, page)
             notice = tr("templates.handle_delete_yes.shablon_udalen")
         elif outcome == "not_found":
             new_state = _new_hub(page)
-            templates = list_personal_templates(session, telegram_user_id)
             text, keyboard = _hub_content(templates, page)
             notice = tr("templates.handle_delete_yes.shablon_udalen_2")
         elif outcome == "stale":

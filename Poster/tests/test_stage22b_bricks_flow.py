@@ -653,16 +653,30 @@ class BricksUiTests(unittest.TestCase):
     async def test_pagination_and_archive_pages(self, h) -> None:
         await self.seed_bricks(h, active=10, archived=9)
         await h.text("/bricks")
-        self.assertIn("Показано 1–8 из 10", h.screen_text())
-        self.assertIn(("▶️", "bk_page:8"), h.screen_buttons())
-        await h.callback("bk_page:8")
-        self.assertIn("Показано 9–10 из 10", h.screen_text())
-        self.assertNotIn("bk_page:8", [data for _, data in h.screen_buttons()])
+        # Poster 2.5 §14: пять записей на страницу, одна строка навигации.
+        labels = [label for label, _data in h.screen_buttons()]
+        self.assertTrue(
+            any(label.startswith("Кирпичик 04") for label in labels),
+            f"пятая запись не на первой странице: {labels}",
+        )
+        self.assertFalse(
+            any(label.startswith("Кирпичик 05") for label in labels),
+            f"шестая запись попала на первую страницу: {labels}",
+        )
+        self.assertNotIn("Показано", h.screen_text())
+        self.assertIn(("1/2", "noop:1:2"), h.screen_buttons())
+        self.assertIn(("▶️", "bk_page:5"), h.screen_buttons())
+        await h.callback("bk_page:5")
+        labels = [label for label, _data in h.screen_buttons()]
+        self.assertTrue(any(label.startswith("Кирпичик 05") for label in labels))
+        self.assertFalse(any(label.startswith("Кирпичик 00") for label in labels))
+        self.assertIn(("2/2", "noop:2:2"), h.screen_buttons())
+        self.assertNotIn("bk_page:5", [data for _, data in h.screen_buttons()])
         self.assertIn(("🗄 Архив (9)", "bk_archlist"), h.screen_buttons())
         await h.callback("bk_archlist")
-        self.assertIn("Показано 1–8 из 9", h.screen_text())
-        await h.callback("bk_apage:8")
-        self.assertIn("Показано 9–9 из 9", h.screen_text())
+        self.assertIn(("1/2", "noop:1:2"), h.screen_buttons())
+        await h.callback("bk_apage:5")
+        self.assertIn(("2/2", "noop:2:2"), h.screen_buttons())
         await h.callback("bk_hub")
         self.assertIn("Активных кирпичиков: 10", h.screen_text())
 

@@ -117,7 +117,14 @@ from template_store import (
     list_personal_templates,
 )
 from template_types import TEMPLATE_CONTENT, TEMPLATE_EXTENDED_CONTENT
-from utils import calendar_view, current_value, keyboard_layouts, screen, ui_humor
+from utils import (
+    calendar_view,
+    current_value,
+    keyboard_layouts,
+    pagination,
+    screen,
+    ui_humor,
+)
 from utils import tg_context as ctx
 from utils.parsers import app_today
 from utils.place_labels import place_title
@@ -1158,13 +1165,12 @@ def _home_content(user_id: int, page: int) -> tuple[str, InlineKeyboardMarkup, i
             drafts = list_announcement_drafts(session, actor_telegram_user_id=user_id)
     except (AnnouncementActorError, AnnouncementError):
         drafts = []
-    total = len(drafts)
-    page = max(0, page)
-    start = page * TEMPLATE_PAGE_SIZE
-    if start >= total and total > 0:
-        page = 0
-        start = 0
-    shown = drafts[start : start + TEMPLATE_PAGE_SIZE]
+    # Poster 2.5 §14: единая пагинация — 5 записей на страницу, 0–5 без
+    # навигации. Номер страницы приводится к допустимому при рендере, поэтому
+    # после удаления последней записи пустая страница не показывается.
+    page_slice = pagination.page_items(drafts, page)
+    page = page_slice.page
+    shown = page_slice.items
 
     lines = [
         tr("buttons.main.announcements"),
@@ -1200,20 +1206,9 @@ def _home_content(user_id: int, page: int) -> tuple[str, InlineKeyboardMarkup, i
         )
         for index, draft in enumerate(shown)
     )
-    nav: list[InlineKeyboardButton] = []
-    if page > 0:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.wizard.stranica"), callback_data=f"aw_home_page:{page - 1}"
-            )
-        )
-    if start + len(shown) < total:
-        nav.append(
-            InlineKeyboardButton(
-                tr("buttons.wizard.stranica_2"),
-                callback_data=f"aw_home_page:{page + 1}",
-            )
-        )
+    nav = pagination.nav_keyboard(
+        page, page_slice.total_pages, "aw_home_page", as_offset=False
+    )
     if nav:
         buttons.append(nav)
     buttons.append(

@@ -172,9 +172,17 @@ class PlacesNavigationTests(unittest.TestCase):
 
         for index in range(5):
             self.assertIn(f"Малое место {index}", h.screen_text())
-        self.assertIn("Показано 1–5 из 5.", h.screen_text())
+        # Poster 2.5 §14: до пяти записей — ни счётчиков, ни навигации.
+        self.assertNotIn("Показано", h.screen_text())
         self.assertFalse(
             any(data and data.startswith("pl_page:") for _, data in h.screen_buttons())
+        )
+        self.assertFalse(
+            any(
+                label.count("/") == 1 and label[0].isdigit()
+                for label, _data in h.screen_buttons()
+            ),
+            "индикатор страницы при пяти записях не нужен",
         )
 
     @scenario_test
@@ -190,14 +198,21 @@ class PlacesNavigationTests(unittest.TestCase):
 
         text = h.screen_text()
         self.assertLessEqual(len(text), 4096)
-        for canonical in long_names:
+        # Poster 2.5 §14: пять записей на страницу, остальные — на второй.
+        for canonical in long_names[:5]:
             self.assertIn(canonical, text)
         self.assertEqual(
             len(
                 [data for _, data in h.screen_buttons() if data.startswith("pl_open:")]
             ),
-            8,
+            5,
         )
+        second_page = callback_for(h, "pl_spage:")
+        await h.callback(second_page)
+        second_text = h.screen_text()
+        self.assertLessEqual(len(second_text), 4096)
+        for canonical in long_names[5:]:
+            self.assertIn(canonical, second_text)
 
     @scenario_test
     async def test_all_places_paginates_500_without_showing_technical_ids(self, h):
@@ -235,17 +250,17 @@ class PlacesNavigationTests(unittest.TestCase):
             for _, data in h.screen_buttons()
             if data and data.startswith("pl_open:")
         ]
-        self.assertEqual(len(opens), 8)
+        self.assertEqual(len(opens), 5)
         next_data = callback_for(h, "pl_page:")
         self.assertNotIn("#1", text)
         self.assertNotIn("place_id", text)
         self.assertNotIn("ID:", text)
 
         await h.callback(next_data)
-        self.assertIn("Место 008", h.screen_text())
+        self.assertIn("Место 005", h.screen_text())
         self.assertNotEqual(text, h.screen_text())
         self.assertEqual(
-            len([d for _, d in h.screen_buttons() if d and d.startswith("pl_open:")]), 8
+            len([d for _, d in h.screen_buttons() if d and d.startswith("pl_open:")]), 5
         )
 
     @scenario_test
@@ -651,9 +666,10 @@ class AlternativeNameFlowTests(unittest.TestCase):
         await open_card(h, "Место с вариантами", place_id)
         await h.callback("pl_names:0")
         self.assertIn("Вариант 00", h.screen_text())
-        self.assertIn("pl_names:6", str(h.screen_buttons()))
-        await h.callback("pl_names:6")
-        self.assertIn("Вариант 06", h.screen_text())
+        self.assertIn("pl_names:5", str(h.screen_buttons()))
+        await h.callback("pl_names:5")
+        self.assertIn("Вариант 04", h.screen_text())
+        self.assertIn(("2/4", "noop:2:4"), h.screen_buttons())
 
 
 @unittest.skipIf(

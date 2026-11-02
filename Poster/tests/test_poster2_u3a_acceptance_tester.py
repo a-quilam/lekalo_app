@@ -403,24 +403,26 @@ class U3aAcceptanceCase(unittest.TestCase):
         ]
         self.assertEqual(len(nav), 1, f"пагинация не одной строкой: {rows(h)}")
         self.assertEqual(
-            [label for label, _data in nav[0]], ["▶️"], "на первой странице только ▶️"
+            [label for label, _data in nav[0]],
+            ["1/3", "▶️"],
+            "на первой странице индикатор и только ▶️",
         )
 
-        await h.callback("bk_page:8", user_id=OWNER)
+        await h.callback("bk_page:5", user_id=OWNER)
         nav = [
             row
             for row in rows(h)
             if any((data or "").startswith("bk_page:") for _l, data in row)
         ]
         self.assertEqual(len(nav), 1)
-        self.assertEqual([label for label, _data in nav[0]], ["◀️"])
+        self.assertEqual([label for label, _data in nav[0]], ["◀️", "2/3", "▶️"])
         # Страница сохраняется при возврате из мастера предложения.
         brick_data = [data for data in datas(h) if data.startswith("bp_start:")][0]
         await h.callback(brick_data, user_id=OWNER)
         await h.callback("bp_back", user_id=OWNER)
         self.assertIn(
-            "Показано 9–11 из 11",
-            h.screen_text(),
+            ("2/3", "noop:2:3"),
+            h.screen_buttons(),
             "потеряна страница списка после возврата из мастера",
         )
 
@@ -453,12 +455,14 @@ class U3aAcceptanceCase(unittest.TestCase):
             if any((data or "").startswith("bp_ppage:") for _l, data in row)
         ]
         self.assertEqual(len(nav), 1, f"пагинация мест не одной строкой: {rows(h)}")
-        self.assertEqual([label for label, _d in nav[0]], ["▶️"])
-        next_page = nav[0][0][1] or ""
+        self.assertEqual([label for label, _d in nav[0]], ["1/2", "▶️"])
+        next_page = nav[0][-1][1] or ""
         self.assertTrue(next_page.startswith("bp_ppage:"))
         await h.callback(next_page, user_id=OWNER)
         self.assertIn(
-            "Страница 2 из 2", h.screen_text(), "вторая страница мест не открылась"
+            ("2/2", "noop:2:2"),
+            h.screen_buttons(),
+            "вторая страница мест не открылась",
         )
 
         # Список предложений: пагинация тоже одной строкой ◀️/▶️.

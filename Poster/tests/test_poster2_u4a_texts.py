@@ -567,8 +567,8 @@ class DeadKeyScreenTests(_TempCatalog):
     ) -> None:
         self.write_catalog(
             **{
-                "buttons.nav.prev": "НАЗАД-КАТАЛОГ",
-                "buttons.nav.next": "ВПЕРЁД-КАТАЛОГ",
+                "buttons.pagination.prev": "НАЗАД-КАТАЛОГ",
+                "buttons.pagination.next": "ВПЕРЁД-КАТАЛОГ",
                 "buttons.nav.retry_search": "ИСКАТЬ-КАТАЛОГ",
             }
         )

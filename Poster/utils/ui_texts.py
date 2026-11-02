@@ -221,9 +221,6 @@ DEFAULTS: dict[str, str] = {
     "bricks.archive.intro": (
         "Здесь хранятся ваши архивные кирпичики. Их можно восстановить в любой момент. Пока кирпичик в архиве, его код остаётся занятым."
     ),
-    "bricks.page_note": (
-        "Показано {from}–{to} из {total}. Страница {page} из {pages}."
-    ),
     # --- места: справочник, поиск, регистрация ------------------------------
     "places.hub.title": "📍 Места",
     "places.hub.intro": (
@@ -252,7 +249,6 @@ DEFAULTS: dict[str, str] = {
     "places.card.hint": (
         "Чтобы выбрать место, нажмите «✅ Подтвердить». Если нужно другое написание, нажмите «🔤 Выбрать альтернативное название»."
     ),
-    "places.page_note": "Показано {from}–{to} из {total}.\nСтраница {page}.",
     "places.manage.title": "📍 Площадки — {total}",
     "places.manage.empty": (
         (
@@ -416,9 +412,10 @@ DEFAULTS: dict[str, str] = {
     "buttons.manage.admin": "🛡 Администрирование",
     "buttons.nav.main_menu": "🏠 В меню",
     "buttons.nav.back": "◀️ Назад",
-    "buttons.nav.prev": "⬅️ Назад",
-    "buttons.nav.next": "Вперёд ➡️",
     "buttons.nav.retry_search": "🔁 Искать снова",
+    # Стрелки единой пагинации (spec §14): читает utils/pagination.py.
+    "buttons.pagination.prev": "◀️",
+    "buttons.pagination.next": "▶️",
     "buttons.wizard.skip": "⏭ Пропустить",
     "buttons.wizard.choose_month": "📅 Выбрать месяц",
     "buttons.finished.edit": "✏️ Изменить",
@@ -759,7 +756,6 @@ DEFAULTS: dict[str, str] = {
         "\nДля кого: {proposal_target_label}.\n"
         "Создан отдельный кирпичик. Ваш личный кирпичик и шаблоны остались прежними."
     ),
-    "admin.page_note.pokazano_stranica": "Показано {value}–{value_2} из {total}.\nСтраница {value_3}.",
     "admin.place.mesto": "🛡 Место\n\n📍 {canonical_name}",
     "admin.places.deystvuyuschih_naznacheniy_poka": "Пока нет назначенных администраторов.",
     "admin.places.moi_mesta": "🛡 Мои места",
@@ -797,7 +793,6 @@ DEFAULTS: dict[str, str] = {
         "Для кого: {proposal_target_label}\nАвтор: {author_label}\n\n"
         "Для выбранного места или всей системы будет создан отдельный кирпичик. Личный кирпичик останется у автора, существующие шаблоны не изменятся. Перед сохранением бот ещё раз проверит права, статус предложения, место или систему, тип, правила и доступность кода. Если код занят, автоматически менять его бот не будет."
     ),
-    "admin.proposal_page_note.pokazano_stranica": "Показано {value}–{value_2} из {total}. Страница {page} из {pages}.",
     "admin.proposal_reject_confirm.otklonit_predlozhenie_kirpi_html": (
         "❌ <b>Отклонить предложение кирпичика?</b>\n\n"
         "Название: {title}\nОбозначение: <code>[{code}]</code>\n"
@@ -1132,7 +1127,6 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.da_odobrit": "✅ Да, одобрить",
     "buttons.admin.da_otklonit": "❌ Да, отклонить",
     "buttons.admin.da_pereklyuchit": "✅ Да, переключить",
-    "buttons.admin.dalee": "Далее ➡️",
     "buttons.admin.dobavit_nazvanie": "➕ Добавить название",
     "buttons.admin.glavnoe_menyu": "🏠 В меню",
     "buttons.admin.globalnye_predlozheniya": "🌍 Глобальные предложения ({system_pending})",
@@ -1154,7 +1148,6 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.otmena": "❌ Отмена",
     "buttons.admin.otmena_2": "◀️ Отмена",
     "buttons.admin.otmenit_peredachu": "❌ Отменить передачу",
-    "buttons.admin.peredat_adminku": "🔁 Передать права",
     "buttons.admin.peredat_adminku_2": "📤 Передать админку",
     "buttons.admin.pereimenovat_mestnyy": "✏️ Изменить код местного",
     "buttons.admin.pereklyuchitsya_globalnyy": "🌍 Переключиться на глобальный",
@@ -1263,8 +1256,6 @@ DEFAULTS: dict[str, str] = {
     "buttons.wizard.prodolzhit": "➡️ Продолжить",
     "buttons.wizard.sohranit_chernovik": "✅ Сохранить черновик",
     "buttons.wizard.sohranit_vyyti": "💾 Сохранить и выйти",
-    "buttons.wizard.stranica": "◀️ Предыдущая страница",
-    "buttons.wizard.stranica_2": "Следующая страница ▶️",
     "buttons.wizard.udalit_foto": "🗑 Удалить фото {value}",
     "buttons.wizard.udalit_vse_foto": "🗑 Удалить все фото",
     # Poster 2.4 P3: строка списка «Мои анонсы» — открытие|🗑 и экран
@@ -1339,7 +1330,6 @@ DEFAULTS: dict[str, str] = {
     "templates.brick_list.dlya_standartnogo_shablona": "Для стандартного шаблона доступны системные кирпичики и кирпичики этого места.",
     "templates.brick_list.dostupnye_kirpichiki": "📋 Доступные кирпичики\n\n{scope_hint}",
     "templates.brick_list.net_dostupnyh_kirpichikov": "\nНет доступных кирпичиков.",
-    "templates.brick_list.pokazany": "\nПоказаны {value}–{value_2} из {total}.",
     "templates.brick_list.vsego": "Всего: {total}.",
     "templates.build.dannye_poteryany_povtorite": "Данные сохранены. Попробуйте сохранить ещё раз. Если снова появится выбор кирпичика, выберите нужный кнопкой.",
     "templates.build.eto_struktura_shablona_znacheniya": "Так устроен шаблон. Вместо кодов кирпичиков появятся значения, введённые при создании анонса.",
@@ -1436,7 +1426,6 @@ DEFAULTS: dict[str, str] = {
         "Личных шаблонов пока нет. Шаблон задаёт вид текста анонса. Один шаблон можно использовать для разных мест."
     ),
     "templates.hub.moi_shablony_vsego": "📄 Мои шаблоны\n\nВсего: {total}.",
-    "templates.hub.pokazany": "Показаны {value}–{value_2} из {total}.",
     "templates.module.rasshirennogo_teksta": "расширенного текста",
     "templates.module.shablon_nedostupen": "Шаблон недоступен.",
     "templates.module.shablon_nelzya_udalit_nemu": "По этому шаблону уже создавались анонсы. Удалить его нельзя: он нужен для их истории. Можно изменить шаблон или восстановить стандартный текст Poster.",

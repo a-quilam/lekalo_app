@@ -386,12 +386,12 @@ class ProposalFlowTests(R4TesterCase):
         await h.callback("bp_mine", user_id=OWNER)
         self.assertIn(CRUMB, h.screen_text())
         first = [data for data in callbacks(h) if data.startswith("bp_open:")]
-        self.assertEqual(len(first), 8)
-        self.assertTrue(has(h, "bp_mpage:8"), "нет перехода на 2-ю страницу")
+        self.assertEqual(len(first), 5)
+        self.assertTrue(has(h, "bp_mpage:5"), "нет перехода на 2-ю страницу")
 
-        await h.callback("bp_mpage:8", user_id=OWNER)
+        await h.callback("bp_mpage:5", user_id=OWNER)
         second = [data for data in callbacks(h) if data.startswith("bp_open:")]
-        self.assertEqual(len(second), 1)
+        self.assertEqual(len(second), 4)
         self.assertTrue(has(h, "bp_mpage:0"), "нет возврата на 1-ю страницу")
         self.assertTrue(has(h, "bp_back"))
         # Из второй страницы карточка открывается и «назад» возвращает.
@@ -447,7 +447,7 @@ class HubRowsTests(R4TesterCase):
         ]
         await self.open_hub(h)
         rows = [data for data in callbacks(h) if data.startswith("bk_open:")]
-        self.assertEqual(len(rows), 8, "на странице 8 строк")
+        self.assertEqual(len(rows), 5, "на странице 5 строк")
         for data in rows:
             brick_id = data.split(":", 1)[1]
             self.assertTrue(
@@ -455,11 +455,11 @@ class HubRowsTests(R4TesterCase):
                 f"у строки {data} нет кнопки предложения",
             )
             self.assertEqual(label_of(h, f"bp_start:{brick_id}"), "📨")
-        self.assertTrue(has(h, "bk_page:8"))
+        self.assertTrue(has(h, "bk_page:5"))
 
-        await h.callback("bk_page:8", user_id=OWNER)
+        await h.callback("bk_page:5", user_id=OWNER)
         last = [data for data in callbacks(h) if data.startswith("bk_open:")]
-        self.assertEqual(last, [f"bk_open:{created[8].id}"])
+        self.assertEqual(last, [f"bk_open:{brick.id}" for brick in created[5:]])
         self.assertTrue(has(h, f"bp_start:{created[8].id}"))
         # Кнопка строки реально ведёт в предложение этого кирпичика.
         await h.callback(f"bp_start:{created[8].id}", user_id=OWNER)
