@@ -176,9 +176,13 @@ RESUME_MODE_PHOTO = "photo"
 # Режимы, в которых текст продолжает шаг, и этапы черновика для каждого.
 RESUME_TEXT_STAGES = frozenset({WizardStage.QUESTIONS, WizardStage.EXTRAS})
 
-PLACE_PAGE_SIZE = 8
-TEMPLATE_PAGE_SIZE = 6
-EXTRA_PAGE_SIZE = 8
+# Poster 2.5 §14: длинные однотипные списки конструктора идут по пять
+# записей на страницу — тем же механизмом, что и остальные списки бота.
+PLACE_PAGE_SIZE = pagination.PAGE_SIZE
+TEMPLATE_PAGE_SIZE = pagination.PAGE_SIZE
+EXTRA_PAGE_SIZE = pagination.PAGE_SIZE
+# Компактный набор фотографий — своя сетка, контракт §14 на него не
+# распространяется.
 PHOTO_PAGE_SIZE = 8
 PREVIEW_VISIBLE_LIMIT = 1800
 FIELD_DISPLAY_LIMIT = 120
@@ -1354,7 +1358,7 @@ def _clamped_page(page: int, total: int, size: int) -> int:
 def _place_buttons(
     places: list[tuple[int, str]], *, prefix: str, page: int, total: int
 ) -> list[list[InlineKeyboardButton]]:
-    # U3a №13: строки списка и пагинация — общие шаблоны компоновки.
+    # U3a №13: строки списка — общий шаблон компоновки.
     rows = keyboard_layouts.list_rows(
         (
             keyboard_layouts.button(
@@ -1364,15 +1368,17 @@ def _place_buttons(
         )
         for place_id, name in places
     )
-    size = PLACE_PAGE_SIZE
-    rows += keyboard_layouts.nav_row(
-        keyboard_layouts.button("◀️", f"{prefix}:{page - 1}") if page > 0 else None,
-        (
-            keyboard_layouts.button("▶️", f"{prefix}:{page + 1}")
-            if (page + 1) * size < total
-            else None
-        ),
+    # Poster 2.5 §14: строка `◀️ | 2/4 | ▶️` из единого механизма; callback
+    # хранит НОМЕР страницы — так его читает обработчик `aw_place_all`.
+    nav = pagination.nav_keyboard(
+        page,
+        pagination.page_count(total, PLACE_PAGE_SIZE),
+        prefix,
+        page_size=PLACE_PAGE_SIZE,
+        as_offset=False,
     )
+    if nav:
+        rows.append(nav)
     rows.append(
         [InlineKeyboardButton(tr("buttons.nav.back"), callback_data="aw_place_back")]
     )
@@ -1488,15 +1494,13 @@ async def _render_search_results(
         ]
         for result in shown
     ]
-    nav: list[InlineKeyboardButton] = []
-    if page > 0:
-        nav.append(
-            InlineKeyboardButton("◀️", callback_data=f"aw_place_results:{page - 1}")
-        )
-    if (page + 1) * PLACE_PAGE_SIZE < total:
-        nav.append(
-            InlineKeyboardButton("▶️", callback_data=f"aw_place_results:{page + 1}")
-        )
+    nav = pagination.nav_keyboard(
+        page,
+        pagination.page_count(total, PLACE_PAGE_SIZE),
+        "aw_place_results",
+        page_size=PLACE_PAGE_SIZE,
+        as_offset=False,
+    )
     if nav:
         rows.append(nav)
     rows.append(
@@ -1662,10 +1666,11 @@ async def _render_place_names(
         return await _render_place_hub(
             update, context, notice=tr("wizard.render_place_card.mesto_bolshe_dostupno")
         )
-    page = _clamped_page(max(0, page), len(details.names), 8)
+    total = len(details.names)
+    page = _clamped_page(max(0, page), total, PLACE_PAGE_SIZE)
     state["phase"] = "names"
     selected = state.get("name_id") or details.canonical_name_id
-    names = details.names[page * 8 : (page + 1) * 8]
+    names = details.names[page * PLACE_PAGE_SIZE : (page + 1) * PLACE_PAGE_SIZE]
     lines = [
         tr("wizard.render_place_names.nazvanie_mesta"),
         "",
@@ -1689,21 +1694,15 @@ async def _render_place_names(
                 )
             ]
         )
-    nav: list[InlineKeyboardButton] = []
-    if page > 0:
-        nav.append(
-            InlineKeyboardButton(
-                "◀️",
-                callback_data=f"aw_place_names:{details.place_id}:{page - 1}",
-            )
-        )
-    if (page + 1) * 8 < len(details.names):
-        nav.append(
-            InlineKeyboardButton(
-                "▶️",
-                callback_data=f"aw_place_names:{details.place_id}:{page + 1}",
-            )
-        )
+    # Poster 2.5 §14: строка `◀️ | 2/4 | ▶️` из единого механизма; callback
+    # хранит НОМЕР страницы — так его читает обработчик `aw_place_names`.
+    nav = pagination.nav_keyboard(
+        page,
+        pagination.page_count(total, PLACE_PAGE_SIZE),
+        f"aw_place_names:{details.place_id}",
+        page_size=PLACE_PAGE_SIZE,
+        as_offset=False,
+    )
     if nav:
         rows.append(nav)
     rows.append(
@@ -2090,25 +2089,15 @@ async def _render_template_screen(
                 )
             ]
         )
-    nav: list[InlineKeyboardButton] = []
-    if page > 0:
-        nav.append(
-            InlineKeyboardButton(
-                "◀️",
-                callback_data=(
-                    f"aw_tplpage:{details.draft_id}:{details.revision}:{page - 1}"
-                ),
-            )
-        )
-    if (page + 1) * TEMPLATE_PAGE_SIZE < len(personal):
-        nav.append(
-            InlineKeyboardButton(
-                "▶️",
-                callback_data=(
-                    f"aw_tplpage:{details.draft_id}:{details.revision}:{page + 1}"
-                ),
-            )
-        )
+    # Poster 2.5 §14: строка `◀️ | 2/4 | ▶️` из единого механизма; callback
+    # хранит НОМЕР страницы — так его читает обработчик `aw_tplpage`.
+    nav = pagination.nav_keyboard(
+        page,
+        pagination.page_count(len(personal), TEMPLATE_PAGE_SIZE),
+        f"aw_tplpage:{details.draft_id}:{details.revision}",
+        page_size=TEMPLATE_PAGE_SIZE,
+        as_offset=False,
+    )
     if nav:
         rows.append(nav)
     rows.append(
@@ -3357,31 +3346,18 @@ async def _render_extras(
         )
         for offset, entry in enumerate(shown, start=1)
     )
-    if len(entries) > EXTRA_PAGE_SIZE:
-        rows += keyboard_layouts.nav_row(
-            (
-                InlineKeyboardButton(
-                    "◀️",
-                    callback_data=(
-                        f"aw_exbpage:{details.draft_id}:"
-                        f"{details.revision}:{current_page - 1}"
-                    ),
-                )
-                if current_page > 0
-                else None
-            ),
-            (
-                InlineKeyboardButton(
-                    "▶️",
-                    callback_data=(
-                        f"aw_exbpage:{details.draft_id}:"
-                        f"{details.revision}:{current_page + 1}"
-                    ),
-                )
-                if (current_page + 1) * EXTRA_PAGE_SIZE < len(entries)
-                else None
-            ),
-        )
+    # Poster 2.5 §14: единый механизм сам решает, нужна ли навигация (одна
+    # страница — ни строки, ни индикатора), поэтому условие по количеству
+    # записей больше не нужно. Callback хранит НОМЕР страницы.
+    nav = pagination.nav_keyboard(
+        current_page,
+        pagination.page_count(len(entries), EXTRA_PAGE_SIZE),
+        f"aw_exbpage:{details.draft_id}:{details.revision}",
+        page_size=EXTRA_PAGE_SIZE,
+        as_offset=False,
+    )
+    if nav:
+        rows.append(nav)
     rows.append(
         [
             InlineKeyboardButton(

@@ -402,7 +402,9 @@ class AnnouncementWizardPlaceTests(unittest.TestCase):
         await h.text("Тестовое")
         self.assertIn("Найдено мест: 9", h.screen_text())
         await h.callback(_callback(h, "aw_place_results", ":1"))
-        self.assertEqual(len(_callbacks(h, "aw_place_open")), 1)
+        # Poster 2.5 §14: пять результатов на страницу — на второй странице
+        # из девяти найденных остаются четыре.
+        self.assertEqual(len(_callbacks(h, "aw_place_open")), 4)
         await h.callback("aw_place_back")
 
         await h.callback("aw_place_search")
@@ -415,12 +417,38 @@ class AnnouncementWizardPlaceTests(unittest.TestCase):
 
         await h.callback("aw_place_back")
         self.assertIn("Результаты поиска", h.screen_text())
+        # Poster 2.5 §14: у места семь названий (каноническое, псевдоним и
+        # пять добавленных) — это длинный однотипный список, значит пять
+        # записей на страницу и строка `◀️ | 1/2 | ▶️`.
+        with h.session_factory() as session:
+            user = _user(session)
+            for number in range(1, 6):
+                add_alternative_name(
+                    session,
+                    target_id,
+                    f"ДК «Тестовый» {number}",
+                    created_by_user_id=user.id,
+                )
+            session.commit()
+
         await h.callback(f"aw_place_open:{target_id}")
         await h.callback(_callback(h, "aw_place_names"))
         self.assertTrue(
             any("ДК «Тестовый»" in label for label, _data in h.screen_buttons())
         )
         self.assertIn("Новое место при этом не создаётся", h.screen_text())
+        self.assertEqual(len(_callbacks(h, "aw_place_name_pick")), 5)
+        self.assertIn(("1/2", "noop:1:2"), h.screen_buttons())
+        self.assertNotIn("◀️", [label for label, _data in h.screen_buttons()])
+        self.assertEqual(
+            _callback(h, "aw_place_names"), f"aw_place_names:{target_id}:1"
+        )
+        await h.callback(f"aw_place_names:{target_id}:1")
+        self.assertEqual(len(_callbacks(h, "aw_place_name_pick")), 2)
+        self.assertIn(("2/2", "noop:2:2"), h.screen_buttons())
+        self.assertNotIn("▶️", [label for label, _data in h.screen_buttons()])
+        await h.callback(f"aw_place_names:{target_id}:0")
+        self.assertIn(("1/2", "noop:1:2"), h.screen_buttons())
         await h.callback(_callback(h, "aw_place_name_pick", f":{alias_id}:0"))
         self.assertIn("ДК «Тестовый» (альтернативное)", h.screen_text())
         await _confirm_place(h)
@@ -692,6 +720,28 @@ class AnnouncementWizardExtrasTests(unittest.TestCase):
         await _open_edit(h)
         await h.callback(_callback(h, "aw_extras"))
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_EXTRAS)
+        # Poster 2.5.1: строки доп. полей идут по пять на страницу — восемь
+        # кирпичиков дают две страницы и индикатор `1/2`.
+        extra_nav = [
+            (label, data)
+            for label, data in h.screen_buttons()
+            if (data or "").startswith(("noop:", "aw_exbpage:"))
+        ]
+        self.assertEqual([label for label, _data in extra_nav], ["1/2", "▶️"])
+        next_page = extra_nav[1][1]
+        self.assertEqual(next_page.split(":")[-1], "1", "callback хранит номер")
+        await h.callback(next_page)
+        second_page = [
+            (label, data)
+            for label, data in h.screen_buttons()
+            if (data or "").startswith(("noop:", "aw_exbpage:"))
+        ]
+        self.assertEqual(
+            [label for label, _data in second_page],
+            ["◀️", "2/2"],
+            "вторая страница доп. полей: ◀️ и индикатор",
+        )
+        await h.callback(second_page[0][1])
         # Poster 2.4 (P2, требование IV): экран открывается сразу списком
         # ВСЕХ доп. кирпичиков расширенного текста, включая незаполненные.
         self.assertIn("Доп 0: не заполнено", h.screen_text())

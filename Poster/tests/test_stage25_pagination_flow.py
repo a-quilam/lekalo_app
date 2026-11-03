@@ -12,7 +12,9 @@ FakeBot и временную SQLite:
 - после удаления последней записи последней страницы список становится
   коротким: пагинация исчезает, состояние хранит допустимую страницу;
 - нажатие индикатора (no-op callback) не меняет экран и не мешает открытому
-  диалогу: ответ на callback есть, stale-alert и новых сообщений нет.
+  диалогу: ответ на callback есть, stale-alert и новых сообщений нет;
+- маршруты конструктора анонса (список мест, личные шаблоны, доп. поля)
+  подчиняются тому же контракту, хотя их callback хранит номер страницы.
 
 Живой Telegram, рабочая `post_bot.db` и сеть не используются.
 
@@ -64,6 +66,15 @@ def _pagination_buttons(h: Harness) -> list[tuple[str, str | None]]:
         for label, data in h.screen_buttons()
         if data is not None
         and (data.startswith("noop:") or data.startswith("pl_page:"))
+    ]
+
+
+def _wizard_nav(h: Harness, prefix: str) -> list[tuple[str, str | None]]:
+    """Строка навигации конкретного маршрута конструктора (со стрелками)."""
+    return [
+        (label, data)
+        for label, data in h.screen_buttons()
+        if data is not None and (data.startswith("noop:") or data.startswith(prefix))
     ]
 
 
@@ -122,6 +133,141 @@ class PaginationFlowTests(unittest.TestCase):
             _pagination_buttons(h),
             [("◀️", "pl_page:0"), ("2/2", "noop:2:2")],
             "последняя страница без правой стрелки",
+        )
+
+
+@unittest.skipIf(
+    INTEGRATION_ERROR is not None,
+    f"интеграционное окружение недоступно: {INTEGRATION_ERROR}",
+)
+class WizardPaginationTests(unittest.TestCase):
+    """
+    Конструктор анонса — те же 5/страница и та же строка `◀️ | 2/4 | ▶️`.
+
+    Маршруты конструктора хранят в callback НОМЕР страницы, поэтому
+    проверяются отдельно от списков с префиксом `pl_page:<offset>`.
+    """
+
+    @scenario_test
+    async def test_wizard_place_list_paginates_five_per_page(self, h: Harness) -> None:
+        _seed_places(h, 6)
+        await h.text("/start")
+        await h.text("/new_wizard")
+        await h.callback("aw_start")
+        await h.callback("aw_new")
+        await h.callback("aw_place_all:0")
+
+        self.assertEqual(h.screen_text().count("Всего: 6. Страница 1."), 1)
+        self.assertEqual(
+            len([data for data in _callbacks(h) if data.startswith("aw_place_open:")]),
+            5,
+            "список мест конструктора — пять записей на страницу",
+        )
+        self.assertEqual(
+            [
+                (label, data)
+                for label, data in h.screen_buttons()
+                if (data or "").startswith(("noop:", "aw_place_all:"))
+            ],
+            [("1/2", "noop:1:2"), ("▶️", "aw_place_all:1")],
+            "первая страница списка мест конструктора",
+        )
+
+        await h.callback("aw_place_all:1")
+        self.assertIn("Страница 2", h.screen_text())
+        self.assertEqual(
+            [
+                (label, data)
+                for label, data in h.screen_buttons()
+                if (data or "").startswith(("noop:", "aw_place_all:"))
+            ],
+            [("◀️", "aw_place_all:0"), ("2/2", "noop:2:2")],
+            "последняя страница без правой стрелки",
+        )
+
+    @scenario_test
+    async def test_wizard_place_list_has_no_nav_for_five(self, h: Harness) -> None:
+        _seed_places(h, 5)
+        await h.text("/start")
+        await h.text("/new_wizard")
+        await h.callback("aw_start")
+        await h.callback("aw_new")
+        await h.callback("aw_place_all:0")
+
+        self.assertEqual(
+            len([data for data in _callbacks(h) if data.startswith("aw_place_open:")]),
+            5,
+            "пять записей помещаются на одну страницу",
+        )
+        self.assertEqual(
+            [
+                (label, data)
+                for label, data in h.screen_buttons()
+                if (data or "").startswith(("noop:", "aw_place_all:"))
+                and data != "aw_place_all:0"
+            ],
+            [],
+            "на пяти записях пагинации нет",
+        )
+
+    @scenario_test
+    async def test_wizard_template_screen_paginates_five_per_page(
+        self, h: Harness
+    ) -> None:
+        """Личные шаблоны в шаге 2 конструктора: 5 на страницу и индикатор."""
+        from tests.test_stage27b_announcement_ui import _confirm_place
+
+        place_ids = _seed_places(h, 1)
+        with h.session_factory() as session:
+            get_or_create_user(session, DEFAULT_USER_ID, username="u")
+            for index in range(7):
+                create_personal_template(
+                    session,
+                    actor_telegram_user_id=DEFAULT_USER_ID,
+                    name=f"Личный шаблон {index + 1}",
+                    content="Шапка\n[название]\nПодвал",
+                )
+        await h.text("/start")
+        await h.text("/new_wizard")
+        await h.callback("aw_start")
+        await h.callback("aw_new")
+        await h.callback(f"aw_place_open:{place_ids[0]}")
+        await _confirm_place(h)
+
+        self.assertIn("Шаг 2. Выберите шаблон", h.screen_text())
+        # Стандартный шаблон места — отдельная кнопка того же префикса;
+        # страницу делят только личные шаблоны.
+        personal = [
+            (label, data)
+            for label, data in h.screen_buttons()
+            if (data or "").startswith("aw_template:") and not label.startswith("✅")
+        ]
+        self.assertEqual(len(personal), 5, "пять личных шаблонов на страницу")
+        nav = _wizard_nav(h, "aw_tplpage:")
+        self.assertEqual([label for label, _data in nav], ["1/2", "▶️"])
+        self.assertEqual(nav[0][1], "noop:1:2", "индикатор первой страницы")
+        self.assertIn("1. Личный шаблон 1", h.screen_text())
+
+        next_page = nav[-1][1]
+        assert next_page is not None
+        await h.callback(next_page)
+        nav = _wizard_nav(h, "aw_tplpage:")
+        self.assertEqual(
+            [label for label, _data in nav],
+            ["◀️", "2/2"],
+            "последняя страница: ◀️ и индикатор",
+        )
+        self.assertEqual(nav[-1][1], "noop:2:2")
+        self.assertIn("6. Личный шаблон 6", h.screen_text())
+        second_page = [
+            (label, data)
+            for label, data in h.screen_buttons()
+            if (data or "").startswith("aw_template:") and not label.startswith("✅")
+        ]
+        self.assertEqual(
+            len(second_page),
+            2,
+            "на второй странице только оставшиеся два личных шаблона",
         )
 
 

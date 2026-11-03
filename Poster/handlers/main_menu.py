@@ -34,19 +34,28 @@ from telegram.ext import (
     filters,
 )
 
-from admin_state import clear_admin_session, has_admin_session
-from brick_state import clear_brick_session, has_brick_draft
+from admin_state import clear_admin_session, has_admin_session, load_admin_session
+from brick_state import clear_brick_session, has_brick_draft, load_brick_session
 from database import SessionLocal
 from help_rich import build_help_rich_message
 from permissions import can_access_admin_panel, is_superadmin
-from place_state import clear_place_session, has_place_session
+from place_state import clear_place_session, has_place_session, load_place_session
 from rich_message import send_rich_message
-from template_state import clear_template_session, has_template_session
+from template_state import (
+    clear_template_session,
+    has_template_session,
+    load_template_session,
+)
 from utils import screen
 from utils import tg_context as ctx
 from utils.ui_texts import tr
 
 logger = logging.getLogger(__name__)
+
+# Категория экрана-источника справки (Poster 2.5.1). Только user_data:
+# после рестарта службы возврат идёт в главное меню, а персистентный контекст
+# (сессии разделов, resume-снимок конструктора) при этом не теряется.
+HELP_RETURN_KEY = "help_return"
 
 
 def _drop_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -54,9 +63,11 @@ def _drop_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     Явный выход из конструктора снимает авто-resume (Poster 2.3 H1).
 
     После рестарта службы у PTB уже нет состояния ConversationHandler,
-    поэтому `/cancel`, `/start`, `/help` и «🏠 В меню» обрабатываются здесь.
-    Без снятия снимок «экран ждёт ввода» пережил бы выход, и следующий
-    обычный текст записался бы в значение шага, затерев сохранённое.
+    поэтому `/cancel`, `/start` и «🏠 В меню» обрабатываются здесь. Без
+    снятия снимок «экран ждёт ввода» пережил бы выход, и следующий обычный
+    текст записался бы в значение шага, затерев сохранённое. Справка
+    (`/help`) выходом НЕ является (Poster 2.5.1): она снимок не снимает,
+    возврат ведёт на текущий шаг.
     Импорт локальный: обратная зависимость main_menu ↔ announcement_wizard
     не должна ломать загрузку модулей.
     """
@@ -272,30 +283,140 @@ async def _close_screen(
     screen.save_screen_ref(user_id, user_data, chat_id)
 
 
+def _draft_from_resume_payload(user_id: int) -> int | None:
+    """
+    draft_id из resume-снимка конструктора (`user_states.payload`, H1).
+
+    Снимок существует только там, где экран конструктора ждёт значения
+    (вопрос или шаг фото). Это единственный персистентный признак живого
+    черновика, доступный справке: `announcement_ui` живёт в памяти и
+    очищается вызывающим кодом конструктора ещё до `render_help`.
+    """
+    from handlers.announcement_wizard import RESUME_PAYLOAD_KEY
+
+    payload = screen.load_payload(user_id) or {}
+    snapshot = payload.get(RESUME_PAYLOAD_KEY)
+    if not isinstance(snapshot, dict):
+        return None
+    draft_id = snapshot.get("draft_id")
+    if isinstance(draft_id, bool) or not isinstance(draft_id, int):
+        return None
+    return draft_id
+
+
+def _place_help_source(user_id: int) -> str | None:
+    """
+    Открыт ли раздел «Места» — и какой именно экран.
+
+    «Управление → Площадки» (справочник) — отдельный маршрут: обычный
+    `open_places` такие фазы не возобновляет (сбрасывает в хаб), поэтому
+    возврат идёт в `open_places_manage` со страницей и запросом из сессии.
+    """
+    from handlers import places
+
+    state = load_place_session(user_id)
+    if not isinstance(state, dict):
+        return None
+    phase = state.get("phase")
+    if phase in places.MANAGE_ONLY_PHASES:
+        return "places_manage"
+    if phase in places.PHASES:
+        return "places"
+    return None
+
+
+def _template_help_source(user_id: int) -> bool:
+    """Открыт ли раздел шаблонов (хаб, карточка, правка, пикер)."""
+    from handlers import templates
+
+    state = load_template_session(user_id)
+    if not isinstance(state, dict):
+        return False
+    return state.get("phase") in templates.PHASES
+
+
+def _brick_help_source(user_id: int) -> bool:
+    """Открыт ли раздел кирпичиков (списки, карточка, мастер)."""
+    from handlers import bricks
+
+    state = load_brick_session(user_id)
+    if not isinstance(state, dict):
+        return False
+    return state.get("phase") in bricks.PHASES
+
+
+def _admin_help_source(user_id: int) -> bool:
+    """Открыт ли административный кабинет."""
+    from handlers import admin
+
+    state = load_admin_session(user_id)
+    if not isinstance(state, dict):
+        return False
+    return state.get("phase") in admin.PHASES
+
+
+def help_return_target(user_id: int, user_data: dict) -> str:
+    """
+    Экран-источник справки: куда вернёт «◀️ Назад» (Poster 2.5.1).
+
+    Категория нужна, потому что Rich Message нельзя превратить обратно в
+    обычный экран: сам экран закрывается, а контекст (персистентные сессии
+    разделов, resume-снимок конструктора) остаётся и перерисовывается на
+    возврате. Порядок проверок — от живых сессий разделов к конструктору:
+    сессии разделов взаимоисключающие (вход в раздел чистит остальные), а
+    resume-снимок конструктора может остаться от прежнего визита — при
+    активном разделе он не действует (`_other_session_active`).
+
+    Возвращает «places»/«places_manage»/«templates»/«bricks»/«admin»/
+    «wizard»/«main». «main» — справка из главного меню, а также состояния,
+    где возврат технически невозможен: единственный безопасный адрес — меню.
+    """
+    place = _place_help_source(user_id)
+    if place is not None:
+        return place
+    if _template_help_source(user_id):
+        return "templates"
+    if _brick_help_source(user_id):
+        return "bricks"
+    if _admin_help_source(user_id):
+        return "admin"
+    # Конструктор: в памяти ui уже пуст (`_clear_ui` вызывается ровно перед
+    # `render_help`), поэтому надёжный признак черновика — resume-снимок в
+    # `user_states.payload`. Живой ui проверяется для прямых вызовов справки.
+    if _draft_from_resume_payload(user_id) is not None:
+        return "wizard"
+    ui = user_data.get("announcement_ui")
+    if isinstance(ui, dict) and ui.get("draft_id"):
+        return "wizard"
+    return "main"
+
+
 async def render_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Справка: настоящий Rich Message `sendRichMessage` (Poster 2.5 §46–53).
 
-    Порядок: зафиксировать/закрыть экран-источник, отправить Rich Message с
-    кнопкой возврата, запомнить его message_id как служебный. Обычного
+    Порядок: запомнить экран-источник, закрыть его, отправить Rich Message с
+    кнопкой «◀️ Назад», запомнить message_id как служебный. Обычного
     `sendMessage` здесь нет: подменять Rich Message текстом запрещено (§54).
     При отказе Telegram справка не показывается «как будто всё хорошо»:
     пользователь получает короткое сообщение в обычном экране, причина —
     в лог.
+
+    Poster 2.5.1: источник НЕ стирается. Сессии разделов, resume-снимок и ui
+    конструктора остаются — их не удаляют ни `_drop_resume`, ни
+    `clear_*_session`: `help_back` перерисует предыдущий служебный экран из
+    сохранённого контекста. Закрывается только сам экран (Rich Message
+    нельзя рисовать рядом с активной клавиатурой — иначе в чате две
+    конкурирующие клавиатуры).
     """
     # навигация сообщением ниже экрана → экран пересоздаётся рядом с вводом
     await screen.reanchor_screen(update, context)
-    # Poster 2.3 H1: справка — экран без ввода; выход из конструктора
-    # закрывает приём значений даже если состояние диалога потеряно.
-    _drop_resume(update, context)
     user_id = ctx.user(update).id
-    clear_place_session(user_id)
-    clear_admin_session(user_id)
-    clear_brick_session(user_id)
-    clear_template_session(user_id)
-
     user_data = ctx.data(context)
     chat_id = ctx.chat(update).id
+    # Категория источника — только в памяти: после рестарта возврат идёт в
+    # главное меню, а персистентный контекст (сессии/resume) при этом цел.
+    user_data[HELP_RETURN_KEY] = help_return_target(user_id, user_data)
     # Повторное открытие справки не копит Rich Message: прежнее удаляется.
     # user_id — чтобы найти id прежней справки в БД, если он потерян из
     # user_data после рестарта службы (§53).
@@ -303,7 +424,7 @@ async def render_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _close_screen(context, user_data, user_id, chat_id)
 
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(tr("buttons.nav.main_menu"), callback_data="main_menu")]]
+        [[InlineKeyboardButton(tr("buttons.help_back"), callback_data="help_back")]]
     )
     try:
         message = await send_rich_message(
@@ -312,6 +433,8 @@ async def render_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     except Exception as e:  # noqa: BLE001 — справка не должна ронять бота
         # Токен в текст не попадает: адаптер его не читает и не печатает.
         logger.warning("Rich Message справки не отправлено: %s", e)
+        # Справки нет — возврата «◀️ Назад» тоже: плашка сбоя живёт на меню.
+        user_data.pop(HELP_RETURN_KEY, None)
         await screen.render_screen(
             context,
             user_data,
@@ -342,6 +465,137 @@ async def menu_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Inline-кнопка «❓ Помощь» главного меню."""
     await ctx.query(update).answer()
     await render_help(update, context)
+
+
+async def _restore_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """
+    Восстанавливает экран текущего этапа черновика (Poster 2.5.1).
+
+    Источник — resume-снимок конструктора (`user_states.payload`): именно он
+    переживает рестарт. `_resume_target` проверяет снимок по актуальному
+    черновику и готовит `announcement_ui`, поэтому возврат рисует ТОТ ЖЕ шаг.
+    Шаг фотографий рисуется напрямую (`render_photo_step`): `_resume_current`
+    различает только этап черновика и для «ждём фото» показал бы обзор,
+    закрыв приём снимков. Для вопроса достаточно `_resume_current` — он
+    учитывает `active_brick_id` из снимка. Если снимка нет, а в
+    `announcement_ui` остался `draft_id` (экран без ввода), этого
+    достаточно: `_resume_current` сам выберет безопасный экран этапа.
+
+    Возвращает False, если черновика нет — вызывающий уходит в меню.
+    """
+    from handlers import announcement_wizard as wizard
+
+    draft_id = _draft_from_resume_payload(ctx.user(update).id)
+    ui = ctx.data(context).get("announcement_ui")
+    ui_draft = ui.get("draft_id") if isinstance(ui, dict) else None
+    if draft_id is None and not ui_draft:
+        return False
+
+    if draft_id is not None:
+        payload = screen.load_payload(ctx.user(update).id) or {}
+        snapshot = payload.get(wizard.RESUME_PAYLOAD_KEY)
+        prepared = wizard._resume_target(  # noqa: SLF001 — общий разбор снимка
+            ctx.user(update).id,
+            snapshot if isinstance(snapshot, dict) else {},
+        )
+        if prepared is not None:
+            details, restored_ui = prepared
+            ctx.data(context)["announcement_ui"] = restored_ui
+            if restored_ui.get("photo_step"):
+                # Снимок «ждём фото»: текущий этап — шаг фотографий, а не
+                # обзор. `_resume_current` такой режим не различает, поэтому
+                # рисуем шаг напрямую — иначе возврат из справки закрыл бы
+                # приём фото и снимок resume снялся бы.
+                from handlers import wizard_photos
+
+                await wizard_photos.render_photo_step(
+                    update,
+                    context,
+                    details,
+                    announcement_is_empty=wizard._announcement_is_empty(  # noqa: SLF001
+                        update, details
+                    ),
+                )
+                return True
+        else:
+            # Снимок устарел (этап сменился): безопасный экран по черновику.
+            restored_ui = wizard._ui(context)  # noqa: SLF001
+            restored_ui["draft_id"] = draft_id
+            restored_ui["revision"] = None
+            ctx.data(context)["announcement_ui"] = restored_ui
+
+    await wizard._resume_current(update, context)  # noqa: SLF001
+    return True
+
+
+async def help_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    «◀️ Назад» на Rich Message справки → экран-источник (Poster 2.5.1).
+
+    Порядок обязателен: сначала удалить временный Rich Message (его id есть
+    и в user_data, и в `user_states`, поэтому очистка работает и после
+    рестарта службы — §53), затем восстановить источник. Иначе в чате
+    остались бы две конкурирующие клавиатуры.
+
+    Категорию источника запоминает `render_help` в `user_data`. Она живёт
+    только в памяти: после рестарта её нет и возврат идёт в главное меню.
+    Персистентность обеспечивают сами сессии разделов и resume-снимок
+    конструктора — их `render_help` больше не стирает.
+
+    Ветки восстановления — существующие входы разделов (`open_*`), поэтому
+    страница, поиск, фильтры и объект берутся из персистентной сессии. Для
+    конструктора — `_resume_current` (безопасный экран текущего этапа
+    черновика). Нет данных для возврата — честный фолбэк в главное меню.
+
+    Ответ на callback делает вызываемый вход раздела сам (`open_places` и
+    остальные отвечают внутри), поэтому здесь он нужен только для меню и
+    конструктора: повторный `answer` Telegram считает ошибкой запроса.
+    """
+    user_id = ctx.user(update).id
+    user_data = ctx.data(context)
+    chat_id = ctx.chat(update).id
+    # Rich Message — временное сообщение: удаляется в любом случае.
+    await screen.drop_rich_temp(context.bot, chat_id, user_data, user_id)
+    source = user_data.pop(HELP_RETURN_KEY, None)
+
+    if source == "places":
+        from handlers.places import open_places
+
+        await open_places(update, context)
+        return
+    if source == "places_manage":
+        from handlers.places import open_places_manage
+
+        await open_places_manage(update, context)
+        return
+    if source == "templates":
+        from handlers.templates import open_templates
+
+        await open_templates(update, context)
+        return
+    if source == "bricks":
+        from handlers.bricks import open_bricks
+
+        await open_bricks(update, context)
+        return
+    if source == "admin":
+        from handlers.admin import open_admin
+
+        await open_admin(update, context)
+        return
+    if source == "wizard":
+        await ctx.query(update).answer()
+        if await _restore_wizard(update, context):
+            return
+        # Черновика нет — возврат технически невозможен: безопасное меню.
+        logger.info(
+            "Возврат из справки в конструктор невозможен: user_id=%s — меню.",
+            user_id,
+        )
+        await render_main_menu(update, context)
+        return
+    await ctx.query(update).answer()
+    await render_main_menu(update, context)
 
 
 async def drafts_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -527,6 +781,8 @@ def main_menu_handlers() -> list[BaseHandler]:
         CommandHandler("cancel", cancel_without_dialog),
         CallbackQueryHandler(menu_drafts, pattern="^drafts$"),
         CallbackQueryHandler(menu_help, pattern="^help$"),
+        # Poster 2.5.1: возврат из Rich Message справки на экран-источник.
+        CallbackQueryHandler(help_back, pattern="^help_back$"),
         CallbackQueryHandler(open_manage, pattern="^manage$"),
         CallbackQueryHandler(manage_places, pattern="^manage_places$"),
         CallbackQueryHandler(manage_templates, pattern="^manage_templates$"),

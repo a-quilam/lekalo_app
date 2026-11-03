@@ -212,6 +212,8 @@
 "buttons.nav.main_menu": "🏠 В меню"
 "buttons.nav.back": "◀️ Назад"
 "buttons.nav.retry_search": "🔁 Искать снова"
+# Poster 2.5.1: возврат с Rich Message справки на реальный экран-источник.
+"buttons.help_back": "◀️ Назад"
 # Стрелки единой пагинации (spec §14): читает utils/pagination.py.
 "buttons.pagination.prev": "◀️"
 "buttons.pagination.next": "▶️"

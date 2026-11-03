@@ -1,5 +1,161 @@
 # State — Poster
 
+## 2026-11-03 — Poster 2.5.1 (корректирующий релиз): план
+
+База: HEAD 30d81e1 (2.5, релиз выполнен, CI ✓, служба работала). Рабочее дерево
+чистое (untracked — бэкапы БД, не добавлять).
+
+Факты разведки (официальная документация Bot API 10.1 получена через VPN-прокси
+http://127.0.0.1:3130 — прямая сеть до core.telegram.org из среды недоступна):
+- Официальная схема InputRichBlock: SectionHeading → type="heading", поля
+  text (обяз.) + size (обяз., 1–6); List.items = Array of InputRichBlockListItem
+  ({blocks: [InputRichBlock]}); Details.is_open — Optional, «Pass True» → False
+  передавать не нужно (отсутствие поля = свёрнуто). Текущий rich_message.py
+  сериализует section_heading/heading, items-строки, is_open=False — дефекты
+  подтверждены.
+- Снимки условных частей: announcement_store._conditional_snapshot_texts берёт
+  правила по version_id в момент рендера; refresh_conditional_parts при правке
+  шаблона перезаписывает version_id у тех же строк (или stale). Отдельной
+  таблицы правил снимка НЕТ → старый черновик теряет/меняет правила.
+  Дефект подтверждён чтением кода, сквозной тест пишет Tester-1.
+- Пагинация конструктора: PLACE_PAGE_SIZE=8, TEMPLATE_PAGE_SIZE=6,
+  EXTRA_PAGE_SIZE=8 (announcement_wizard.py:179–181) против контракта 5.
+- Возврат из справки: render_help удаляет экран-источник (_close_screen),
+  снимает resume и clear_*_session; кнопка на Rich Message → main_menu.
+
+Задачи (субагенты): Dev-1 (rich_message.py+help_rich+contract-тесты),
+Dev-2 (пагинация конструктора 5/стр), Dev-3 (возврат из справки, help_back),
+Tester-1 (сквозной тест снимков условных частей, воспроизводящий). Затем:
+Dev-4 (фикс снимков правил по результатам Tester-1 + миграция при необходимости),
+независимая приёмка (Tester), регрессии §55, полный make check, коммит/push/CI,
+релизный цикл (db-maintain-clean нужен: тестовые данные от приёмок 2.5.1).
+
+## 2026-11-03 — 2.5.1: задачи 1, 3, 4 закрыты; Dev-3 в работе
+
+- Dev-4 DONE: миграция 28 (template_snapshot_conditional_parts +
+  conditional_rules_frozen в template_snapshots, backfill не нужен), заморозка
+  активных правил при создании снимка (template_store, в транзакции), рендер
+  frozen=1 по правилам снимка / frozen=0 — прежний путь. Модель, docs/migrations.md,
+  журнал LATEST_VERSION=28 (~20 тестов актуализировано). Новый
+  tests/test_stage251_snapshot_rules_migration.py (9 тестов: схема/CHECK/
+  идемпотентность/legacy).
+- Противоречие кейса №3 (правило добавлялось setUp ДО создания черновика, а кейс
+  требовал «правило после») разрешено Tester-1: фикстура разделена
+  (ConditionalSnapshotLateRuleTests — правило честно добавляется после создания
+  анонса + контрольный кейс). Контракт 8/8 зелёный, 18+78 тестов OK, проверено
+  менеджером: Ran 18 OK.
+- BLOCKER Dev-4 снят; продукт: заморозка работает, legacy-снимки (frozen=0) —
+  прежний путь.
+- Осталось: Dev-3 (возврат из справки, в работе), Reviewer (HIGH-дифф миграции 28 +
+  сводный diff 2.5.1), полный make check, коммиты, push, CI, релизный цикл
+  (stop службы → db-maintain-clean → start → логи).
+
+## 2026-11-03 — 2.5.1: Reviewer задачи 4 APPROVED; MINOR закрыты
+
+- Reviewer (HIGH, зона задачи 4): VERDICT ok, BLOCKER/IMPORTANT нет. Подтверждены:
+  транзакционность заморозки (frozen=1 + правила атомарно, все ошибки → rollback),
+  права (только авторизованные пути), гонки (refresh коммитит один раз — половинный
+  перенос невозможен), параметризованные SQL, FK/cascade, журнал 28, legacy-путь.
+- MINOR закрыты менеджером: .gitignore + Poster/post_bot.db.backup-*/replaced-*
+  (артефакты db-maintenance больше не в статусе); template_store: литерал "active"
+  → STATUS_ACTIVE. 59 тестов OK (conditional_snapshot+snapshot_rules+parts),
+  ruff/black чисто.
+- Принято как документированное решение: render_template_snapshot (просмотр снимка
+  вне анонса) не применяет замороженные правила — прежнее поведение §44, покрыто
+  test_snapshot_render_does_not_apply_rules.
+- В работе: Dev-3 (возврат из справки).
+
+## 2026-11-03 — 2.5.1: все 4 продуктовые задачи закрыты; приёмка запущена
+
+- Dev-3 DONE (2 вызова: первый упал на стороне провайдера до начала работы,
+  второй достиг steps на 80%, остаток закрыт продолжением в той же сессии):
+  handlers/main_menu.py — help_return (категории places/places_manage/templates/
+  bricks/admin/wizard/main), render_help БОЛЬШЕ НЕ стирает контекст (нет
+  _drop_resume/clear_*_session), одна кнопка «◀️ Назад» → help_back,
+  _restore_wizard через wizard._resume_target/_resume_current (шаг фото —
+  напрямую через wizard_photos.render_photo_step), help_back удаляет Rich
+  Message из user_data+БД; buttons.help_back в yaml+DEFAULTS синхронно.
+  Тесты: новый test_stage251_help_return.py (14), acceptance_e (22),
+  help_rich (35), h1_stability (36, новый контракт /help-не-выход),
+  u4a_texts (38), u4a_verify (20), stage11_screen (29) — сводно 194 OK +
+  259 регрессий OK. ruff/black/mypy чисто.
+- Замечено Dev-3 (не блокер): «Мои анонсы» → справка → help_back даёт меню
+  (безопасный фолбэк: список — экран конструктора без персистентного
+  контекста; данные целы). Зафиксировано тестом.
+- Все 4 задачи (BLOCKER/MAJOR×2/HIGH) реализованы и локально зелёные.
+- Далее: независимая приёмка (Tester) по 4 задачам → полный make check →
+  коммиты/push/CI → релизный цикл (stop → db-maintain-clean → start → логи).
+
+## 2026-11-04 — 2.5.1: менеджерский прогон discover 2571 OK; приёмка перезапущена
+
+- Менеджерский сквозной регресс по группам (всё OK, имена модулей сверены с
+  tests/): markup+acceptance_d+conditional_parts+u1b (165), delivery/inplace/
+  panel/instances/u2b_photos/s5/u3b/24_p2_wizard (133), list_context/templates_flow/
+  acceptance_b/h2_template_content/r2_management_tester (87), acceptance_a1a2+a3a4+
+  a4+25_place_wizard+brick_emoji (73), h4_catalog+u3a_acceptance+u5_duplicates+
+  u4b_defects+r4_ux_tester+u2a_calendar_tester (83), panel/resets/conditional_ui/
+  acceptance_c/27c_announcement_ui/h3_ux (80), acceptance_d+e+help_return+
+  conditional_snapshot+snapshot_rules+rich_contract (96), u4a_texts_tester+verify+
+  r3_conflicts+231_acceptance+24_p4+legacy_removal+22a/23/26/27a schema+store+
+  wizard+domain (264), 24_p3_announcements (12), 29_audit+241_create_entry+menu+
+  menu_tester+13_smoke+u2b_finish+u2b_photos (116), 22b+24_p1/19a/u1a migrations
+  (48), db_maintenance_rebuild+u2a verify/tester+u4b acceptance/deeplink (92),
+  241_place_single_card+20_admin_flow+h2+u1b_formatting+h4 (78).
+- ПОЛНЫЙ discover: Ran 2571 tests OK (~309 c) — эквивалент make check test-фазы.
+  (Имена-опечатки типа test_poster2_u3a_catalog_tester не существуют — ModuleNotFound
+  в первых смешанных прогонах были ошибками менеджера, не дефектами.)
+- Приёмка 2.5.1 (Tester): первая сессия исчерпала steps на разведке (файл не
+  создан), НО подтвердила вручную: rich-фолбэк при BadRequest (sendMessage-плашка,
+  rich_records=0, temp чист — документированный контракт), восстановление шага
+  конструктора после рестарта (вопрос 2 из 2 — значение принято до рестарта),
+  legacy frozen=0 применяет новое правило (ожидаемо). Запущена вторая сессия
+  (Tester) с готовыми фактами: файл tests/test_stage251_acceptance.py, 12 тестов.
+
+## 2026-11-04 — 2.5.1: приёмка 12/12 PASS, make check 2583 OK — готово к коммиту
+
+- Приёмка tests/test_stage251_acceptance.py: 12/12 PASS (создана Developer по
+  заданию с готовыми фактами после двух steps-упоров Tester на разведке;
+  Tester-контракты test_stage251_conditional_snapshot/help_return не тронуты).
+- mypy 8 ошибок в новых тест-файлах исправлены менеджером (union-attr → assert,
+  var-annotated, unused-ignore); black reformat; повторно 29 OK.
+- ГРАНИЦА ЭТАПА: make check PYTHON=.venv/bin/python → lint OK, mypy Success
+  (223 файлов), Ran 2583 tests OK (~307 c). ui_texts ok keys=1180.
+- Далее: коммиты (тематические: rich message / пагинация+help_back / снимки
+  условных частей / чек-пойнт), push, CI, релизный цикл (stop → db-maintain-clean
+  → start → логи).
+
+- Dev-2 DONE (+дополнение Dev-1b): PLACE/TEMPLATE/EXTRA_PAGE_SIZE=5 через
+  pagination.nav_keyboard(as_offset=False) в aw_place_all/aw_place_results/
+  aw_tplpage/aw_exbpage; PHOTO_PAGE_SIZE=8 не тронут; test_stage25_pagination_flow
+  +27b/u1b/29 обновлены; 119+853 теста OK; ruff/black чисто.
+- Dev-5 DONE: _render_place_names → контракт §14 (5/страница, индикатор,
+  as_offset=False, префикс aw_place_names:{place_id}); test_poster2_menu +
+  test_poster2_u4a_verify_tester переведены на схему Bot API 10.1. 58+11+77+73 OK.
+- Сводно Rich Message + пагинация: 146 tests OK (contract+help_rich+acceptance_e+
+  pagination_flow+menu+u4a_verify).
+
+- Tester-1: tests/test_stage251_conditional_snapshot.py (новый, 8 тестов) —
+  дефект воспроизведён: 5 FAIL по одной причине. Пункты 1–3, 6 pass; 4/5/7 FAIL.
+  Диагноз: _conditional_snapshot_texts берёт правила по version_id при каждом
+  рендере; refresh_conditional_parts перезаписывает version_id/stale у тех же
+  строк. Тест защищён от ложного «зеленения»: фрагмент в строке с видимым
+  литералом (иначе _render_text_lines скрывает пустую строку и маскирует дефект).
+- Dev-1 DONE: rich_message.py по официальной схеме (heading/text/size,
+  InputRichBlockListItem, is_open только True), help_rich.py, contract-тест
+  tests/test_rich_message_api_contract.py + обновлены 3 тест-файла. 80 tests OK,
+  ruff/black/mypy чисто. ОСТАЛОСЬ от Dev-1: tests/test_poster2_menu.py (~299),
+  tests/test_poster2_u4a_verify_tester.py (~133) — передал в дополнение Dev-1b
+  (ошибочно ушло в сессию Dev-2; уточнено: сначала Dev-2, потом Dev-1b).
+- Dev-4 запущен (HIGH): миграция 28 template_snapshot_conditional_parts +
+  conditional_rules_frozen в template_snapshots, backfill НЕ делать (БД очищается
+  по протоколу), рендер frozen=1 по правилам снимка, frozen=0 legacy — прежний
+  путь. Контракт: tests/test_stage251_conditional_snapshot.py (не править),
+  test_stage25_conditional_parts (41) остаётся зелёным без правок.
+- В работе: Dev-2 (+Dev-1b), Dev-3, Dev-4.
+- git: параллельные незакоммиченные изменения ожидаемы (state.md, файлы задач).
+
+--
+
 ## 2026-11-02 — Этап «Poster 2.5» (план)
 
 Спецификация владельца: `Poster/docs/stage25_spec.md` (единый источник требований;

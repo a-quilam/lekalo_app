@@ -175,5 +175,10 @@ Poster/handlers/*.db
 # Резервные копии базы (создаются штатным механизмом migrations.py)
 backups/
 
+# Артефакты обслуживания рабочей БД (db_maintenance.py: WAL-бэкапы и
+# прежняя база после атомарного replace) — реальные данные, в Git не идут
+Poster/post_bot.db.backup-*
+Poster/post_bot.db.replaced-*
+
 # macOS
 .DS_Store
