@@ -27,6 +27,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1018,6 +1019,38 @@ def _reload_after_failure(
     return _template_details(session, row), row.revision
 
 
+def _refresh_conditional_parts_after_edit(
+    session: Session,
+    *,
+    actor_telegram_user_id: int | None,
+    template_id: int,
+) -> None:
+    """
+    §44: проверяет актуальность условных частей после появления версии.
+
+    Правила живут отдельно от текста, поэтому сама новая версия их не
+    переносит: здесь фрагменты либо однозначно переносятся в новую версию,
+    либо помечаются `stale` (и остаются в БД — молча не удаляются). Ошибки
+    не отменяют уже сохранённый текст: автор увидит плашку «требует
+    перенастройки» и сможет исправить правило.
+    """
+    # Ленивый импорт: `conditional_parts` сам импортирует этот модуль.
+    from conditional_parts import refresh_conditional_parts
+
+    try:
+        refresh_conditional_parts(
+            session,
+            actor_telegram_user_id=actor_telegram_user_id,
+            template_id=template_id,
+        )
+    except Exception as exc:  # noqa: BLE001 — сохранение текста важнее правил
+        logging.getLogger(__name__).warning(
+            "Не удалось актуализировать условные части шаблона %s: %s",
+            template_id,
+            exc,
+        )
+
+
 def _commit_new_version(
     session: Session,
     *,
@@ -1238,7 +1271,7 @@ def update_template_content(
             "Содержимое не изменилось; новая версия не создана.",
         )
 
-    return _commit_new_version(
+    result = _commit_new_version(
         session,
         row=row,
         actor=actor,
@@ -1248,6 +1281,16 @@ def update_template_content(
         bindings=new_bindings,
         builtin_version=None,
     )
+    if result.ok:
+        # §44: актуальность условных частей проверяется РОВНО здесь — после
+        # появления новой версии. Экран карточки только читает правила и не
+        # имеет права менять доменные данные при отрисовке.
+        _refresh_conditional_parts_after_edit(
+            session,
+            actor_telegram_user_id=actor.telegram_user_id,
+            template_id=template_id,
+        )
+    return result
 
 
 def _reset_to_builtin(
@@ -1334,7 +1377,7 @@ def _reset_to_builtin(
             "Шаблон уже совпадает со встроенным стандартом.",
         )
 
-    return _commit_new_version(
+    result = _commit_new_version(
         session,
         row=row,
         actor=actor,
@@ -1344,6 +1387,16 @@ def _reset_to_builtin(
         bindings=binding_pairs,
         builtin_version=BUILTIN_TEMPLATE_VERSION,
     )
+    if result.ok:
+        # §44: сброс — такая же новая версия, как и правка текста. Правила
+        # прежней версии либо переносятся однозначно, либо становятся
+        # `stale`; иначе они молча «исчезли» бы из редактора.
+        _refresh_conditional_parts_after_edit(
+            session,
+            actor_telegram_user_id=actor.telegram_user_id,
+            template_id=template_id,
+        )
+    return result
 
 
 def ensure_initial_personal_template(

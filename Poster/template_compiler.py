@@ -482,11 +482,10 @@ def _render_node(
         has_brick = label.has_brick
         bricks_empty = label.bricks_empty if label.has_brick else True
         if not label.html:
-            return _Rendered(
-                has_brick=has_brick,
-                bricks_empty=True,
-                has_newline=False,
-            )
+            # Защита от пустой подписи в уже сохранённых данных: ссылки без
+            # текста Telegram показать не может, а терять адрес нельзя.
+            # Такая пара скобок выводится обычным текстом (§42-В).
+            return _render_empty_label_link(node, values_by_id, definitions_by_id)
         if isinstance(node.url, BrickNode):
             if node.url.brick_id is None:
                 raise TemplateCompileError(
@@ -576,6 +575,43 @@ def _render_children(
         bricks_empty=bricks_empty,
         has_newline=has_newline,
     )
+
+
+def _render_empty_label_link(
+    node: LinkNode,
+    values_by_id: Mapping[int, Any],
+    definitions_by_id: Mapping[int, BrickDefinition],
+) -> _Rendered:
+    """
+    Ссылка без подписи выводится обычным текстом в скобках.
+
+    Так выглядит сохранённое правило/текст, где подпись пуста (например,
+    `[место] ([адрес])` до исправления парсера). Пустая ссылка потеряла бы
+    адрес, а Telegram ссылку без текста показать не может, поэтому скобки
+    и значение остаются видимыми, тега `<a>` нет.
+    """
+    if isinstance(node.url, BrickNode):
+        if node.url.brick_id is None:
+            raise TemplateCompileError(
+                "URL ссылки без привязки brick_id: версия шаблона повреждена."
+            )
+        definition = definitions_by_id.get(node.url.brick_id)
+        if definition is None:
+            raise TemplateCompileError(
+                f"Определение кирпичика #{node.url.brick_id} не найдено."
+            )
+        url_rendered = _render_node(node.url, values_by_id, definitions_by_id)
+        if not url_rendered.bricks_empty:
+            return _Rendered(
+                html=f"({url_rendered.html})",
+                has_brick=True,
+                bricks_empty=False,
+                has_newline=url_rendered.has_newline,
+            )
+        # Адрес пуст: пустых скобок не выводим, как и пустой ссылки.
+        return _Rendered(has_brick=True, bricks_empty=True)
+    text = _escape_html(str(node.url))
+    return _Rendered(html=f"({text})", has_newline=False)
 
 
 def _normalize_render_url(raw: str) -> str:
@@ -783,6 +819,122 @@ def _whole_line_range(text: str, start: int, end: int) -> tuple[int, int] | None
     return deletion_start, deletion_end
 
 
+# Порядок тот же, что у лексера: длинные маркеры раньше коротких.
+_FORMAT_MARKERS = ("**", "__", "~~", "||", "*")
+# Символы, из которых состоит разметка: строка только из них видима как
+# пустая разметка (`****` → `<b></b>`) и не несёт смысла (§41/§45).
+_MARKER_CHARS = frozenset("*_~|")
+
+
+def _marker_positions(text: str) -> dict[str, list[int]]:
+    """
+    Позиции неэкранированных маркеров форматирования в СЫРОМ тексте.
+
+    Повторяет правила лексера ровно в той части, которая нужна вырезанию:
+    обратный слэш экранирует символ, code-спаны (`` `…` `` и ```` ```…``` ````)
+    не содержат разметки, длинные маркеры (`**`) идут раньше коротких (`*`).
+    """
+    positions: dict[str, list[int]] = {marker: [] for marker in _FORMAT_MARKERS}
+    offset = 0
+    length = len(text)
+    while offset < length:
+        char = text[offset]
+        if char == "\\" and offset + 1 < length:
+            offset += 2
+            continue
+        if char == "`":
+            fence = "```" if text.startswith("```", offset) else "`"
+            end = text.find(fence, offset + len(fence))
+            if end > offset + len(fence):
+                offset = end + len(fence)
+                continue
+            offset += len(fence)
+            continue
+        for marker in _FORMAT_MARKERS:
+            if text.startswith(marker, offset):
+                positions[marker].append(offset)
+                offset += len(marker)
+                break
+        else:
+            offset += 1
+    return positions
+
+
+def _only_markers(text: str) -> bool:
+    """Между маркерами и вырезаемым текстом нет видимого содержимого."""
+    return all(char.isspace() or char in "*_~|" for char in text)
+
+
+def _expand_over_formatting(
+    text: str, start: int, end: int, positions: Mapping[str, list[int]]
+) -> tuple[int, int]:
+    """
+    Объединение всех пар разметки, целиком охватывающих фрагмент.
+
+    Вне фрагмента внутри пары допустимы только пробелы и символы разметки:
+    `***Цена: [цена]***` (жирный внутри курсива) убирается целиком, а
+    `**Цена: [цена] и ещё**` — нет: там форматирование принадлежит
+    соседнему видимому тексту, и поведение остаётся прежним.
+    """
+    low, high = start, end
+    for marker in _FORMAT_MARKERS:
+        marks = positions.get(marker) or []
+        for index in range(0, len(marks) - 1, 2):
+            open_pos = marks[index]
+            close_pos = marks[index + 1] + len(marker)
+            if open_pos > start or close_pos < end:
+                continue
+            if not _only_markers(
+                text[open_pos + len(marker) : start]
+                + text[end : close_pos - len(marker)]
+            ):
+                continue
+            low, high = min(low, open_pos), max(high, close_pos)
+    return low, high
+
+
+def _splits_escaped_bracket(text: str, start: int, end: int) -> bool:
+    """
+    Разрез проходит внутри экранированных квадратных скобок (`[[…]]`).
+
+    Вырезание такого фрагмента оставило бы одиночные `[` или `]`, и текст
+    перестал бы разбираться. Правило в этом случае не применяется: лучше
+    показать анонс без скрытия, чем уронить рендер (§41).
+    """
+    if start > 0 and text[start - 1] == "[" and text[start] == "[":
+        return True
+    return 0 < end < len(text) and text[end - 1] == "]" and text[end] == "]"
+
+
+def _markers_only(line: str) -> bool:
+    """
+    От строки осталась только невидимая разметка — вырезать можно целиком.
+
+    Проверка не текстовая, а по факту рендера: `****` даёт пустой `<b></b>`,
+    а `***` или `**` — видимые звёздочки (парсер оставляет непарный маркер
+    буквальным). Такие строки удалять нельзя, иначе пропадёт авторский
+    символ.
+    """
+    if not line.strip():
+        return False
+    if set(line.strip()) - _MARKER_CHARS:
+        return False
+    try:
+        tokens = parse_template(line)
+    except TemplateParseError:  # pragma: no cover — защитная сетка
+        return False
+    return not visible_announcement_text(render_template({"content": tokens}, {}, {}))
+
+
+def _line_bounds(text: str, start: int, end: int) -> tuple[int, int]:
+    """Границы строки вокруг фрагмента (без переводов строк)."""
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    if line_end < 0:
+        line_end = len(text)
+    return line_start, line_end
+
+
 def apply_conditional_parts(
     text: str,
     rules: Iterable[ConditionalRule],
@@ -797,17 +949,63 @@ def apply_conditional_parts(
     кирпичик не меняет текст вообще — фрагмент остаётся и рендерится
     обычным путём. Пунктуация вне авторского фрагмента не чистится:
     эвристик нет (§38/§41).
+
+    Скрываемая часть — логический текст, а не кусок разметки: если фрагмент
+    целиком занимает содержимое форматирования (`**💰 Цена: [цена]**`),
+    вырезается вся пара маркеров. Строка, ставшая от этого пустой разметкой
+    (`****` → `<b></b>`), исчезает вместе с лишним переводом строки.
     """
     active = [rule for rule in rules if is_empty(rule.brick_id)]
     if not active:
         return text
+    positions = _marker_positions(text)
     deletions: list[tuple[int, int]] = []
     for start, end in _selected_rule_spans(text, active):
+        if _splits_escaped_bracket(text, start, end):
+            logger.warning(
+                "Условная часть пропущена: фрагмент разрезает экранированные "
+                "скобки и сделал бы текст неразбираемым."
+            )
+            continue
+        start, end = _expand_over_formatting(text, start, end, positions)
+        overlaps = any(
+            start < other_end and other_start < end
+            for other_start, other_end in deletions
+        )
+        if overlaps:
+            logger.warning(
+                "Условная часть пропущена: после расширения до форматирования "
+                "пересекается с другой."
+            )
+            continue
         whole_line = _whole_line_range(text, start, end)
-        deletions.append(whole_line if whole_line is not None else (start, end))
+        if whole_line is not None:
+            deletions.append(whole_line)
+            continue
+        line_start, line_end = _line_bounds(text, start, end)
+        rest = text[line_start:start] + text[end:line_end]
+        if _markers_only(rest):
+            # От строки осталась только разметка: убираем её целиком.
+            whole = _whole_line_range(text, line_start, line_end)
+            deletions.append(whole if whole is not None else (line_start, line_end))
+            continue
+        deletions.append((start, end))
+    if not deletions:
+        return text
     result = text
     for start, end in sorted(deletions, reverse=True):
         result = result[:start] + result[end:]
+    if result == text:
+        return text
+    try:
+        parse_template(result)
+    except TemplateParseError:
+        # Защитная сетка: правило не должно превращать рабочий шаблон в
+        # неразбираемый текст. Анонс выходит без скрытия, причина — в лог.
+        logger.warning(
+            "Условные части не применены: после вырезания текст не разбирается."
+        )
+        return text
     return result
 
 

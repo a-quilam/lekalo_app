@@ -380,6 +380,7 @@ def list_conditional_parts(
     *,
     version: int | None = None,
     section: str | None = None,
+    include_stale: bool = False,
 ) -> list[ConditionalPartDetails]:
     """
     Правила доступного шаблона: по умолчанию текущей версии.
@@ -387,6 +388,10 @@ def list_conditional_parts(
     `version` позволяет открыть историю, `section` — одну секцию. Правила
     сортируются по секции и позиции первого вхождения, чтобы редактор
     показывал их в порядке текста.
+
+    `include_stale=True` добавляет правила прежних версий, помеченные
+    `stale` (§44): после правки текста они остаются в БД, и редактор обязан
+    показать их автору, иначе правило «исчезло» бы из интерфейса молча.
     """
     actor = _require_actor_user(session, actor_telegram_user_id)
     try:
@@ -394,9 +399,20 @@ def list_conditional_parts(
     except TemplateNotFoundError:
         return []
     version_row = _version_row(session, template, version)
-    statement = select(template_conditional_parts).where(
-        template_conditional_parts.c.version_id == version_row.id
-    )
+    if include_stale:
+        # Правила текущей версии + устаревшие ЛЮБОЙ прежней версии: после
+        # правки текста правило остаётся в БД и должно быть видно автору.
+        statement = select(template_conditional_parts).where(
+            template_conditional_parts.c.template_id == template.id,
+            (
+                (template_conditional_parts.c.version_id == version_row.id)
+                | (template_conditional_parts.c.status == STATUS_STALE)
+            ),
+        )
+    else:
+        statement = select(template_conditional_parts).where(
+            template_conditional_parts.c.version_id == version_row.id
+        )
     if section is not None:
         statement = statement.where(
             template_conditional_parts.c.section == _validate_section(section)
@@ -404,14 +420,20 @@ def list_conditional_parts(
     rows = session.execute(statement).all()
     parts = [_view(session, row) for row in rows]
 
-    def _sort_key(part: ConditionalPartDetails) -> tuple[int, int]:
+    def _sort_key(part: ConditionalPartDetails) -> tuple[int, int, int]:
         text = (
             version_row.content
             if part.section == SECTION_CONTENT
             else (version_row.extended_content or "")
         )
         span = _fragment_span(text, part.fragment, part.occurrence)
-        return (CONDITIONAL_SECTIONS.index(part.section), span[0] if span else 0)
+        # Активные правила текущей версии — выше устаревших: сначала то, что
+        # действительно работает.
+        return (
+            CONDITIONAL_SECTIONS.index(part.section),
+            0 if part.status == STATUS_ACTIVE else 1,
+            span[0] if span else 0,
+        )
 
     return sorted(parts, key=_sort_key)
 
@@ -583,12 +605,18 @@ def update_conditional_part(
     fragment: object = None,
     occurrence: int | None = None,
     brick_id: int | None = None,
+    repair: bool = False,
 ) -> ConditionalPartMutationResult:
     """
     Меняет фрагмент/вхождение/кирпичик существующего правила.
 
     Проверки те же, что при создании; собственное правило исключается из
     проверки пересечений. Версия шаблона и `revision` не меняются.
+
+    `repair=True` — явное исправление правила, помеченного `stale` после
+    правки текста (§44): фрагмент проверяется по ТЕКУЩЕЙ версии и правило
+    переносится в неё. Без этого флага правило прежней версии не правится
+    «наугад» и возвращается `stale`.
     """
     actor = _require_actor_user(session, actor_telegram_user_id)
     row = _load_part(session, part_id)
@@ -607,7 +635,7 @@ def update_conditional_part(
         return stale
 
     version_row = _version_row(session, template)
-    if version_row.id != int(getattr(row, "version_id")):
+    if version_row.id != int(getattr(row, "version_id")) and not repair:
         return _mutation(
             "stale",
             _view(session, row),
@@ -653,6 +681,7 @@ def update_conditional_part(
         checked_fragment != getattr(row, "fragment")
         or checked_occurrence != int(getattr(row, "occurrence"))
         or checked_brick != int(getattr(row, "brick_id"))
+        or version_row.id != int(getattr(row, "version_id"))
     )
     if not changed:
         return _mutation(
@@ -661,16 +690,21 @@ def update_conditional_part(
             "Правило не изменилось.",
         )
     try:
+        values: dict[str, object] = {
+            "brick_id": checked_brick,
+            "fragment": checked_fragment,
+            "occurrence": checked_occurrence,
+            "status": STATUS_ACTIVE,
+            "updated_at": utcnow(),
+        }
+        if version_row.id != int(getattr(row, "version_id")):
+            # Явное исправление устаревшего правила: оно становится
+            # правилом ТЕКУЩЕЙ версии (§44).
+            values["version_id"] = version_row.id
         session.execute(
             sqlalchemy_update(template_conditional_parts)
             .where(template_conditional_parts.c.id == int(getattr(row, "id")))
-            .values(
-                brick_id=checked_brick,
-                fragment=checked_fragment,
-                occurrence=checked_occurrence,
-                status=STATUS_ACTIVE,
-                updated_at=utcnow(),
-            )
+            .values(**values)
         )
         session.commit()
     except (IntegrityError, OperationalError):

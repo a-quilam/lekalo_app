@@ -278,7 +278,7 @@ class TemplateSectionOnlyManagesTests(unittest.TestCase):
         # Обходим все кнопки карточки и возвращаемся в неё после каждой:
         # «назад» у подтверждений ведёт в ту же карточку.
         explored: set[str] = set()
-        for _round in range(8):
+        for _round in range(10):
             buttons = [
                 data
                 for _label, data in h.screen_buttons()
@@ -299,6 +299,13 @@ class TemplateSectionOnlyManagesTests(unittest.TestCase):
                 f"кнопка {data} открыла диалог конструктора",
             )
             self.assertEqual(_draft_count(h), 0, f"кнопка {data} создала анонс")
+            # Poster 2.5 §40: «🧩 Условные части» — вложенный раздел той же
+            # карточки, фаза остаётся `card`. Возвращаемся из него в карточку,
+            # чтобы продолжить обход её кнопок.
+            cond_back = _callbacks(h, "tp_condback:")
+            if cond_back:
+                await h.callback(cond_back[0])
+                self.assertEqual(_draft_count(h), 0, "раздел правил создал анонс")
             if (load_template_session(DEFAULT_USER_ID) or {}).get(
                 "phase"
             ) != "card" and not data.startswith("tp_delete"):

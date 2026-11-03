@@ -262,11 +262,16 @@ def _lex(text: str, *, section: str | None) -> list[LexerToken]:
             offset = match.end()
             continue
 
-        # Начало гиперссылки: `(...)` сразу после слова/кирпичика.
-        if char == "(" and (
-            (buffer and not buffer[-1].isspace())
-            or (tokens and isinstance(tokens[-1], (BrickNode, FormatNode)))
-        ):
+        # Начало гиперссылки: `(...)` ВПЛОТНУЮ к слову/кирпичику.
+        # Пробел перед скобкой означает прозу: `📍 [место] ([адрес])` —
+        # это значение кирпичика в скобках, а не ссылка (§42-В).
+        adjoins_text = bool(buffer) and not buffer[-1].isspace()
+        adjoins_node = (
+            not buffer
+            and bool(tokens)
+            and isinstance(tokens[-1], (BrickNode, FormatNode))
+        )
+        if char == "(" and (adjoins_text or adjoins_node):
             link_end = _find_close_paren(text, offset)
             if link_end is None:
                 # Нет закрывающей скобки — это просто текст со скобкой.
@@ -293,6 +298,12 @@ def _lex(text: str, *, section: str | None) -> list[LexerToken]:
                 offset = link_end + 1
                 continue
             label = _pop_link_label(tokens)
+            if not label:
+                # Пустая подпись сделала бы ссылку без текста: значение
+                # адреса потерялось бы. Такая запись — обычная проза.
+                buffer.append(text[offset : link_end + 1])
+                offset = link_end + 1
+                continue
             tokens.append(LinkNode(label=label, url=url_token, normalized_url=None))
             offset = link_end + 1
             continue
@@ -383,8 +394,11 @@ def _pop_link_label(tokens: list[LexerToken]) -> tuple[TemplateToken, ...]:
 
     Подпись сохраняется дословно, включая дефисы («Наше-место»): дефис —
     обычный символ, а не служебный. Забирается весь хвост текстовых узлов,
-    поэтому подпись естественно совпадает с текстом до скобки. Пробелы перед
-    «(» не распознаются как ссылка: такой фрагмент остаётся прозой.
+    поэтому подпись естественно совпадает с текстом до скобки. Пустой
+    результат означает «подписи нет»: лексер вызывает функцию только для
+    скобки, примыкающей к тексту, кирпичику или форматированию, так что
+    пробел перед «(» до сюда не доходит — такой фрагмент остаётся прозой,
+    а захватывать подпись из воздуха (`**a**(URL)`) нельзя.
     """
     if not tokens:
         return ()

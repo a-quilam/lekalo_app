@@ -54,12 +54,13 @@ from template_compiler import (
     ConditionalRule,
     apply_conditional_parts,
 )
-from template_parser import parse_template
+from template_parser import BrickNode, LinkNode, TextNode, parse_template
 from template_store import (
     create_personal_template,
     create_template_snapshot,
     render_template_snapshot,
     render_template_version,
+    reset_personal_template,
     update_template_content,
 )
 from tests.stage19a_helpers import make_engine, temp_db_path
@@ -369,6 +370,8 @@ class ConditionalPartStoreTests(AnnouncementDatabaseTestCase):
     def test_edit_text_keeps_rule_only_when_fragment_survives(self) -> None:
         created = self.create()
         assert created.part is not None
+        # D2: актуальность правил проверяет сам `update_template_content`
+        # сразу после создания версии — отдельный вызов не нужен.
         # Текст изменился, но фрагмент остался однозначным → правило
         # переносится в новую версию, revision версии растёт отдельно.
         update_template_content(
@@ -378,18 +381,19 @@ class ConditionalPartStoreTests(AnnouncementDatabaseTestCase):
             expected_revision=self.template.revision,
             content="Новое начало\n💰 Цена: [цена]\nКонец",
         )
+        moved = get_conditional_part(self.session, OWNER_TG, created.part.id)
+        assert moved is not None
+        self.assertEqual(moved.status, STATUS_ACTIVE)
+        self.assertEqual(moved.version, 2)
+        # Повторный ручной перенос ничего не находит: правило уже актуально.
         refreshed = refresh_conditional_parts(
             self.session,
             actor_telegram_user_id=OWNER_TG,
             template_id=self.template.template_id,
         )
         self.assertEqual(refreshed.status, "refreshed")
-        self.assertEqual(refreshed.transferred, 1)
+        self.assertEqual(refreshed.transferred, 0)
         self.assertEqual(refreshed.stale, 0)
-        moved = get_conditional_part(self.session, OWNER_TG, created.part.id)
-        assert moved is not None
-        self.assertEqual(moved.status, STATUS_ACTIVE)
-        self.assertEqual(moved.version, 2)
 
     def test_edit_text_marks_rule_stale_instead_of_deleting(self) -> None:
         created = self.create()
@@ -401,16 +405,17 @@ class ConditionalPartStoreTests(AnnouncementDatabaseTestCase):
             expected_revision=self.template.revision,
             content="Новое начало\nСовсем другой текст\nКонец",
         )
+        # D2: пометка `stale` происходит при сохранении новой версии.
+        kept = get_conditional_part(self.session, OWNER_TG, created.part.id)
+        assert kept is not None, "правило не удаляется молча (§44)"
+        self.assertEqual(kept.status, STATUS_STALE)
         refreshed = refresh_conditional_parts(
             self.session,
             actor_telegram_user_id=OWNER_TG,
             template_id=self.template.template_id,
         )
         self.assertEqual(refreshed.transferred, 0)
-        self.assertEqual(refreshed.stale, 1)
-        kept = get_conditional_part(self.session, OWNER_TG, created.part.id)
-        assert kept is not None, "правило не удаляется молча (§44)"
-        self.assertEqual(kept.status, STATUS_STALE)
+        self.assertEqual(refreshed.stale, 0)
         # Stale-правило не применяется к случайному похожему месту.
         self.assertEqual(
             active_rules_for_version(self.session, kept.version_id, "content"),
@@ -458,6 +463,33 @@ class ConditionalPartStoreTests(AnnouncementDatabaseTestCase):
         assert restored is not None
         self.assertEqual(restored.fragment, "💰 Цена: [цена]")
         self.assertEqual(restored.status, STATUS_ACTIVE)
+
+    def test_reset_to_builtin_marks_rule_stale(self) -> None:
+        """MAJOR-2: сброс к стандарту актуализирует правила, а не прячет их."""
+        created = self.create()
+        assert created.part is not None
+        self.session.expire_all()
+        result = reset_personal_template(
+            self.session,
+            actor_telegram_user_id=OWNER_TG,
+            template_id=self.template.template_id,
+            expected_revision=self.template.revision,
+            confirm=True,
+        )
+        self.assertTrue(result.ok, result.message)
+        self.session.expire_all()
+        kept = get_conditional_part(self.session, OWNER_TG, created.part.id)
+        assert kept is not None, "сброс не удаляет правило молча (§44)"
+        self.assertEqual(kept.status, STATUS_STALE)
+        # Правило не применяется к стандартному тексту и видно редактору.
+        self.assertEqual(
+            active_rules_for_version(self.session, kept.version_id, "content"),
+            (),
+        )
+        parts = list_conditional_parts(
+            self.session, OWNER_TG, self.template.template_id, include_stale=True
+        )
+        self.assertEqual([part.id for part in parts], [created.part.id])
 
 
 # --- рендер §42 А–Е, §45 ----------------------------------------------------
@@ -537,6 +569,62 @@ class ConditionalRenderTests(unittest.TestCase):
         )
         self.assertIn("<b>Концерт</b>", html)
         self.assertIn('<a href="https://example.com">ссылка</a>', html)
+
+    def test_fragment_inside_bold_removes_the_whole_formatting(self) -> None:
+        """MAJOR-1: скрывается форматирование целиком, пустой `<b></b>` нет."""
+        text = "🕒 [начало]\n**💰 Цена: [цена]**\nКто: [кто]"
+        rules = (ConditionalRule(brick_id=900, fragment="💰 Цена: [цена]"),)
+        hidden = apply_conditional_parts(text, rules, is_empty=lambda brick_id: True)
+        self.assertEqual(hidden, "🕒 [начало]\nКто: [кто]")
+        html = _render(hidden, {"начало": "19:00", "кто": "Все"})
+        self.assertNotIn("<b></b>", html)
+        self.assertEqual(html, "🕒 19:00\nКто: Все")
+        # Заполненный кирпичик сохраняет и текст, и форматирование.
+        kept = apply_conditional_parts(text, rules, is_empty=lambda brick_id: False)
+        self.assertEqual(kept, text)
+
+    def test_fragment_inside_bold_keeps_neighbour_text_in_line(self) -> None:
+        """Форматирование с соседним видимым текстом вырезанию не подлежит."""
+        text = "**Цена: [цена] и ещё**"
+        rules = (ConditionalRule(brick_id=900, fragment="[цена]"),)
+        hidden = apply_conditional_parts(text, rules, is_empty=lambda brick_id: True)
+        # Частичное пересечение границы маркера остаётся прежним поведением:
+        # маркеры не расширяются, строка не исчезает целиком.
+        self.assertEqual(hidden, "**Цена:  и ещё**")
+
+    def test_nested_formatting_around_fragment_is_removed(self) -> None:
+        """Вложенные пары вокруг фрагмента убираются вместе с ним."""
+        text = "Афиша\n***Цена: [цена]***\nКонец"
+        rules = (ConditionalRule(brick_id=900, fragment="Цена: [цена]"),)
+        hidden = apply_conditional_parts(text, rules, is_empty=lambda brick_id: True)
+        self.assertEqual(hidden, "Афиша\nКонец")
+
+    def test_escaped_bracket_fragment_is_skipped(self) -> None:
+        """MAJOR-1: `[[цена]]` + фрагмент `[цена]` не ломает рендер."""
+        text = "Цена: [[цена]] конец"
+        rules = (ConditionalRule(brick_id=900, fragment="[цена]"),)
+        hidden = apply_conditional_parts(text, rules, is_empty=lambda brick_id: True)
+        self.assertEqual(hidden, text, "правило неприменимо — текст не портим")
+        from template_parser import TextNode
+
+        restored = parse_template(hidden)[0]
+        self.assertIsInstance(restored, TextNode)
+        assert isinstance(restored, TextNode)
+        self.assertEqual(restored.text, "Цена: [цена] конец")
+
+
+def _render(text: str, values: dict[str, str]) -> str:
+    """Компилирует текст секции с подстановкой значений по кодам кирпичиков."""
+    from template_compiler import render_template as compile_render
+
+    tokens = parse_template(text)
+    bindings = {code: index for index, code in enumerate(values, start=1)}
+    _assign_brick_ids(tokens, bindings)
+    return compile_render(
+        {"content": tokens},
+        {bindings[code]: value for code, value in values.items()},
+        {brick_id: _definition(brick_id) for brick_id in bindings.values()},
+    )
 
 
 def _assign_brick_ids(tokens, bindings: dict[str, int]) -> None:
@@ -627,6 +715,38 @@ class ConditionalVersionRenderTests(AnnouncementDatabaseTestCase):
             "Афиша\n💰 Цена: 500 ₽\nКонец",
         )
 
+    def test_bold_price_line_disappears_without_empty_tag(self) -> None:
+        """MAJOR-1 сквозь рендер: `**…**` вокруг пустого кирпичика не остаётся."""
+        template = create_personal_template(
+            self.session,
+            actor_telegram_user_id=OWNER_TG,
+            name="Жирная цена",
+            content="🕒 [время_начала]\n**💰 Цена: [цена]**\nКто: [контакт]",
+        )
+        self.assertEqual(
+            create_conditional_part(
+                self.session,
+                actor_telegram_user_id=OWNER_TG,
+                template_id=template.template_id,
+                expected_revision=template.revision,
+                section="content",
+                brick_id=self.price_brick,
+                fragment="💰 Цена: [цена]",
+            ).status,
+            "created",
+        )
+        start = get_system_brick(self.session, "время_начала")
+        contact = get_system_brick(self.session, "контакт")
+        assert start is not None and contact is not None
+        html = render_template_version(
+            self.session,
+            actor_telegram_user_id=OWNER_TG,
+            template_id=template.template_id,
+            values_by_id={start.id: "19:00", contact.id: "Все"},
+        )
+        self.assertNotIn("<b></b>", html)
+        self.assertEqual(html, "🕒 19:00\nКто: Все")
+
     def test_announcement_preview_uses_rules(self) -> None:
         draft = self.start_at_questions(template_id=self.template.template_id)
         preview = build_announcement_preview(
@@ -698,6 +818,164 @@ class ConditionalVersionRenderTests(AnnouncementDatabaseTestCase):
             values_by_id=values,
         )
         self.assertIn("💰", rendered, "снимок правила не применяет")
+
+
+class ConditionalAddressExampleTests(AnnouncementDatabaseTestCase):
+    """
+    §42-В (обязательный пример): `📍 [место] ([адрес])`.
+
+    Скобка с кирпичиком адреса стоит ПОСЛЕ пробела, поэтому это не ссылка,
+    а обычный текст: значение адреса не теряется. Правило ` ([адрес])`
+    убирает скобку вместе с пробелом, когда адрес пуст.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.template = create_personal_template(
+            self.session,
+            actor_telegram_user_id=OWNER_TG,
+            name="С адресом",
+            content="📍 [место] ([адрес])",
+        )
+        address = get_system_brick(self.session, "адрес")
+        assert address is not None
+        self.assertEqual(
+            create_conditional_part(
+                self.session,
+                actor_telegram_user_id=OWNER_TG,
+                template_id=self.template.template_id,
+                expected_revision=self.template.revision,
+                section="content",
+                brick_id=address.id,
+                fragment=" ([адрес])",
+            ).status,
+            "created",
+        )
+
+    def render(self, values: dict[str, str]) -> str:
+        with self.session.no_autoflush:
+            bricks = {
+                code: get_system_brick(self.session, code) for code in values.keys()
+            }
+        values_by_id: dict[int, str] = {}
+        for code, value in values.items():
+            brick = bricks[code]
+            assert brick is not None, code
+            values_by_id[brick.id] = value
+        with self.session.no_autoflush:
+            place = get_system_brick(self.session, "место")
+        assert place is not None
+        return render_template_version(
+            self.session,
+            actor_telegram_user_id=OWNER_TG,
+            template_id=self.template.template_id,
+            values_by_id=values_by_id,
+        )
+
+    def test_empty_address_removes_the_brackets(self) -> None:
+        self.assertEqual(
+            self.render({"место": "РанДом Культуры"}),
+            "📍 РанДом Культуры",
+        )
+
+    def test_filled_address_is_rendered_in_brackets(self) -> None:
+        self.assertEqual(
+            self.render(
+                {
+                    "место": "РанДом Культуры",
+                    "адрес": "Большой Николопесковский, 13",
+                }
+            ),
+            "📍 РанДом Культуры (Большой Николопесковский, 13)",
+        )
+
+
+class LinkGrammarRegressionTests(unittest.TestCase):
+    """Регресс ссылок: пробел перед `(` больше не ломает прозу, а ссылки живы."""
+
+    def test_space_before_parenthesis_is_plain_text(self) -> None:
+        tokens = parse_template("📍 [место] ([адрес])")
+        codes = [t.code for t in tokens if isinstance(t, BrickNode)]
+        self.assertEqual(codes, ["место", "адрес"], "адрес — обычный кирпичик")
+        self.assertFalse(any(isinstance(t, LinkNode) for t in tokens))
+
+    def test_brick_to_brick_link_survives(self) -> None:
+        tokens = parse_template("[место]([ссылка_места])")
+        self.assertEqual(len(tokens), 1)
+        self.assertIsInstance(tokens[0], LinkNode)
+        assert isinstance(tokens[0], LinkNode)
+        self.assertIsInstance(tokens[0].url, BrickNode)
+        html = _render(
+            "[место]([ссылка_места])",
+            {"место": "Дом культуры", "ссылка_места": "https://example.com/place"},
+        )
+        self.assertIn('<a href="https://example.com/place">', html)
+        self.assertIn("Дом культуры", html)
+
+    def test_literal_text_and_url_stays_link(self) -> None:
+        html = _render("Билеты(https://example.com)", {})
+        self.assertEqual(html, '<a href="https://example.com">Билеты</a>')
+
+    def test_outer_prose_parenthesis_stays_text(self) -> None:
+        """Вложенная скобка: прежнее поведение ссылки не меняется."""
+        tokens = parse_template("Текст (подробнее(https://x.io))")
+        self.assertTrue(any(isinstance(token, LinkNode) for token in tokens))
+        tail = tokens[-1]
+        assert isinstance(tail, TextNode)
+        self.assertEqual(tail.text, ")")
+
+    def test_prose_parentheses_do_not_become_links(self) -> None:
+        """Прозаические скобки после пробела — текст, а не адрес ссылки."""
+        self.assertEqual(
+            _render("Текст (подробнее) без ссылки", {}),
+            "Текст (подробнее) без ссылки",
+        )
+
+    def test_saved_link_without_label_keeps_the_address(self) -> None:
+        """Защита сохранённых данных: пустая подпись не съедает адрес."""
+        from template_compiler import render_template as compile_render
+
+        tokens: list = [
+            TextNode("📍 "),
+            BrickNode(code="место", brick_id=1),
+            TextNode(" "),
+            LinkNode(label=(), url=BrickNode(code="адрес", brick_id=2)),
+        ]
+        definitions = {1: _definition(1), 2: _definition(2)}
+        self.assertEqual(
+            compile_render(
+                {"content": tokens},
+                {1: "РанДом Культуры", 2: "ул. Ленина, 1"},
+                definitions,
+            ),
+            "📍 РанДом Культуры (ул. Ленина, 1)",
+        )
+        self.assertEqual(
+            compile_render({"content": tokens}, {1: "РанДом Культуры"}, definitions),
+            "📍 РанДом Культуры ",
+            "пустой адрес не выводит пустых скобок",
+        )
+
+    def test_saved_link_without_label_and_literal_url(self) -> None:
+        """Пустая подпись с литеральным URL — текст `(...)`, без `<a>`."""
+        from template_compiler import render_template as compile_render
+
+        self.assertEqual(
+            compile_render(
+                {"content": [LinkNode(label=(), url="https://example.com")]}, {}, {}
+            ),
+            "(https://example.com)",
+        )
+
+    def test_explicit_empty_label_does_not_hide_the_url(self) -> None:
+        """`{}(URL)` — другой путь пустой подписи: адрес остаётся видимым."""
+        tokens = parse_template("{}(https://example.com)")
+        self.assertTrue(any(isinstance(t, LinkNode) and not t.label for t in tokens))
+        self.assertEqual(
+            _render("билеты {}(https://example.com)", {}),
+            "билеты (https://example.com)",
+            "ссылка без подписи выводится текстом, адрес не теряется",
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover

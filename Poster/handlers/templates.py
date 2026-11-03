@@ -651,7 +651,11 @@ def _card_back_button(template: TemplateDetails) -> InlineKeyboardButton:
 
 
 def _card_content(
-    template: TemplateDetails, *, place_name: str | None = None
+    template: TemplateDetails,
+    *,
+    place_name: str | None = None,
+    session: Session | None = None,
+    telegram_user_id: int | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
     version = template.current_version
     kind_title = (
@@ -688,6 +692,24 @@ def _card_content(
                     ),
                 ]
             )
+        if session is not None and telegram_user_id is not None:
+            # Ленивый импорт: модуль условных частей сам использует экраны
+            # шаблонов (`_show`, `_short`), циклический импорт недопустим.
+            from handlers import template_conditional
+
+            stale = template_conditional.stale_count(
+                session, template, telegram_user_id
+            )
+            if stale:
+                lines.extend(
+                    [
+                        "",
+                        tr(
+                            "templates.cond.card_warning",
+                            count=stale,
+                        ),
+                    ]
+                )
         return "\n".join(lines)
 
     text = _fit_value_screen(build, blocks=2 if has_extended else 1)
@@ -740,6 +762,17 @@ def _card_content(
         ]
     )
     rows = [list(row) for row in keyboard.inline_keyboard]
+    # Poster 2.5 §40: отдельный раздел правил стоит сразу после действий
+    # «посмотреть» — это про тот же текст, но не необратимое действие.
+    rows.insert(
+        2,
+        [
+            InlineKeyboardButton(
+                tr("buttons.templates.uslovnye_chasti"),
+                callback_data=f"tp_cond:{template.template_id}",
+            )
+        ],
+    )
     if template.kind == TEMPLATE_KIND_PERSONAL:
         # Стандарт места не удаляется: место не может остаться без шаблона
         # (это гарантирует триггер схемы). У личного удаление — в конце списка.
@@ -1658,7 +1691,12 @@ async def _render_phase(
                 place_name = _place_name(session, template.place_id)
                 if phase == PHASE_CARD:
                     state["revision"] = template.revision
-                    text, keyboard = _card_content(template, place_name=place_name)
+                    text, keyboard = _card_content(
+                        template,
+                        place_name=place_name,
+                        session=session,
+                        telegram_user_id=telegram_user_id,
+                    )
                 elif phase == PHASE_PREVIEW:
                     state["revision"] = template.revision
                     text, keyboard = _preview_content(template, place_name=place_name)
@@ -2121,7 +2159,10 @@ async def handle_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             page=_page_value(state.get("page")),
         )
         text, keyboard = _card_content(
-            template, place_name=_place_name(session, template.place_id)
+            template,
+            place_name=_place_name(session, template.place_id),
+            session=session,
+            telegram_user_id=telegram_user_id,
         )
     finally:
         session.close()
@@ -2321,7 +2362,10 @@ async def handle_reset_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 page=_page_value(state.get("page")),
             )
             text, keyboard = _card_content(
-                template, place_name=_place_name(session, template.place_id)
+                template,
+                place_name=_place_name(session, template.place_id),
+                session=session,
+                telegram_user_id=telegram_user_id,
             )
             notice = tr("templates.handle_reset_yes.sbros_vypolnen_shablon_izmenilsya")
         else:
@@ -2351,6 +2395,8 @@ async def handle_reset_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 text, keyboard = _card_content(
                     current,
                     place_name=_place_name(session, current.place_id),
+                    session=session,
+                    telegram_user_id=telegram_user_id,
                 )
                 notice = (
                     tr(
@@ -2375,6 +2421,8 @@ async def handle_reset_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                     text, keyboard = _card_content(
                         current,
                         place_name=_place_name(session, current.place_id),
+                        session=session,
+                        telegram_user_id=telegram_user_id,
                     )
                     notice = tr(
                         "templates.handle_reset_yes.sbros_vypolnen_shablon_izmenilsya"
@@ -2403,6 +2451,8 @@ async def handle_reset_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 text, keyboard = _card_content(
                     template,
                     place_name=_place_name(session, template.place_id),
+                    session=session,
+                    telegram_user_id=telegram_user_id,
                 )
                 notice = result.message or tr(
                     "templates.handle_reset_yes.sbros_vypolnen"
@@ -2524,7 +2574,10 @@ async def handle_delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     page=page,
                 )
                 text, keyboard = _card_content(
-                    template, place_name=_place_name(session, template.place_id)
+                    template,
+                    place_name=_place_name(session, template.place_id),
+                    session=session,
+                    telegram_user_id=telegram_user_id,
                 )
                 notice = tr("templates.handle_delete_yes.udalenie_vypolneno_shablon")
         else:  # blocked
@@ -2541,7 +2594,10 @@ async def handle_delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     page=page,
                 )
                 text, keyboard = _card_content(
-                    template, place_name=_place_name(session, template.place_id)
+                    template,
+                    place_name=_place_name(session, template.place_id),
+                    session=session,
+                    telegram_user_id=telegram_user_id,
                 )
                 notice = DELETE_BLOCKED_TEXT
     except Exception as exc:  # noqa: BLE001
@@ -2902,7 +2958,10 @@ async def handle_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 page=_page_value(state.get("page")),
             )
             text, keyboard = _card_content(
-                saved, place_name=_place_name(session, saved.place_id)
+                saved,
+                place_name=_place_name(session, saved.place_id),
+                session=session,
+                telegram_user_id=telegram_user_id,
             )
             notice = (
                 tr("templates.handle_save.sohraneno_versii", revision=saved.revision)
@@ -3135,7 +3194,10 @@ async def handle_create_save(
             page=_page_value(state.get("page")),
         )
         text, keyboard = _card_content(
-            created, place_name=_place_name(session, created.place_id)
+            created,
+            place_name=_place_name(session, created.place_id),
+            session=session,
+            telegram_user_id=telegram_user_id,
         )
         notice = tr("templates.handle_create_save.lichnyy_shablon_sozdan")
     except (TemplateValidationError, TemplateCompileError) as exc:
@@ -3388,6 +3450,10 @@ class TemplateTextHandler(MessageHandler):
 
 def templates_handlers() -> list[BaseHandler]:
     """Обработчики раздела «Мои шаблоны» Stage 25."""
+    # Ленивый импорт: модуль сам использует экраны шаблонов (`_show`,
+    # `_short`), поэтому импорт на уровне модуля дал бы цикл.
+    from handlers.template_conditional import conditional_handlers
+
     return [
         CommandHandler("templates", open_templates),
         CallbackQueryHandler(open_templates, pattern=r"^templates$"),
@@ -3433,6 +3499,9 @@ def templates_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(handle_pick, pattern=r"^tp_pick:\d+:\d+$"),
         # Повторная отрисовка после временной ошибки чтения.
         CallbackQueryHandler(_retry_render, pattern=r"^tp_retry_render$"),
+        # Poster 2.5 §39-45: «Условные части» — до общего fallback `^tp_`,
+        # иначе его кнопки получат «кнопка устарела».
+        *conditional_handlers(),
         # Любая другая кнопка tp_ (старый экран) не меняет данные.
         CallbackQueryHandler(_stale_callback, pattern=r"^tp_"),
         TemplateTextHandler(
