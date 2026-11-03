@@ -102,10 +102,9 @@ class OwnerScenarioTests(_Case):
             _full_catalog(
                 **{
                     "menu.main": "ПРИВЕТ-ПРИЁМКА\n\nВыберите действие:",
-                    "help.text_html": (
-                        "<b>СПРАВКА-ПРИЁМКА</b>\n\nФото: {max_photos}, "
-                        "текст: {text_limit}, подпись: {caption_limit}."
-                    ),
+                    # Poster 2.5: справка — Rich Message; правится её
+                    # заголовок из каталога (help.text_html заменён).
+                    "help.rich.title": "СПРАВКА-ПРИЁМКА",
                     "wizard.photos.title": "📷 СНИМКИ-ПРИЁМКА",
                     "wizard.photos.hint": "Пришлите до {limit} картинок.",
                     # C2b-2: экрана «Анонс готов» нет — после доставки
@@ -127,10 +126,12 @@ class OwnerScenarioTests(_Case):
         await h.text("/start")
         self.assertEqual(h.screen_text(), "ПРИВЕТ-ПРИЁМКА\n\nВыберите действие:")
 
-        # 2. справка (доверенная разметка + переменная домена)
+        # 2. справка: настоящий Rich Message, заголовок — из каталога
         await h.text("/help")
-        self.assertIn("<b>СПРАВКА-ПРИЁМКА</b>", h.screen_text())
-        self.assertIn("Фото: 10, текст: 4096, подпись: 1024.", h.screen_text())
+        record = h.bot.rich_records[-1]
+        self.assertEqual(
+            record["rich_message"]["blocks"][0]["heading"], "СПРАВКА-ПРИЁМКА"
+        )
 
         # 3. хаб кирпичиков
         await h.callback("manage")

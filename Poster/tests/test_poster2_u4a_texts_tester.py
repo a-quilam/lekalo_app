@@ -332,8 +332,7 @@ class OwnerScenarioTests(_CatalogCase):
         self.assertEqual(ui_texts.tr("menu.main"), "Меню &lt;b&gt;жирное&lt;/b&gt;")
 
         # Доверенная разметка работает в ключе с суффиксом _html.
-        # help.text_html сюда не подходит: у него есть переменные, и подмена
-        # текста без них сделала бы файл невалидным (это проверено выше).
+        # (Прежний help.text_html удалён в 2.5: справка — Rich Message.)
         self.write_flat(**{"bricks.hub.title_html": "🧩 <b>Мои</b>"})
         self.assertTrue(ui_texts.reload_texts(self.path).ok)
         self.assertEqual(ui_texts.tr("bricks.hub.title_html"), "🧩 <b>Мои</b>")

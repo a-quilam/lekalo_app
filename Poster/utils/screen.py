@@ -42,6 +42,14 @@ SCREEN_LINK_PREVIEW = LinkPreviewOptions(is_disabled=True)
 LEGACY_KEYBOARD_RESET_TEXT = tr("screen.legacy_keyboard_reset")
 LEGACY_KEYBOARD_RESET_KEY = "legacy_reply_keyboard_dropped"
 
+# Poster 2.5 §53: Rich Message справки — временный служебный экран. Rich
+# Message нельзя перерисовать в обычный текст, поэтому его message_id живёт
+# ОТДЕЛЬНО от `screen` и удаляется, когда пользователь уходит на любой другой
+# экран (или возвращается в меню). Сейчас Rich Message использует только
+# справка (§46), но ключ общий: любой будущий Rich-экран получит ту же
+# очистку без второго механизма.
+RICH_TEMP_KEY = "help_rich_message_id"
+
 
 # —— экран (постоянное сообщение управления) ——————————————————————————
 
@@ -71,8 +79,14 @@ async def render_screen(
     недоступно) — не ошибка для пользователя: создаётся новый экран.
     «Message is not modified» — экран уже актуален (повторное нажатие
     кнопки), проглатывается.
+
+    Poster 2.5 §53: любой обычный экран вытесняет временное Rich Message
+    (справку). Rich Message нельзя перерисовать в текст, поэтому он именно
+    удаляется — иначе в чате остались бы две конкурирующие клавиатуры.
     """
     bot = context.bot
+    # уход с Rich-экрана: временное сообщение больше не нужно
+    await drop_rich_temp(bot, chat_id, user_data)
     ref = screen_ref(user_data)
     if ref:
         try:
@@ -199,6 +213,21 @@ async def cleanup_messages(bot, chat_id: int, message_ids: list[int]) -> None:
             await bot.delete_message(chat_id, message_id)
         except TelegramError as e:
             logger.info(f"Не удалось удалить сообщение {message_id}: {e}")
+
+
+async def drop_rich_temp(bot, chat_id: int, user_data: dict) -> None:
+    """
+    Удаляет временное Rich Message (справку, §53) при уходе на другой экран.
+
+    Rich Message нельзя отредактировать в обычный экран, поэтому
+    единственная корректная замена — удаление. Удаление best-effort:
+    отказ Telegram не мешает навигации, а message_id из состояния убирается
+    в любом случае (повторная попытка удалить чужое сообщение не нужна).
+    """
+    message_id = user_data.pop(RICH_TEMP_KEY, None)
+    if message_id is None:
+        return
+    await cleanup_messages(bot, chat_id, [int(message_id)])
 
 
 async def drop_user_input(update: Any, context: ContextTypes.DEFAULT_TYPE) -> None:

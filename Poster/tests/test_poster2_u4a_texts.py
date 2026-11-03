@@ -173,7 +173,7 @@ class CatalogFileTests(unittest.TestCase):
             )
 
     def test_required_keys_are_marked(self) -> None:
-        for key in ("menu.main", "menu.manage", "help.text_html"):
+        for key in ("menu.main", "menu.manage", "help.rich.title"):
             self.assertIn(key, ui_texts.REQUIRED_KEYS)
             self.assertIn(key, ui_texts.DEFAULTS)
 
@@ -459,22 +459,15 @@ class CatalogScreenTests(_TempCatalog):
         self.assertIn(("⚙️ Настройки", "manage"), h.screen_buttons())
 
     @scenario_test
-    async def test_help_text_comes_from_catalog(self, h: Harness) -> None:
-        # Переменные шаблона сохраняются: набор {…} менять нельзя.
-        self.write_catalog(
-            **{
-                "help.text_html": (
-                    "<b>Справка</b>\n\nНовый текст справки: {max_photos} фото, "
-                    "{text_limit} и {caption_limit} символов."
-                )
-            }
-        )
+    async def test_help_rich_header_comes_from_catalog(self, h: Harness) -> None:
+        """Poster 2.5: заголовок Rich-справки — строка каталога, не литерал."""
+        self.write_catalog(**{"help.rich.title": "Справка-правка"})
         ui_texts.reload_texts(self.path)
         await h.text("/help")
-        self.assertIn("<b>Справка</b>", h.screen_text())
-        self.assertIn(
-            "Новый текст справки: 10 фото, 4096 и 1024 символов.", h.screen_text()
-        )
+        record = h.bot.rich_records[-1]
+        heading = record["rich_message"]["blocks"][0]
+        self.assertEqual(heading["type"], "section_heading")
+        self.assertEqual(heading["heading"], "Справка-правка")
 
     @scenario_test
     async def test_invalid_catalog_keeps_menu_alive_with_defaults(

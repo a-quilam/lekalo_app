@@ -23,7 +23,7 @@ Poster 2.4.1 T3: меню — три строки и четыре кнопки, 
 
 import logging
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.ext import (
     BaseHandler,
     CallbackQueryHandler,
@@ -37,14 +37,21 @@ from telegram.ext import (
 from admin_state import clear_admin_session, has_admin_session
 from brick_state import clear_brick_session, has_brick_draft
 from database import SessionLocal
+from help_rich import build_help_rich_message
 from permissions import can_access_admin_panel, is_superadmin
 from place_state import clear_place_session, has_place_session
+from rich_message import send_rich_message
 from template_state import clear_template_session, has_template_session
 from utils import screen
 from utils import tg_context as ctx
 from utils.ui_texts import tr
 
 logger = logging.getLogger(__name__)
+
+# Poster 2.5 §53: Rich Message справки — временный служебный экран. Ключ
+# состояния общий со `utils.screen`: обычный экран вытесняет Rich Message
+# сам, а возврат в меню дополнительно снимает его до отрисовки.
+HELP_RICH_KEY = screen.RICH_TEMP_KEY
 
 
 def _drop_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -174,6 +181,10 @@ async def render_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     # новый создаётся рядом с вводом (Stage 16, дефект №7); callback —
     # guard-пропуск, кнопки и так на экране
     await screen.reanchor_screen(update, context)
+    # Poster 2.5 §53: справка — временный Rich Message. Возврат в меню
+    # удаляет её (Rich Message нельзя перерисовать в обычный экран), а
+    # анонсы пользователя не трогаются.
+    await screen.drop_rich_temp(context.bot, ctx.chat(update).id, ctx.data(context))
     # R1, дефект №23: главное меню — вход в актуальный UI, у клиента могла
     # остаться reply-клавиатура старых версий. Снимается один раз на вход.
     await screen.drop_legacy_reply_keyboard(update, context)
@@ -233,48 +244,85 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 
-def help_text() -> str:
+async def _close_screen(
+    context: ContextTypes.DEFAULT_TYPE,
+    user_data: dict,
+    user_id: int,
+    chat_id: int,
+) -> None:
     """
-    Справка: кнопки, команды и правила ввода Poster 2.0.
+    Закрывает текущий служебный экран перед открытием Rich Message (§53).
 
-    Экран рисуется с parse_mode=HTML (см. utils.screen.render_screen),
-    поэтому текст справки — ключ `help.text_html` с доверенной собственной
-    разметкой (<b>). Пользовательских данных в нём нет, но лимиты берутся из
-    сервисов домена: значения подставляются через `tr` и экранируются.
-    Импорт лимитов локальный: справка не должна тянуть сервисы домена при
-    импорте модуля.
+    Справка — временный экран, но Rich Message нельзя превратить обратно в
+    текст обычного экрана. Поэтому прежний экран (меню/раздел) удаляется
+    best-effort, а ref очищается в user_data и в БД — WIP-payload при этом
+    сохраняется. Двух конкурирующих меню в чате не остаётся: вернувшись из
+    справки, пользователь получит НОВЫЙ экран, а не правку старого.
     """
-    from announcement_store import MAX_ANNOUNCEMENT_PHOTOS
-    from delivery import ANNOUNCEMENT_CAPTION_LIMIT, ANNOUNCEMENT_TEXT_LIMIT
-
-    return tr(
-        "help.text_html",
-        max_photos=MAX_ANNOUNCEMENT_PHOTOS,
-        text_limit=ANNOUNCEMENT_TEXT_LIMIT,
-        caption_limit=ANNOUNCEMENT_CAPTION_LIMIT,
-    )
+    ref = screen.screen_ref(user_data)
+    if ref is None:
+        ref = screen.hydrate_screen_ref(user_data, user_id)
+    if ref is None:
+        return
+    user_data.pop("screen", None)
+    await screen.cleanup_messages(context.bot, ref["chat_id"], [ref["message_id"]])
+    screen.save_screen_ref(user_id, user_data, chat_id)
 
 
 async def render_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Справка на экране управления (с возвратом в главное меню)."""
-    # навигация сообщением ниже экрана → новый экран рядом с вводом
+    """
+    Справка: настоящий Rich Message `sendRichMessage` (Poster 2.5 §46–53).
+
+    Порядок: зафиксировать/закрыть экран-источник, отправить Rich Message с
+    кнопкой возврата, запомнить его message_id как служебный. Обычного
+    `sendMessage` здесь нет: подменять Rich Message текстом запрещено (§54).
+    При отказе Telegram справка не показывается «как будто всё хорошо»:
+    пользователь получает короткое сообщение в обычном экране, причина —
+    в лог.
+    """
+    # навигация сообщением ниже экрана → экран пересоздаётся рядом с вводом
     await screen.reanchor_screen(update, context)
     # Poster 2.3 H1: справка — экран без ввода; выход из конструктора
     # закрывает приём значений даже если состояние диалога потеряно.
     _drop_resume(update, context)
-    clear_place_session(ctx.user(update).id)
-    clear_admin_session(ctx.user(update).id)
-    clear_brick_session(ctx.user(update).id)
-    clear_template_session(ctx.user(update).id)
+    user_id = ctx.user(update).id
+    clear_place_session(user_id)
+    clear_admin_session(user_id)
+    clear_brick_session(user_id)
+    clear_template_session(user_id)
+
+    user_data = ctx.data(context)
+    chat_id = ctx.chat(update).id
+    # Повторное открытие справки не копит Rich Message: прежнее удаляется.
+    await screen.drop_rich_temp(context.bot, chat_id, user_data)
+    await _close_screen(context, user_data, user_id, chat_id)
+
     keyboard = InlineKeyboardMarkup(
         [[InlineKeyboardButton(tr("buttons.nav.main_menu"), callback_data="main_menu")]]
     )
-    user_data = ctx.data(context)
-    if screen.screen_ref(user_data) is None:
-        screen.hydrate_screen_ref(user_data, ctx.user(update).id)
-    await screen.render_screen(
-        context, user_data, ctx.chat(update).id, help_text(), keyboard
-    )
+    try:
+        message = await send_rich_message(
+            context.bot, chat_id, build_help_rich_message(), reply_markup=keyboard
+        )
+    except Exception as e:  # noqa: BLE001 — справка не должна ронять бота
+        # Токен в текст не попадает: адаптер его не читает и не печатает.
+        logger.warning("Rich Message справки не отправлено: %s", e)
+        await screen.render_screen(
+            context,
+            user_data,
+            chat_id,
+            tr("help.rich.unavailable"),
+            main_menu_keyboard(),
+        )
+        screen.save_screen_ref(user_id, user_data, chat_id)
+        return
+
+    # Адаптер возвращает Message или (при неполном ответе) message_id —
+    # обе формы равнозначны для навигации.
+    if isinstance(message, Message):
+        user_data[HELP_RICH_KEY] = message.message_id
+    else:
+        user_data[HELP_RICH_KEY] = int(message)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

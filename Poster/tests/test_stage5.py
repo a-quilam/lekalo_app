@@ -61,9 +61,13 @@ class _ScreenBot:
 
     def __init__(self):
         self.calls = []
+        # Poster 2.5 §50–53: Rich Message идёт через do_api_request, не
+        # через send_message; тест различает эти пути.
+        self.api_calls = []
 
     async def send_message(self, **kwargs):
         self.calls.append({"type": "message", **kwargs})
+        return SimpleNamespace(message_id=1, chat=SimpleNamespace(id=777))
 
     async def edit_message_text(self, **kwargs):
         self.calls.append({"type": "edit_message", **kwargs})
@@ -78,6 +82,42 @@ class _ScreenBot:
         if len(args) > 1:
             record["message_id"] = args[1]
         self.calls.append(record)
+
+    async def do_api_request(
+        self, endpoint, api_kwargs=None, return_type=None, **kwargs
+    ):
+        """Произвольный эндпоинт PTB (Rich Message — Poster 2.5)."""
+        from telegram import Chat, Message
+
+        self.api_calls.append((endpoint, dict(api_kwargs or {})))
+        return Message(
+            message_id=900,
+            date=None,
+            chat=Chat(id=777, type="private"),
+            text=None,
+        )
+
+
+def _rich_text(payload: dict) -> str:
+    """Плоский текст Rich Message: заголовки, абзацы, списки, summary."""
+    parts: list[str] = []
+
+    def walk(block: dict) -> None:
+        kind = block.get("type")
+        if kind == "section_heading":
+            parts.append(block.get("heading", ""))
+        elif kind == "paragraph":
+            parts.append(block.get("text", ""))
+        elif kind == "list":
+            parts.extend(block.get("items") or ())
+        elif kind == "details":
+            parts.append(block.get("summary", ""))
+            for child in block.get("blocks") or ():
+                walk(child)
+
+    for block in payload.get("blocks") or ():
+        walk(block)
+    return "\n".join(parts)
 
 
 class UtcnowTests(unittest.TestCase):
@@ -276,6 +316,12 @@ class MainMenuKeyboardTests(unittest.TestCase):
         )
 
     def test_help_lists_commands(self):
+        """
+        Poster 2.5 §46: справка — настоящий Rich Message, не экран.
+
+        Проверяем метод Bot API и то, что в разделе команд перечислены
+        реально существующие команды Poster.
+        """
         bot = _ScreenBot()
         session_factory, engine = make_session_factory()
         self.addCleanup(engine.dispose)
@@ -286,9 +332,9 @@ class MainMenuKeyboardTests(unittest.TestCase):
         )
         with patch.object(screen_module, "SessionLocal", session_factory):
             asyncio.run(help_command(update, SimpleNamespace(user_data={}, bot=bot)))
-        # справка рисуется на экране управления (send/edit), не reply-сообщением
-        self.assertEqual(len(bot.calls), 1)
-        text = bot.calls[0]["text"]
+        self.assertEqual([call[0] for call in bot.api_calls], ["sendRichMessage"])
+        payload = bot.api_calls[0][1]["rich_message"]
+        text = _rich_text(payload)
         for command in ("/start", "/new_wizard", "/drafts", "/cancel", "/help"):
             self.assertIn(command, text)
         # Poster 2.4.1 T3: справка описывает кнопки нового меню и то, что
@@ -297,7 +343,8 @@ class MainMenuKeyboardTests(unittest.TestCase):
         self.assertIn("Создать по личному шаблону", text)
         self.assertIn("Мои анонсы", text)
         self.assertIn("Управление", text)
-        self.assertIn("готовый анонс придёт в этот чат", text)
+        # Подмены Rich Message обычным sendMessage нет (§54).
+        self.assertEqual(bot.calls, [])
 
 
 if __name__ == "__main__":

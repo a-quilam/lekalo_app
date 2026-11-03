@@ -123,6 +123,11 @@ class FakeBot:
         # Нужно тестам, которые проверяют порядок сообщений (U2b): сами
         # записи `calls` не содержат id, а он важен как инвариант чата.
         self.call_message_ids: dict[int, tuple[int, ...]] = {}
+        # Poster 2.5 §61: Rich Message учитывается ОТДЕЛЬНО от sendMessage.
+        # rich_records — только вызовы sendRichMessage (chat_id, rich_message,
+        # reply_markup); в общий журнал `calls` они тоже попадают, чтобы
+        # проверять порядок вызовов Telegram API.
+        self.rich_records: list[dict[str, Any]] = []
 
     def _markup_signature(self, markup: Any) -> Any:
         """Сравнимая подпись клавиатуры (для детекции идентичного edit'а)."""
@@ -228,6 +233,49 @@ class FakeBot:
 
     async def answer_callback_query(self, *args: Any, **kwargs: Any) -> None:
         self._record("callback_answer", args, kwargs)
+
+    async def do_api_request(
+        self,
+        endpoint: str,
+        api_kwargs: dict[str, Any] | None = None,
+        return_type: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        """
+        Произвольный эндпоинт Bot API (Poster 2.5 §50–51, §61).
+
+        Rich Message идёт через настоящий `rich_message.send_rich_message`,
+        который зовёт `Bot.do_api_request`. FakeBot эмулирует ОДИН новый
+        метод — `sendRichMessage`: запись попадает и в общий журнал `calls`
+        (порядок вызовов), и в отдельный `rich_records`, поэтому тесты
+        различают `sendMessage` и `sendRichMessage` (§54, §61).
+
+        Ответ — как у настоящего PTB с `return_type=Message`: готовый
+        `telegram.Message`. Вид содержимого помечается "rich": Telegram не
+        даёт править Rich Message как обычный текст.
+        """
+        if endpoint != "sendRichMessage":
+            raise ValueError(f"FakeBot: неожиданный эндпоинт {endpoint!r}")
+        data = dict(api_kwargs or {})
+        record = self._record("rich_message", (), data)
+        message = self._make_message({"chat_id": data.get("chat_id"), "text": None})
+        self.call_message_ids[id(record)] = (message.message_id,)
+        self._message_content[(message.chat.id, message.message_id)] = (
+            "rich",
+            None,
+            self._markup_signature(data.get("reply_markup")),
+        )
+        self.rich_records.append(
+            {
+                "type": "rich_message",
+                "chat_id": data.get("chat_id"),
+                "rich_message": data.get("rich_message"),
+                "reply_markup": data.get("reply_markup"),
+                "message_id": message.message_id,
+                "message": message,
+            }
+        )
+        return message
 
     async def edit_message_text(self, *args: Any, **kwargs: Any) -> None:
         # Реализм Telegram: идентичное содержимое (текст + клавиатура) —

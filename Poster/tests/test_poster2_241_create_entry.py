@@ -88,6 +88,28 @@ def _callbacks(h, prefix: str = "") -> list[str]:
     ]
 
 
+def _rich_plain_text(payload: dict) -> str:
+    """Весь текст Rich Message одним куском: заголовки, абзацы, списки."""
+    parts: list[str] = []
+
+    def walk(block: dict) -> None:
+        kind = block.get("type")
+        if kind == "section_heading":
+            parts.append(block.get("heading", ""))
+        elif kind == "paragraph":
+            parts.append(block.get("text", ""))
+        elif kind == "list":
+            parts.extend(block.get("items") or ())
+        elif kind == "details":
+            parts.append(block.get("summary", ""))
+            for child in block.get("blocks") or ():
+                walk(child)
+
+    for block in payload.get("blocks") or ():
+        walk(block)
+    return "\n".join(parts)
+
+
 def _callback(h, prefix: str) -> str:
     found = _callbacks(h, prefix)
     if not found:
@@ -160,9 +182,11 @@ class MainMenuEntryTests(unittest.TestCase):
 
     @scenario_test
     async def test_help_describes_single_entry(self, h):
+        """Poster 2.5: справка — Rich Message; единый вход описан в разделах."""
         await h.text("/start")
         await h.callback("help")
-        text = h.screen_text()
+        record = h.bot.rich_records[0]
+        text = _rich_plain_text(record["rich_message"])
         self.assertIn("📝 Создать анонс", text)
         self.assertIn("Создать по личному шаблону", text)
         self.assertNotIn("📍 Создать для площадки", text)

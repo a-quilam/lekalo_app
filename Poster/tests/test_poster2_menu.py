@@ -291,10 +291,20 @@ class MainMenuTests(unittest.TestCase):
 
     @scenario_test
     async def test_help_screen_lists_new_entries(self, h):
+        """Poster 2.5 §46: справка — Rich Message, а не обычный экран."""
         await h.text("/start")
         await h.callback("help")
-        text = h.screen_text()
-        self.assertIn("📝 Создать анонс", text)
+        record = h.bot.rich_records[0]
+        text = "\n".join(
+            str(block.get("heading") or block.get("text") or block.get("summary") or "")
+            for block in record["rich_message"]["blocks"]
+        )
+        for section in record["rich_message"]["blocks"]:
+            for child in section.get("blocks") or ():
+                text += "\n" + str(child.get("text") or "")
+                text += "\n" + "\n".join(child.get("items") or ())
+        self.assertIn("Создание анонса", text)
+        self.assertIn("Создать анонс", text)
         self.assertIn("Создать по личному шаблону", text)
         self.assertIn("Мои анонсы", text)
         self.assertIn("Управление", text)
