@@ -363,5 +363,104 @@ class UserStatePersistenceTests(unittest.TestCase):
         self.assertIsNone(payload)
 
 
+@unittest.skipIf(
+    INTEGRATION_IMPORT_ERROR is not None,
+    f"интеграционное окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
+)
+class RichTempPersistenceTests(unittest.TestCase):
+    """
+    §53: id временного Rich Message переживает рестарт через `user_states`.
+
+    Rich Message нельзя перерисовать в обычный экран, поэтому после
+    перезапуска службы справку нужно УДАЛИТЬ — иначе рядом с новым экраном
+    останется живая кнопка возврата (две конкурирующие клавиатуры). Без
+    записи в БД id терялся бы вместе с user_data (MINOR-1 приёмки E).
+    """
+
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from sqlalchemy import create_engine
+        from sqlalchemy.orm import sessionmaker
+
+        from base import Base
+
+        self._tmp = tempfile.TemporaryDirectory(prefix="poster_rich_temp_")
+        db_path = Path(self._tmp.name) / "rich_temp.db"
+        self.engine = create_engine(f"sqlite:///{db_path}")
+        Base.metadata.create_all(self.engine)
+        self.factory = sessionmaker(bind=self.engine)
+        self._patcher = patch.object(screen, "SessionLocal", self.factory)
+        self._patcher.start()
+        self.bot = FakeBot()
+        self.user_data: dict = {}
+
+    def tearDown(self) -> None:
+        self._patcher.stop()
+        self.engine.dispose()
+        self._tmp.cleanup()
+
+    def _deleted(self) -> list[int]:
+        out: list[int] = []
+        for call in self.bot.calls:
+            if call["type"] != "delete_message":
+                continue
+            pos = tuple(call.get("args") or ())
+            message_id = pos[1] if len(pos) > 1 else call.get("message_id")
+            if message_id is None:
+                continue
+            out.append(int(message_id))
+        return out
+
+    def test_remember_stores_id_in_database(self) -> None:
+        screen.remember_rich_temp(1, self.user_data, 501)
+
+        self.assertEqual(self.user_data[screen.RICH_TEMP_KEY], 501)
+        self.assertEqual(screen.load_rich_temp(1), 501)
+
+    def test_remember_does_not_touch_screen_ref(self) -> None:
+        """Отметка Rich Message не перезаписывает ref свободного экрана."""
+        screen.remember_screen(self.user_data, 777, 42)
+        screen.save_state(1, self.user_data, 777, None)
+        screen.remember_rich_temp(1, self.user_data, 501)
+
+        ref, _payload = screen.load_state(1)
+        self.assertEqual(ref, {"chat_id": 777, "message_id": 42})
+
+    def test_drop_after_restart_deletes_message_from_database(self) -> None:
+        """После рестарта user_data пуст — id находится в БД и удаляется."""
+        screen.remember_rich_temp(1, self.user_data, 501)
+
+        fresh_data: dict = {}  # «новый процесс»: user_data потерян
+        asyncio.run(screen.drop_rich_temp(self.bot, 777, fresh_data, user_id=1))
+
+        self.assertEqual(self._deleted(), [501])
+        self.assertIsNone(screen.load_rich_temp(1), "id остался в БД навсегда")
+        self.assertNotIn(screen.RICH_TEMP_KEY, fresh_data)
+
+    def test_screen_render_after_restart_removes_stale_help(self) -> None:
+        """Первый же экран после рестарта вытесняет справку (§53)."""
+        screen.remember_rich_temp(1, self.user_data, 501)
+        context: Any = SimpleNamespace(bot=self.bot)
+
+        asyncio.run(screen.render_screen(context, {}, 777, "Здравствуйте!", user_id=1))
+
+        self.assertIn(501, self._deleted())
+        self.assertIsNone(screen.load_rich_temp(1))
+
+    def test_drop_without_db_record_is_noop(self) -> None:
+        asyncio.run(screen.drop_rich_temp(self.bot, 777, {}, user_id=1))
+        self.assertEqual(self._deleted(), [])
+
+    def test_repeat_drop_does_not_delete_twice(self) -> None:
+        screen.remember_rich_temp(1, self.user_data, 501)
+
+        asyncio.run(screen.drop_rich_temp(self.bot, 777, self.user_data, user_id=1))
+        asyncio.run(screen.drop_rich_temp(self.bot, 777, self.user_data, user_id=1))
+
+        self.assertEqual(self._deleted(), [501])
+
+
 if __name__ == "__main__":
     unittest.main()

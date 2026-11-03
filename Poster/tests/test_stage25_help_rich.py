@@ -26,9 +26,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import unittest
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 from telegram import Chat, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter
@@ -207,6 +209,78 @@ class HelpStructureTests(unittest.TestCase):
         commands = text_of("Команды")
         self.assertIn("/start", commands)
         self.assertIn("/help", commands)
+
+    def test_section_texts_use_catalog_button_labels(self) -> None:
+        """
+        MINOR-2 приёмки E: упоминания кнопок берутся из каталога.
+
+        Проверка через подмену каталога: если в тексте раздела осталась
+        жёсткая подпись, справка начнёт называть кнопку по-старому. Заодно
+        закрепляется, что каждая подпись — существующий ключ каталога.
+        """
+        from help_rich import _LABELS
+
+        for token, key in _LABELS.items():
+            self.assertIn(key, ui_texts.DEFAULTS, f"{token}: нет ключа {key}")
+
+        catalog = ui_texts.texts()
+        overrides = {
+            "buttons.finished.data": "📝 ДАННЫЕ-ПРОВЕРКА",
+            "buttons.finished.photos": "🖼 СНИМКИ ({count})",
+            "wizard.photos.title": "📷 ФОТО-ШАГ-ПРОВЕРКА",
+        }
+        patched = dict(catalog, **overrides)
+        with mock.patch.object(ui_texts, "_catalog", patched):
+            rebuilt = build_help_rich_message()
+        by_title = {
+            block.summary: block
+            for block in rebuilt.blocks or ()
+            if isinstance(block, InputRichBlockDetails)
+        }
+
+        def text_of(title: str) -> str:
+            parts: list[str] = []
+            for child in by_title[title].blocks:
+                if isinstance(child, InputRichBlockParagraph):
+                    parts.append(child.text)
+                elif isinstance(child, InputRichBlockList):
+                    parts.extend(child.items)
+            return "\n".join(parts)
+
+        edited = text_of("Редактирование анонса")
+        self.assertIn("📝 ДАННЫЕ-ПРОВЕРКА", edited)
+        self.assertIn("🖼 СНИМКИ (n)", edited)
+        self.assertNotIn("«Поля»", edited)
+        self.assertNotIn("«Фотографии»", edited)
+        self.assertIn("📷 ФОТО-ШАГ-ПРОВЕРКА", text_of("Фотографии"))
+
+    def test_section_texts_have_no_leftover_markers(self) -> None:
+        """
+        В готовой справке нет `{token}`-маркеров и лишних фигурных скобок.
+
+        Опорный инвариант подстановки подписей: если в тексте раздела
+        появится `{...}` без ключа в `_LABELS`, `_fill` упадёт `KeyError`, а
+        незамеченный маркер показался бы пользователю как есть.
+        """
+        from help_rich import _LABELS, _SECTIONS
+
+        for _title_key, paragraph, items in _SECTIONS:
+            for text in (paragraph, *items):
+                for marker in re.findall(r"\{([^}]*)\}", text):
+                    self.assertIn(
+                        marker, _LABELS, f"неизвестная подстановка {{{marker}}}"
+                    )
+
+        for block in self._details():
+            for child in block.blocks:
+                values: list[str] = []
+                if isinstance(child, InputRichBlockParagraph):
+                    values.append(child.text)
+                elif isinstance(child, InputRichBlockList):
+                    values.extend(child.items)
+                for value in values:
+                    self.assertNotIn("{", value, "в справке остался маркер")
+                    self.assertNotIn("}", value, "в справке остался маркер")
 
     def test_commands_section_lists_only_real_commands(self) -> None:
         """§51 п.10: в справочнике команд нет придуманных команд."""

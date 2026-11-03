@@ -48,11 +48,6 @@ from utils.ui_texts import tr
 
 logger = logging.getLogger(__name__)
 
-# Poster 2.5 §53: Rich Message справки — временный служебный экран. Ключ
-# состояния общий со `utils.screen`: обычный экран вытесняет Rich Message
-# сам, а возврат в меню дополнительно снимает его до отрисовки.
-HELP_RICH_KEY = screen.RICH_TEMP_KEY
-
 
 def _drop_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
@@ -183,8 +178,11 @@ async def render_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await screen.reanchor_screen(update, context)
     # Poster 2.5 §53: справка — временный Rich Message. Возврат в меню
     # удаляет её (Rich Message нельзя перерисовать в обычный экран), а
-    # анонсы пользователя не трогаются.
-    await screen.drop_rich_temp(context.bot, ctx.chat(update).id, ctx.data(context))
+    # анонсы пользователя не трогаются. После рестарта службы id есть только
+    # в `user_states` — отсюда user_id.
+    await screen.drop_rich_temp(
+        context.bot, ctx.chat(update).id, ctx.data(context), ctx.user(update).id
+    )
     # R1, дефект №23: главное меню — вход в актуальный UI, у клиента могла
     # остаться reply-клавиатура старых версий. Снимается один раз на вход.
     await screen.drop_legacy_reply_keyboard(update, context)
@@ -205,7 +203,12 @@ async def render_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         screen.hydrate_screen_ref(user_data, user_id)
     chat_id = ctx.chat(update).id
     await screen.render_screen(
-        context, user_data, chat_id, main_menu_text(), main_menu_keyboard()
+        context,
+        user_data,
+        chat_id,
+        main_menu_text(),
+        main_menu_keyboard(),
+        user_id=user_id,
     )
     # ref экрана закрепляется в БД; payload не трогаем
     screen.save_screen_ref(user_id, user_data, chat_id)
@@ -294,7 +297,9 @@ async def render_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_data = ctx.data(context)
     chat_id = ctx.chat(update).id
     # Повторное открытие справки не копит Rich Message: прежнее удаляется.
-    await screen.drop_rich_temp(context.bot, chat_id, user_data)
+    # user_id — чтобы найти id прежней справки в БД, если он потерян из
+    # user_data после рестарта службы (§53).
+    await screen.drop_rich_temp(context.bot, chat_id, user_data, user_id)
     await _close_screen(context, user_data, user_id, chat_id)
 
     keyboard = InlineKeyboardMarkup(
@@ -313,16 +318,19 @@ async def render_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             chat_id,
             tr("help.rich.unavailable"),
             main_menu_keyboard(),
+            user_id=user_id,
         )
         screen.save_screen_ref(user_id, user_data, chat_id)
         return
 
     # Адаптер возвращает Message или (при неполном ответе) message_id —
-    # обе формы равнозначны для навигации.
+    # обе формы равнозначны для навигации. id пишется и в user_data, и в
+    # `user_states` (§53): после рестарта службы справку иначе нечем удалить,
+    # и она осталась бы живой кнопкой рядом с новым экраном.
     if isinstance(message, Message):
-        user_data[HELP_RICH_KEY] = message.message_id
+        screen.remember_rich_temp(user_id, user_data, message.message_id)
     else:
-        user_data[HELP_RICH_KEY] = int(message)
+        screen.remember_rich_temp(user_id, user_data, int(message))
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -377,6 +385,7 @@ async def open_manage(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         chat_id,
         manage_text(),
         manage_keyboard(show_admin=_show_admin_button(user_id)),
+        user_id=user_id,
     )
     screen.save_screen_ref(user_id, user_data, chat_id)
 
@@ -450,6 +459,7 @@ async def cancel_without_dialog(
         ctx.chat(update).id,
         text,
         main_menu_keyboard() if cancelled else None,
+        user_id=user_id,
     )
     if cancelled:
         await screen.drop_user_input(update, context)
@@ -476,7 +486,9 @@ async def outside_dialog_hint(
         text = tr("menu.outside.photo")
     else:
         text = tr("menu.outside.text")
-    await screen.render_screen(context, user_data, ctx.chat(update).id, text)
+    await screen.render_screen(
+        context, user_data, ctx.chat(update).id, text, user_id=ctx.user(update).id
+    )
 
 
 async def handle_main_menu_selection(

@@ -885,7 +885,9 @@ async def _show(
     if screen.screen_ref(user_data) is None:
         screen.hydrate_screen_ref(user_data, user_id)
     chat_id = ctx.chat(update).id
-    await screen.render_screen(context, user_data, chat_id, body, keyboard)
+    await screen.render_screen(
+        context, user_data, chat_id, body, keyboard, user_id=user_id
+    )
     screen.save_screen_ref(user_id, user_data, chat_id)
     if saved:
         if cleanup_ids:
@@ -918,6 +920,7 @@ async def _render_denied(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 ]
             ]
         ),
+        user_id=user_id,
     )
     screen.save_screen_ref(user_id, user_data, ctx.chat(update).id)
 
@@ -5557,7 +5560,9 @@ async def handle_transfer_start(
     if screen.screen_ref(user_data) is None:
         screen.hydrate_screen_ref(user_data, user.id)
     chat_id = ctx.chat(update).id
-    await screen.render_screen(context, user_data, chat_id, text, keyboard)
+    await screen.render_screen(
+        context, user_data, chat_id, text, keyboard, user_id=user.id
+    )
     screen.save_screen_ref(user.id, user_data, chat_id)
     return True
 

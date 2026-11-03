@@ -836,7 +836,9 @@ async def _render(
     user_id = _user_id(update)
     if screen.screen_ref(user_data) is None:
         screen.hydrate_screen_ref(user_data, user_id)
-    await screen.render_screen(context, user_data, ctx.chat(update).id, text, keyboard)
+    await screen.render_screen(
+        context, user_data, ctx.chat(update).id, text, keyboard, user_id=user_id
+    )
     # Poster 2.3 H1: ref экрана и режим ввода фиксируются одной записью.
     # Снимок нужен, чтобы после рестарта службы следующий текст продолжил шаг,
     # а не провалился в подсказку главного меню.

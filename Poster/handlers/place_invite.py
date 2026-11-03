@@ -178,6 +178,7 @@ async def _render_invalid(
         chat_id,
         tr("places.invite.invalid"),
         main_menu_keyboard(),
+        user_id=user_id,
     )
     screen.save_screen_ref(user_id, user_data, chat_id)
     await screen.drop_user_input(update, context)

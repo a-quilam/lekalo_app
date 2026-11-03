@@ -50,6 +50,20 @@ LEGACY_KEYBOARD_RESET_KEY = "legacy_reply_keyboard_dropped"
 # очистку без второго механизма.
 RICH_TEMP_KEY = "help_rich_message_id"
 
+# §53: id временного Rich Message переживает рестарт процесса — иначе справка
+# с кнопкой «🏠 В меню» осталась бы в чате рядом с новым экраном (две
+# конкурирующие клавиатуры), а удалить её было бы нечем. Отдельного столбца в
+# `user_states` нет и он не нужен: `create_all` не добавляет колонки в живую
+# базу (для этого понадобилась бы миграция), а `payload` — уже существующий
+# JSON-снимок интерфейсного состояния (рядом с `announcement_resume`).
+RICH_TEMP_PAYLOAD_KEY = "rich_temp"
+
+# Признак «состояние БД про Rich Message известно» (только user_data, не
+# персистится): `drop_rich_temp` вызывается на КАЖДОМ экране, а лишний SELECT
+# в SQLite ради заведомо отсутствующей записи не нужен. После рестарта
+# признака нет — тогда ровно одно чтение решает, жива ли ещё справка.
+RICH_TEMP_KNOWN_KEY = "rich_temp_db_known"
+
 
 # —— экран (постоянное сообщение управления) ——————————————————————————
 
@@ -71,6 +85,8 @@ async def render_screen(
     chat_id: int,
     text: str,
     reply_markup=None,
+    *,
+    user_id: int | None = None,
 ) -> None:
     """
     Рисует экран: правит существующее сообщение, при неудаче создаёт новое.
@@ -83,10 +99,12 @@ async def render_screen(
     Poster 2.5 §53: любой обычный экран вытесняет временное Rich Message
     (справку). Rich Message нельзя перерисовать в текст, поэтому он именно
     удаляется — иначе в чате остались бы две конкурирующие клавиатуры.
+    `user_id` нужен, чтобы найти id справки в `user_states` после рестарта:
+    в user_data его уже нет (см. `drop_rich_temp`).
     """
     bot = context.bot
     # уход с Rich-экрана: временное сообщение больше не нужно
-    await drop_rich_temp(bot, chat_id, user_data)
+    await drop_rich_temp(bot, chat_id, user_data, user_id)
     ref = screen_ref(user_data)
     if ref:
         try:
@@ -120,7 +138,12 @@ async def render_screen_from_update(
 ) -> None:
     """Рендер экрана по update (chat берётся из effective_chat)."""
     await render_screen(
-        context, ctx.data(context), ctx.chat(update).id, text, reply_markup
+        context,
+        ctx.data(context),
+        ctx.chat(update).id,
+        text,
+        reply_markup,
+        user_id=ctx.user(update).id,
     )
 
 
@@ -215,7 +238,9 @@ async def cleanup_messages(bot, chat_id: int, message_ids: list[int]) -> None:
             logger.info(f"Не удалось удалить сообщение {message_id}: {e}")
 
 
-async def drop_rich_temp(bot, chat_id: int, user_data: dict) -> None:
+async def drop_rich_temp(
+    bot, chat_id: int, user_data: dict, user_id: int | None = None
+) -> None:
     """
     Удаляет временное Rich Message (справку, §53) при уходе на другой экран.
 
@@ -223,8 +248,25 @@ async def drop_rich_temp(bot, chat_id: int, user_data: dict) -> None:
     единственная корректная замена — удаление. Удаление best-effort:
     отказ Telegram не мешает навигации, а message_id из состояния убирается
     в любом случае (повторная попытка удалить чужое сообщение не нужна).
+
+    `user_id` передаётся там, где он известен. После рестарта процесса в
+    user_data пусто, и id есть только в `user_states` (см.
+    `remember_rich_temp`): без чтения оттуда справка осталась бы в чате
+    живой кнопкой рядом с новым экраном — две конкурирующие клавиатуры
+    (§53, дефект приёмки E).
     """
     message_id = user_data.pop(RICH_TEMP_KEY, None)
+    if user_id is not None and not user_data.get(RICH_TEMP_KNOWN_KEY):
+        # В user_data отметки нет: либо справки не было, либо был рестарт.
+        # Ровно одно чтение на «холодный» старт; повторно не читаем.
+        stored = load_rich_temp(user_id)
+        user_data[RICH_TEMP_KNOWN_KEY] = True
+        if message_id is None:
+            message_id = stored
+    if user_id is not None and message_id is not None:
+        # Отметка снимается всегда: повторно удалять то же сообщение не нужно,
+        # а «мусорный» id остался бы в payload навсегда.
+        _forget_rich_temp(user_id)
     if message_id is None:
         return
     await cleanup_messages(bot, chat_id, [int(message_id)])
@@ -450,6 +492,82 @@ def save_screen_ref(user_id: int, user_data: dict, chat_id: int) -> None:
     """
     _ref, payload = load_state(user_id)
     save_state(user_id, user_data, chat_id, payload)
+
+
+def _save_payload_only(user_id: int, payload: dict | None) -> bool:
+    """
+    Пишет payload в `user_states`, НЕ трогая ref экрана.
+
+    Отдельная запись нужна служебным отметкам интерфейса (id временного
+    Rich Message, §53): они меняются независимо от экрана, и перезапись
+    `screen_message_id` из user_data была бы ложной. Сбой БД логируется и
+    не прерывает сценарий; возвращает True при подтверждённой записи.
+    """
+    session = SessionLocal()
+    try:
+        row = session.get(UserState, user_id)
+        if row is None:
+            row = UserState(user_id=user_id)
+            session.add(row)
+        row.payload = _dumps(payload)
+        row.updated_at = utcnow()
+        session.commit()
+        return True
+    except Exception as e:
+        session.rollback()
+        logger.error(
+            "Не удалось сохранить отметку интерфейса пользователя %s: %s",
+            user_id,
+            e,
+        )
+        return False
+    finally:
+        session.close()
+
+
+def remember_rich_temp(user_id: int, user_data: dict, message_id: int) -> None:
+    """
+    Запоминает id временного Rich Message (справки) в user_data И в БД (§53).
+
+    Rich Message нельзя отредактировать в обычный экран, поэтому после
+    рестарта процесса его нужно УДАЛИТЬ — иначе рядом с новым экраном
+    остаётся живая кнопка возврата (две конкурирующие клавиатуры). Отметка
+    живёт в существующем `user_states.payload` рядом с resume-снимком
+    конструктора: отдельного столбца (и миграции) не требуется, живые базы
+    не меняются. Сбой БД не ломает справку: id остаётся хотя бы в user_data.
+    """
+    user_data[RICH_TEMP_KEY] = int(message_id)
+    # Состояние БД известно: следующий drop не должен читать её впустую.
+    user_data[RICH_TEMP_KNOWN_KEY] = True
+    payload = load_payload(user_id) or {}
+    if payload.get(RICH_TEMP_PAYLOAD_KEY) == int(message_id):
+        return
+    payload[RICH_TEMP_PAYLOAD_KEY] = int(message_id)
+    _save_payload_only(user_id, payload)
+
+
+def load_rich_temp(user_id: int) -> int | None:
+    """id временного Rich Message из `user_states.payload` (None — нет)."""
+    payload = load_payload(user_id)
+    if not payload:
+        return None
+    value = payload.get(RICH_TEMP_PAYLOAD_KEY)
+    return int(value) if isinstance(value, int) else None
+
+
+def _forget_rich_temp(user_id: int) -> None:
+    """
+    Снимает отметку временного Rich Message из `user_states.payload`.
+
+    Вызывается, когда справка удалена (или уже удалена ранее): повторно
+    удалять то же сообщение не нужно, а «мусорный» id остался бы в payload
+    навсегда. Сбой БД логируется внутри `_save_payload_only`.
+    """
+    payload = load_payload(user_id)
+    if not payload or RICH_TEMP_PAYLOAD_KEY not in payload:
+        return
+    payload.pop(RICH_TEMP_PAYLOAD_KEY, None)
+    _save_payload_only(user_id, payload or None)
 
 
 async def reanchor_screen(update: Any, context: ContextTypes.DEFAULT_TYPE) -> bool:

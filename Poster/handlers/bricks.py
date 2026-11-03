@@ -1708,7 +1708,9 @@ async def _show(
     if screen.screen_ref(user_data) is None:
         screen.hydrate_screen_ref(user_data, user_id)
     chat_id = ctx.chat(update).id
-    await screen.render_screen(context, user_data, chat_id, body, keyboard)
+    await screen.render_screen(
+        context, user_data, chat_id, body, keyboard, user_id=user_id
+    )
     screen.save_screen_ref(user_id, user_data, chat_id)
     if saved:
         if cleanup_ids:
