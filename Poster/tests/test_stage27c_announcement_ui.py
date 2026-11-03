@@ -4,13 +4,15 @@ Stage 28: сквозные сценарии автоматической выд�
 
 Все Update проходят через настоящее приложение/FakeBot, БД временная.
 Проверяются оба вида шаблонов, 0/1/много фото, рестарт, двойной callback,
-сбой API, частичная отправка, продолжение, замена прошлой версии и защита
-от дублей. Публикация в каналы не используется: готовый анонс приходит
-только в личный чат автора.
+сбой API, частичная отправка, продолжение, правка доставленного на месте
+(§28) и замена экземпляра при смене структуры (§30–31), защита от дублей.
+Публикация в каналы не используется: готовый анонс приходит только в личный
+чат автора.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 from datetime import date
@@ -18,6 +20,7 @@ from datetime import date
 from sqlalchemy import select
 
 try:
+    from announcement_instances import list_instances
     from announcement_store import (
         begin_announcement_publication,
         get_announcement_draft,
@@ -205,9 +208,11 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
 
         # H3: фото к доставленному анонсу применяются сразу — каждая
         # подтверждённая партия заменяет прошлую версию без «Применить».
+        # Партия альбома применяется один раз при её закрытии (§28/§58 И).
         await _open_photos(h)
         first_update = await h.photo("photo-1", media_group_id="album-1")
         await h.photo("photo-2", media_group_id="album-1")
+        await asyncio.sleep(0.4)
         stored = _draft_by_id(h, draft.id)
         self.assertEqual(tuple(json.loads(stored.photos)), ("photo-1", "photo-2"))
         revision = stored.revision
@@ -618,14 +623,15 @@ class AnnouncementAutoDeliveryFailureTests(unittest.TestCase):
 )
 class AnnouncementRedeliveryTests(unittest.TestCase):
     @scenario_test
-    async def test_edit_rebuild_keeps_old_version_until_new_success(self, h) -> None:
-        """Успешная правка: новое сообщение выше, прошлое удалено после."""
+    async def test_text_edit_updates_message_in_place(self, h) -> None:
+        """§28: правка текста правит активное сообщение, второй копии нет."""
         await h.text("/start")
         draft, _bricks = await _personal_delivered(h)
         first = _stored(h, draft.id)
         first_ids = tuple(first.delivered_message_ids)
         first_fingerprint = first.delivery_fingerprint
         self.assertEqual(len(h.posts()), 1)
+        message_id = first_ids[0]
 
         # Меняем значение через управление полями.
         await _open_edit(h)
@@ -639,30 +645,38 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         # «неприменённых» изменений на экране завершения не бывает.
         self.assertFalse(_callbacks(h, "aw_apply"))
         self.assertNotIn("Есть изменения", h.screen_text())
-        posts = h.posts()
-        self.assertEqual(len(posts), 2)
-        self.assertIn("Обновлённое", posts[-1] or "")
+        # §28: анонс без фото доводится до новой версии `editMessageText`,
+        # поэтому текст берётся из фактического содержимого сообщения.
+        self.assertIn("Обновлённое", h.bot.content_text(h.chat_id, message_id) or "")
+        self.assertEqual(
+            h.current_post_ids().get(message_id),
+            h.bot.content_text(h.chat_id, message_id),
+        )
+        self.assertEqual(len(h.posts()), 1, "второй копии в чате нет")
 
         second = _stored(h, draft.id)
         second_ids = tuple(second.delivered_message_ids)
-        self.assertTrue(second_ids)
-        self.assertFalse(set(second_ids) & set(first_ids))
-        # Прошлые адреса сохранены отдельно и не выдаются за текущие.
-        self.assertEqual(tuple(second.previous_message_ids), first_ids)
+        # Правка на месте: адреса, поколение и единственный экземпляр не
+        # меняются, архивного снимка не появляется (§28, §30–31).
+        self.assertEqual(second_ids, first_ids)
+        self.assertEqual(tuple(second.previous_message_ids), ())
         self.assertNotEqual(second.delivery_fingerprint, first_fingerprint)
-        # §30–31: прежний экземпляр остаётся в чате архивным снимком, его
-        # клавиатура снята, а текст и фото не тронуты.
         self.assertFalse(
             set(first_ids) & set(h.deleted_ids()),
-            "прежний экземпляр не удаляется",
+            "активное сообщение не удаляется",
         )
-        for message_id in first_ids:
-            self.assertIsNone(
-                _final_markup(h, message_id),
-                "с прежнего экземпляра снята клавиатура",
-            )
+        # Управление остаётся на самом анонсе: кнопки не снимались.
+        markup = _final_markup(h, message_id)
+        self.assertIsNotNone(markup, "кнопки активного экземпляра живы")
+        self.assertIn(
+            "anp_data:",
+            str(markup),
+            "управление привязано к действующему экземпляру",
+        )
+        self.assertEqual(len(list_instances(h.session_factory(), draft.id)), 1)
 
-        # Ещё одна правка заменяет уже вторую версию, а не первую.
+        # Ещё одна правка правит то же самое сообщение, а не создаёт третью
+        # версию в чате.
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
@@ -670,9 +684,11 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         # принимает новый текст.
         await h.text("Третье")
         third = _stored(h, draft.id)
-        self.assertEqual(tuple(third.previous_message_ids), second_ids)
-        self.assertIn("Третье", h.posts()[-1] or "")
-        self.assertEqual(len(h.posts()), 3)
+        self.assertEqual(tuple(third.delivered_message_ids), first_ids)
+        self.assertEqual(tuple(third.previous_message_ids), ())
+        self.assertEqual(h.bot.content_text(h.chat_id, message_id), "Третье")
+        self.assertEqual(len(h.posts()), 1)
+        self.assertEqual(len(list_instances(h.session_factory(), draft.id)), 1)
 
     @scenario_test
     async def test_deletion_failure_of_old_version_keeps_new_one_available(
@@ -682,6 +698,7 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         await h.text("/start")
         draft, _bricks = await _personal_delivered(h)
         first_ids = tuple(_stored(h, draft.id).delivered_message_ids)
+        message_id = first_ids[0]
 
         from telegram.error import BadRequest
 
@@ -695,21 +712,37 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         # принимает новый текст.
         await h.text("Новая версия")
 
-        # Неудача удаления не откатывает успешную доставку: новая версия есть,
-        # статус остаётся sent, а прежний экземпляр не удаляется вовсе — он
-        # уходит в архив с прежним содержимым и снятой клавиатурой (§30–31).
+        # §28: правка текста идёт на месте, удаление прежнего сообщения не
+        # требуется вовсе — запрет Telegram на удаление ничего не ломает.
         self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
-        self.assertIn("Новая версия", h.posts()[-1] or "")
+        self.assertEqual(h.bot.content_text(h.chat_id, message_id), "Новая версия")
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
-        self.assertEqual(tuple(sent.previous_message_ids), first_ids)
-        self.assertTrue(sent.delivered_message_ids)
-        self.assertFalse(set(sent.delivered_message_ids) & set(first_ids))
-        self.assertFalse(set(first_ids) & set(h.deleted_ids()))
+        self.assertEqual(tuple(sent.delivered_message_ids), first_ids)
+        self.assertEqual(tuple(sent.previous_message_ids), ())
+        self.assertNotIn(message_id, h.deleted_ids(), "активное сообщение не удаляется")
+        self.assertIsNotNone(_final_markup(h, message_id), "кнопки живы")
+
+        # Смена структуры (0→1 фото) — контролируемая замена (§28): новый
+        # экземпляр доставлен, прежний остался снимком без кнопок, статус
+        # sent. Неудача удаления панели/клавиатуры не откатывает доставку.
+        await h.callback(_callback(h, "aw_photos"))
+        await h.photo("photo-legacy")
+        replaced = _stored(h, draft.id)
+        self.assertEqual(replaced.publication_status, "sent")
+        self.assertEqual(tuple(replaced.previous_message_ids), first_ids)
+        new_ids = tuple(replaced.delivered_message_ids)
+        self.assertTrue(new_ids)
+        self.assertFalse(set(new_ids) & set(first_ids))
+        self.assertNotIn(message_id, h.deleted_ids())
+        self.assertIsNone(
+            _final_markup(h, message_id), "с прежнего экземпляра снята клавиатура"
+        )
+        self.assertIn("Новая версия", h.bot.content_text(h.chat_id, new_ids[0]) or "")
 
     @scenario_test
-    async def test_extras_edit_after_delivery_rebuilds_post(self, h) -> None:
-        """Доп. кирпичик: значение применяется пересборкой и заменой."""
+    async def test_extras_edit_after_delivery_updates_in_place(self, h) -> None:
+        """Доп. кирпичик: значение применяется правкой активного анонса (§28)."""
         await h.text("/start")
         specs: list[tuple[str, str, str, dict[str, object]]] = [
             ("main", "Основное", "short_text", {}),
@@ -724,6 +757,7 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
             extended_content="[main]\n[extra0]",
         )
         first_ids = tuple(_stored(h, draft.id).delivered_message_ids)
+        message_id = first_ids[0]
         await _open_edit(h)
         await h.callback(_callback(h, "aw_extras"))
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_EXTRAS)
@@ -746,18 +780,18 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
 
         # H3: значение применилось сразу, без кнопки «Применить изменения».
         self.assertFalse(_callbacks(h, "aw_apply"))
-        self.assertIn("Дополнительно", h.posts()[-1] or "")
+        # §28: правка того же состава медиа (0 фото) — только `editMessageText`,
+        # поэтому текст берётся из фактического содержимого сообщения.
+        self.assertIn("Дополнительно", h.bot.content_text(h.chat_id, message_id) or "")
+        self.assertEqual(len(h.posts()), 1, "второй копии в чате нет")
         sent = _stored(h, draft.id)
-        self.assertEqual(tuple(sent.previous_message_ids), first_ids)
-        self.assertFalse(
-            set(first_ids) & set(h.deleted_ids()),
-            "прежний экземпляр не удаляется",
+        self.assertEqual(tuple(sent.delivered_message_ids), first_ids)
+        self.assertEqual(tuple(sent.previous_message_ids), ())
+        self.assertNotIn(message_id, h.deleted_ids(), "активное сообщение не удаляется")
+        self.assertIsNotNone(
+            _final_markup(h, message_id), "кнопки активного экземпляра живы"
         )
-        for message_id in first_ids:
-            self.assertIsNone(
-                _final_markup(h, message_id),
-                "с прежнего экземпляра снята клавиатура",
-            )
+        self.assertEqual(len(list_instances(h.session_factory(), draft.id)), 1)
 
         # Удаление доп. кирпичика тоже приводит к новой версии. H3: после
         # сохранения значения остаёшься в списке дополнительных полей.
@@ -767,7 +801,12 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         # остаётся, поэтому список показывает его как незаполненное.
         self.assertIn("Доп 0: не заполнено", h.screen_text())
         # Удаление тоже применилось сразу: канонический текст без extras.
-        self.assertNotIn("Дополнительно", h.posts()[-1] or "")
+        final_text = h.bot.content_text(h.chat_id, message_id) or ""
+        self.assertNotIn("Дополнительно", final_text)
+        sent = _stored(h, draft.id)
+        self.assertEqual(tuple(sent.delivered_message_ids), first_ids)
+        self.assertEqual(tuple(sent.previous_message_ids), ())
+        self.assertEqual(len(h.posts()), 1)
 
 
 if __name__ == "__main__":

@@ -166,6 +166,38 @@ Developer → Tester (MEDIUM/HIGH) → Reviewer (HIGH) → checkpoint → ком
   раскладки фото §34–37; сценарии Д, И. Затем приёмка C (Tester,
   задание с готовыми фактами), make check на границе этапа.
 
+## 2026-11-03 — Этап C: C4 ЗАВЕРШЁН: commit c10850d
+
+- Правка доставленного анонса НА МЕСТЕ (§28/§30): _finish_and_deliver ветка
+  SENT + delivered ids + тот же состав фото → _edit_active_instance_in_place
+  (edit_message_text / edit_message_caption по caption_message_id /
+  edit_message_media при замене файла) → record_in_place_publication →
+  _close_publication_without_screen; generation/message_ids не меняются,
+  fingerprint обновляется (update_instance_fingerprint; триггер
+  identity_immutable соблюдён — message_ids/generation не трогаются).
+- Смена структуры медиа (0↔1↔N) → новая доставка → replace_instance →
+  _archive_instance_controls; N→0/1: панель удалена (strip_panel +
+  delete_message); 0/1→N: панель создана + set_panel_message; при сбое
+  доставки старый active цел.
+- _render_photos по §34–37 (◀️ Назад, 0/1/2+ раскладки, удаление всех
+  с подтверждением); ui_texts: +buttons.wizard.udalit_edinstvennoe_foto,
+  dobavit_foto «📥 Добавить фото», -k_obzoru (синхронно yaml+DEFAULTS).
+- record_in_place_publication (announcement_store.py): two-phase запись
+  с учётом триггера published_immutable.
+- Тесты: test_stage25_inplace.py (12, сценарии Д/И + сбои); переписаны
+  legacy-ожидания переиздания (delivery_instances InstanceArchiveTests,
+  panel stale, delivery ~843, h3_ux, 27c, u2b_finish) — инварианты усилены.
+  Ограничение харнесса: h.posts() не отражает editMessageText для 0-фото
+  (проверять через content_text/current_post_ids).
+- Финальный целевой прогон: Ran 162 tests OK. ruff/black чисто.
+- Показатели C4: Developer 3 вызова (все 3 упёрлись в steps; работа
+  продолжалась по оставленным картам правок — приемлемо, но дорого:
+  следующий раз дробить сразу).
+- Next: независимая приёмка этапа C (Tester, задание с готовыми фактами:
+  файлы тестов test_stage25_delivery_instances/panel/inplace уже есть,
+  проверять ПОВЕДЕНИЕ по §58 А–И), затем полный make check, коммит
+  чек-пойнта. Далее этап D (условные части) и E (Rich Message).
+
 ## 2026-11-03 — Этап C: C3 ЗАВЕРШЁН: commit 51e4881
 
 - handlers/announcement_panel.py (новый, группа 0 bot.py до конструктора):

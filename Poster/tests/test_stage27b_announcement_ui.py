@@ -828,7 +828,9 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         await h.text("Новое")
         # H3: ответ сразу применил изменение — новой версии достаточно,
         # строки «Есть изменения» и кнопки применения больше нет.
-        self.assertEqual(h.screen_text(), announcement_wizard_handlers.DELIVERED_EDIT_TEXT)
+        self.assertEqual(
+            h.screen_text(), announcement_wizard_handlers.DELIVERED_EDIT_TEXT
+        )
         self.assertFalse(_callbacks(h, "aw_apply"))
         self.assertIn("Новое", h.posts()[-1] or "")
 

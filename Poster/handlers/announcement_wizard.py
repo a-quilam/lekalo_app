@@ -4890,8 +4890,11 @@ async def _finish_and_deliver(
         # Незавершённая отправка продолжается отдельной кнопкой — новая
         # версия поверх неё создала бы дубли.
         return await _render_publish_status(update, context, details, notice=notice)
-    if details.stage != WizardStage.PREVIEW:
+    if details.stage != WizardStage.PREVIEW and not details.publication_sent:
         # Сборка всегда начинается из обзора: extras/вопросы уже применены.
+        # Уже доставленный анонс остаётся `completed`: перевод в `preview`
+        # выдавал бы готовый анонс за черновик, который можно продолжить
+        # (§18), а правка на месте сама возвращает этап в `completed`.
         try:
             details = _ensure_stage(update, context, details, WizardStage.PREVIEW)
         except AnnouncementError as exc:
@@ -5611,10 +5614,9 @@ async def _edit_active_instance_in_place(
     media_changed = list(current_photos) != list(previous_photos or ())
     # Текст сравнивается по видимому содержимому: маркер пустой подписи и
     # техническая заглушка не являются правкой (S4 §5.6).
-    text_changed = (
-        previous_text is None
-        or delivery.visible_text(caption) != delivery.visible_text(previous_text)
-    )
+    text_changed = previous_text is None or delivery.visible_text(
+        caption
+    ) != delivery.visible_text(previous_text)
     if text_changed:
         try:
             if instance_photos == 0:
@@ -6247,11 +6249,10 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
             details,
             notice=(tr("wizard.handle_photo.otpravka_nachata_novye_fotografii")),
         )
-    if details.publication_sent:
-        # Уже доставленный анонс: H3 применяет каждый снимок сразу (новой
-        # версии не ждёт вся партия). Поэтому ждать весь альбом незачем:
-        # каждый снимок сохраняется и применяется по одному, а ввод
-        # удаляется после подтверждённой записи (S4 §5.3).
+    if details.publication_sent and getattr(message, "media_group_id", None) is None:
+        # Уже доставленный анонс и одиночный снимок: H3 применяет его сразу
+        # (новой версии не ждёт вся партия), ввод удаляется после
+        # подтверждённой записи (S4 §5.3).
         return await _add_photo_to_delivered(update, context, details, photo, message)
     user_data = ctx.data(context)
     key = wizard_photos.buffer_photo(
@@ -6305,12 +6306,15 @@ async def _add_photo_to_delivered(
     message,
 ) -> int:
     """
-    Фото к уже доставленному анонсу: сохранить и сразу применить.
+    Одиночное фото к уже доставленному анонсу: сохранить и сразу применить.
 
     H3: кнопки «Применить изменения» нет, поэтому подтверждённый снимок
-    сразу заменяет доставленную версию. Ожидание целого альбома здесь не
-    нужно: каждый `file_id` сохраняется с CAS, 11-е фото отклоняется, а
-    сообщение пользователя удаляется только после подтверждённой записи.
+    сразу заменяет доставленную версию. Сюда попадают только одиночные
+    снимки (`media_group_id is None`): партия альбома применяется один раз
+    при её закрытии в `_close_photo_batch`, иначе 0→N давала бы по доставке
+    на каждый снимок (§28, §58 И). Каждый `file_id` сохраняется с CAS, 11-е
+    фото отклоняется, а сообщение пользователя удаляется только после
+    подтверждённой записи.
     """
     user_data = ctx.data(context)
     try:
@@ -6377,6 +6381,37 @@ async def _close_photo_batch(
     except (AnnouncementNotFoundError, AnnouncementActorError, AnnouncementError):
         return await _resume_current(update, context)
     inputs = _take_batch_inputs(user_data, key)
+    _set_details(ui, details)
+    if details.publication_sent:
+        # Партия фото к уже доставленному анонсу применяется ОДИН раз, после
+        # её закрытия: смена структуры 0→N — одна контролируемая замена и
+        # один архивный снимок (§28, §58 И), а промежуточных доставок по
+        # снимку не появляется.
+        fresh = details
+        if result.changed:
+            applied = await _apply_immediately(update, context, details)
+            if applied is None:
+                # Доставка не подтверждена: `_finish_and_deliver` уже показал
+                # причину, прежняя версия остаётся рабочей, ввод не удаляем.
+                return AW_PREVIEW
+            fresh = applied
+        if result.rejected:
+            # Лимит 10: принятые снимки уже применены одной заменой, ввод
+            # остаётся в чате — автор видит, что именно не принято.
+            return await _render_photos(
+                update,
+                context,
+                fresh,
+                notice=wizard_photos.limit_notice(result),
+            )
+        if result.changed or result.duplicate:
+            await screen.cleanup_messages(context.bot, ctx.chat(update).id, inputs)
+        return await _render_photos(
+            update,
+            context,
+            fresh,
+            notice=wizard_photos.batch_notice(result),
+        )
     if result.rejected:
         # Лимит 10: объясняем отказ, принятые фото сохранены, ввод оставляем
         # в чате — пользователь видит, что именно не принято.
@@ -6390,20 +6425,6 @@ async def _close_photo_batch(
     # Партия подтверждённо сохранена. Ввод удаляется только после
     # ПОДТВЕРЖДЁННОЙ доставки: при превышении лимита экран обещает, что
     # сообщение пользователя осталось (S4 §5.2 п.2), и это должно быть правдой.
-    # Исключение — фото к уже доставленному анонсу: там ввод больше не нужен
-    # (см. ветку `publication_sent`).
-    _set_details(ui, details)
-    if details.publication_sent:
-        # Фото добавлены к уже доставленному анонсу: H3 применяет снимки по
-        # одному сразу (см. `_add_photo_to_delivered`), поэтому закрытие
-        # партии ничего не пересобирает — только убирает ввод.
-        await screen.cleanup_messages(context.bot, ctx.chat(update).id, inputs)
-        return await _render_photos(
-            update,
-            context,
-            details,
-            notice=wizard_photos.batch_notice(result),
-        )
     # Вся партия принята → анонс готов автоматически, без кнопки «Готово».
     state = await _finish_and_deliver(
         update,

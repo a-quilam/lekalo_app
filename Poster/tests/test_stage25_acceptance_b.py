@@ -56,6 +56,7 @@ from tests.integration_harness import (
     frozen_today,
     scenario_test,
 )
+from tests.test_stage25_delivery_instances import _stored
 from tests.test_stage27b_announcement_ui import (
     _callback,
     _latest_draft,
@@ -764,7 +765,12 @@ class DateFormatAcceptance(unittest.TestCase):
             )
             await h.callback(date_callback)
             await h.text(raw_edit)
-            edited_post = h.posts()[-1] or ""
+            # §28 (2.5): правка доставленного идёт НА МЕСТЕ — анонс без фото
+            # доводится `editMessageText`, поэтому видимый текст берётся из
+            # фактического содержимого сообщения, а не из записи `send_message`.
+            edited_ids = _stored(h, standard_draft_id).delivered_message_ids
+            self.assertTrue(edited_ids, "адреса доставки потеряны")
+            edited_post = h.bot.content_text(h.chat_id, edited_ids[0]) or ""
             self.assertIn(formatted_edit, edited_post, edited_post)
             self.assertNotIn(raw_edit, edited_post, edited_post)
             self.assertNotIn(formatted, edited_post, "старая дата осталась в посте")

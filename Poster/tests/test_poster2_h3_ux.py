@@ -35,6 +35,7 @@ from __future__ import annotations
 import unittest
 
 try:
+    from announcement_instances import list_instances
     from announcement_store import get_announcement_draft, save_announcement_value
     from brick_store import (
         archive_personal_brick,
@@ -184,6 +185,7 @@ class DeliveredEditLayoutTests(unittest.TestCase):
         draft, _bricks = await _delivered(h)
         first_ids = tuple(_details(h, draft.id).delivered_message_ids)
         self.assertTrue(first_ids)
+        photos_before = len(h.posts())
 
         await _open_edit(h)
         await h.callback(_callback(h, "aw_qmanage"))
@@ -194,15 +196,22 @@ class DeliveredEditLayoutTests(unittest.TestCase):
 
         stored = _details(h, draft.id)
         self.assertEqual(stored.publication_status, "sent")
-        self.assertEqual(len(h.posts()), 2, "новая версия не отправлена сразу")
-        self.assertEqual(h.posts()[-1], "Новое значение")
-        self.assertNotEqual(tuple(stored.delivered_message_ids), first_ids)
-        # §30–31: прошлая версия остаётся в чате архивным снимком без кнопок,
-        # а не удаляется: история доставок сохраняется.
-        self.assertNotIn(first_ids[0], h.deleted_ids(), "прежний экземпляр не удалён")
-        self.assertIsNone(
-            _final_markup(h, first_ids[0]), "с прежнего экземпляра снята клавиатура"
+        # §26–28: та же структура медиа — версия правится НА МЕСТЕ, второй
+        # копии в чате нет, адреса экземпляра не меняются.
+        self.assertEqual(len(h.posts()), photos_before, "вторая копия не отправлена")
+        self.assertEqual(
+            h.bot.content_text(h.chat_id, first_ids[0]),
+            "Новое значение",
+            "текст доставленной версии обновлён",
         )
+        self.assertEqual(tuple(stored.delivered_message_ids), first_ids)
+        instances = list_instances(h.session_factory(), draft.id)
+        self.assertEqual(
+            [item.id for item in instances if item.is_active], [instances[0].id]
+        )
+        self.assertEqual(len(instances), 1, "архивного снимка при правке нет")
+        # §30–31: прежнее сообщение не удаляется и остаётся в чате.
+        self.assertNotIn(first_ids[0], h.deleted_ids(), "прежний экземпляр не удалён")
         self.assertNotIn(
             "Применить изменения",
             [label for label, _data in h.screen_buttons()],

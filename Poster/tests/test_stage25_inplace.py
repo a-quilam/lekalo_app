@@ -26,6 +26,7 @@ import unittest
 
 try:
     from announcement_instances import get_active_instance
+    from announcement_wizard import WizardStage
     from handlers import announcement_wizard
     from handlers.announcement_wizard import AW_PREVIEW, CONVERSATION_NAME
     from tests.integration_harness import (
@@ -533,6 +534,10 @@ class InPlaceProgressInvariantTests(unittest.TestCase):
         )
         # Прогресс описывает ту же доставку: ключей прошлой версии нет.
         self.assertNotIn("previous_ids", after.publication_progress)
+        # §18/§28: готовый анонс остаётся `completed` — иначе «Мои анонсы»
+        # показали бы его как черновик, который можно продолжить.
+        self.assertEqual(after.stage, WizardStage.COMPLETED.value)
+        self.assertIsNotNone(after.published_at)
 
     @scenario_test
     async def test_repeat_without_changes_does_not_send_or_edit(self, h) -> None:

@@ -7,8 +7,8 @@ Poster 2.2 U5: независимая приёмка — текстовый ан
    она выше рабочего экрана редактора анонса (§18, 2.5).
 2. Завершение сразу после последнего кирпичика (кнопка «Отправить» в обзоре,
    минуя шаг фото): тоже одна копия.
-3. H3: «Изменить» → правка значения: старая копия заменена сразу, второй
-   копии нет (кнопки «Применить изменения» больше нет).
+3. H3/§28: «Изменить» → правка значения: та же копия правится на месте
+   (`editMessageText`), второй копии нет (кнопки «Применить изменения» нет).
 4. Повторное завершение без правки: «уже отправлена», новой отправки нет.
 5. Фото-путь (1 фото и альбом): по-прежнему одна копия поста, фото на месте.
 6. Рестарт доставленного текстового анонса: редактор цел, дублей нет.
@@ -205,8 +205,8 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
         self.assertEqual(len(h.posts()), 1)
 
     @scenario_test
-    async def test_edit_applies_and_replaces_the_copy(self, h) -> None:
-        """П.3 (H3): сохранение правки сразу заменяет прошлую копию."""
+    async def test_edit_updates_the_single_copy_in_place(self, h) -> None:
+        """П.3 (§28): сохранение правки обновляет ту же копию, второй нет."""
         await h.text("/start")
         draft = await _to_photo_step(h)
         await _no_photos(h)
@@ -218,7 +218,7 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text(UPDATED)
-        # Кнопки применения на экране правки нет: версия уже заменена.
+        # Кнопки применения на экране правки нет: версия уже обновлена.
         labels = [label for label, _data in h.screen_buttons()]
         self.assertFalse(
             any("Применить изменения" in label for label in labels), labels
@@ -227,17 +227,15 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
 
         updated = _assert_single_copy(self, h, draft.id, text=UPDATED)
         stored = _stored(h, draft.id)
-        self.assertNotEqual(updated, first, "новая версия не отличает��я от старой")
-        self.assertEqual(tuple(stored.delivered_message_ids), (updated,))
-        self.assertEqual(tuple(stored.previous_message_ids), (first,))
-        # §30–31: прежняя копия не удаляется — она остаётся архивным снимком
-        # без кнопок, текст прежней версии виден в чате.
-        self.assertNotIn(first, h.deleted_ids(), "прежний экземпляр не удаляется")
-        self.assertEqual(_copies(h, TEXT), [first], "старая копия осталась без кнопок")
-        self.assertIsNone(
-            _final_markup(h, first), "с прежнего экземпляра снята клавиатура"
-        )
-        self.assertEqual(len(h.posts()), 2, "ожидаем ровно две доставленные версии")
+        self.assertEqual(tuple(stored.delivered_message_ids), (first,))
+        self.assertEqual(tuple(stored.previous_message_ids), ())
+        # §28: текст правится `editMessageText` — это ТО ЖЕ сообщение, адрес
+        # доставки не меняется, архивного снимка и замены нет.
+        self.assertEqual(updated, first, "правка на месте не меняет сообщение")
+        self.assertEqual(_copies(h, TEXT), [], "прежнего текста в чате больше нет")
+        self.assertNotIn(first, h.deleted_ids(), "активное сообщение не удаляется")
+        self.assertIsNotNone(_final_markup(h, first), "кнопки активного анонса живы")
+        self.assertEqual(len(h.posts()), 1, "вторая копия не отправлялась")
 
     @scenario_test
     async def test_repeated_finish_does_not_send_another_copy(self, h) -> None:

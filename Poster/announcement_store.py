@@ -2510,6 +2510,11 @@ def record_in_place_publication(
                 "publication_progress": _publication_progress_to_json(final),
                 "publication_error": None,
                 "published_at": utcnow(),
+                # Этап готового анонса — `completed`, как после доставки:
+                # иначе правка на месте оставляла бы доставленный анонс в
+                # `preview`, и «Мои анонсы» показывали бы его как черновик,
+                # который можно продолжить (§18, §26–28).
+                "stage": WizardStage.COMPLETED.value,
             },
         )
         _commit(session)

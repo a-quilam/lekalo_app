@@ -185,8 +185,9 @@ class ForeignDeliveredTests(unittest.TestCase):
         posts_before = h.posts()
         self.assertEqual(len(posts_before), 1)
 
-        # Автор меняет значение: правка применяется сразу и выпускает новую
-        # версию, прежняя становится архивным снимком (§30–31).
+        # Автор меняет значение: правка применяется сразу и обновляет
+        # активный экземпляр НА МЕСТЕ (§28) — второго сообщения и архивного
+        # снимка при том же составе медиа не появляется.
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
@@ -194,13 +195,19 @@ class ForeignDeliveredTests(unittest.TestCase):
         await h.text("Своё изменение")
         stored = _details(h, draft.id)
         self.assertIn("Своё изменение", stored.publication_text or "")
+        self.assertEqual(
+            tuple(stored.delivered_message_ids),
+            (first_id,),
+            "правка на месте не меняет адрес доставки",
+        )
         posts_sent_by_author = h.posts()
-        self.assertEqual(len(posts_sent_by_author), 2, "правка выпустила версию")
+        self.assertEqual(len(posts_sent_by_author), 1, "второй копии нет")
+        self.assertEqual(h.bot.content_text(h.chat_id, first_id), "Своё изменение")
 
         active = _only_active(h, draft.id)
-        self.assertNotEqual(active.id, first.id, "активен новый экземпляр")
-        self.assertNotIn(first_id, h.deleted_ids(), "снимок остаётся в чате")
-        self.assertIsNone(_final_markup(h, first_id), "у снимка снята клавиатура (§31)")
+        self.assertEqual(active.id, first.id, "активен тот же экземпляр")
+        self.assertNotIn(first_id, h.deleted_ids(), "анонс остаётся в чате")
+        self.assertIsNotNone(_final_markup(h, first_id), "кнопки живы (§28)")
 
         # Чужой пользователь пытается открыть правку чужого анонса кнопкой
         # действующего экземпляра и записать своё значение.
@@ -219,8 +226,9 @@ class ForeignDeliveredTests(unittest.TestCase):
         self.assertEqual(h.posts(), posts_sent_by_author)
         self.assertEqual(_only_active(h, draft.id).id, active.id)
 
-        # Негатив: без чужого вмешательства постов ровно два.
-        self.assertEqual(len(h.posts()), 2)
+        # Негатив: без чужого вмешательства в чате ровно одна версия.
+        self.assertEqual(len(h.posts()), 1)
+        self.assertEqual(h.bot.content_text(h.chat_id, first_id), "Своё изменение")
 
     @scenario_test
     async def test_foreign_open_of_draft_does_not_deliver(self, h) -> None:
@@ -337,16 +345,26 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
         first_id = first.message_ids[0]
 
         # Кнопка «📝 Данные» прежнего экземпляра и callback прошлой версии
-        # экрана запоминаются до правки — как их помнит клиент Telegram.
+        # экрана запоминаются до переиздания — как их помнит клиент Telegram.
         stale_instance = _instance_button(h, first, controls.ACTION_DATA)
         stale_legacy_edit = f"aw_edit:{draft.id}:{draft.revision}"
 
+        # §28: правка текста идёт на месте — экземпляр и его кнопка остаются
+        # действующими, вторая копия в чате не появляется.
         await h.callback(stale_instance)
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Новое значение")
+        self.assertEqual(h.bot.content_text(h.chat_id, first_id), "Новое значение")
+        self.assertEqual(len(h.posts()), 1, "правка на месте не создаёт копию")
+
+        # §29–30: теперь анонс переоткрыт из «Мои анонсы» — отправлен новый
+        # цельный экземпляр, прежний стал архивным снимком.
+        await h.callback("main_menu")
+        await h.callback("aw_start")
+        await h.callback(_callback(h, "aw_open", f":{draft.id}"))
         posts_before = h.posts()
         self.assertEqual(len(posts_before), 2)
         # §30 п.4: у прежнего экземпляра клавиатура снята.
@@ -363,3 +381,7 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
         # Устаревшая кнопка не откатила и не удвоила сохранённую версию.
         self.assertEqual(stored.publication_text, "Новое значение")
         self.assertEqual(len(h.posts()), 2)
+        self.assertEqual(
+            _only_active(h, draft.id).message_ids[0],
+            tuple(stored.delivered_message_ids)[0],
+        )
