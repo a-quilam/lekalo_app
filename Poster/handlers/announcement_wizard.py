@@ -31,6 +31,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 from datetime import date
+from functools import partial
 from typing import Any, Callable
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -5715,8 +5716,11 @@ async def _replace_instance_media(
         )
         try:
             await delivery.call_telegram(
-                lambda media=media, message_id=message_id: bot.edit_message_media(
-                    chat_id=chat_id, message_id=message_id, media=media
+                partial(
+                    bot.edit_message_media,
+                    chat_id=chat_id,
+                    message_id=message_id,
+                    media=media,
                 )
             )
         except Exception as exc:  # noqa: BLE001 — решение по типу ниже

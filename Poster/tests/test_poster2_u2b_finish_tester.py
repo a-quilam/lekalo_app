@@ -151,6 +151,7 @@ class ForeignDeliveredTests(unittest.TestCase):
             self.assertTrue(
                 data and data.startswith(controls.PANEL_CALLBACK_PREFIX), buttons
             )
+            assert data is not None
             self.assertTrue(data.endswith(f":{active.id}"), f"{label}: {buttons}")
         self.assertEqual(buttons[0][0], "📝 Данные", buttons)
         self.assertFalse(_callbacks(h, "aw_edit"), "экрана завершения нет")

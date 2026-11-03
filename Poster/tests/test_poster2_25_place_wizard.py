@@ -266,6 +266,7 @@ class CreateWizardValidationTests(unittest.TestCase):
         await h.callback("pl_create_skip")
 
         bad = await h.text("javascript:alert(1)")
+        assert bad.message is not None
         text = h.screen_text()
         self.assertIn(URL_PROMPT, text)
         self.assertIn("Не удалось распознать ссылку", text)
@@ -279,6 +280,7 @@ class CreateWizardValidationTests(unittest.TestCase):
 
         # Повторная попытка с валидной ссылкой завершает мастер.
         fixed = await h.text("https://t.me/poster")
+        assert fixed.message is not None
         self.assertEqual(_places(h)[0].url, "https://t.me/poster")
         self.assertIn(fixed.message.message_id, h.deleted_ids())
 
@@ -292,6 +294,7 @@ class CreateWizardValidationTests(unittest.TestCase):
         await h.text("Курск")
 
         bad = await h.text("   ")
+        assert bad.message is not None
         text = h.screen_text()
         self.assertIn(ADDRESS_PROMPT, text)
         self.assertIn("⏭ Пропустить", text)

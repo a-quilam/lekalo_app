@@ -193,13 +193,33 @@ class ChatHygieneSecondAnnouncementTests(unittest.TestCase):
         self.assertEqual(_sends_outside_chat(h), [])
 
     @scenario_test
-    async def test_reopen_delivered_announcement_does_not_resend(self, h):
-        """Повторное открытие доставленного анонса не шлёт новую копию."""
+    async def test_reopen_delivered_announcement_new_instance_old_archived(self, h):
+        """
+        §29 (2.5): повторное открытие доставленного анонса — НОВЫЙ экземпляр.
+
+        Прежнее поведение «второй раз не шлём» осознанно заменено: автор
+        получает свежий цельный анонс с управлением, контент доставляется
+        заново. Прежний экземпляр не удаляется, а становится архивным
+        снимком без кнопок (§30–31).
+        """
+        from announcement_instances import (
+            STATUS_ARCHIVED,
+            get_active_instance,
+            list_instances,
+        )
+
         await h.text("/start")
         draft, _bricks = await _personal_delivered(h)
         count = len(h.post_records())
+
+        with h.session_factory() as session:
+            old = get_active_instance(session, draft.id)
+        self.assertIsNotNone(old, "доставка не зарегистрировала экземпляр")
+        old_ids = tuple(old.message_ids)
+        old_generation = old.generation
+        self.assertTrue(old_ids, "экземпляр без адресов сообщений")
         stored = _stored(h, draft.id)
-        result_ids = tuple(stored.delivered_message_ids)
+        self.assertEqual(tuple(stored.delivered_message_ids), old_ids)
 
         # Выход и повторное открытие из списка черновиков.
         await h.callback("main_menu")
@@ -207,10 +227,53 @@ class ChatHygieneSecondAnnouncementTests(unittest.TestCase):
         data = _callbacks(h, "aw_open")
         self.assertTrue(data)
         await h.callback(data[-1])  # последний = доставленный
-        self.assertEqual(len(h.post_records()), count, "повторная отправка копии")
+
+        # §29: контент доставлен заново — новая копия, а не правка старой.
+        self.assertGreater(
+            len(h.post_records()), count, "новая копия контента не отправлена"
+        )
+
+        # §29: в store новый активный экземпляр, поколение на 1 больше.
+        with h.session_factory() as session:
+            instances = list_instances(session, draft.id)
+            active = get_active_instance(session, draft.id)
+        self.assertEqual(len(instances), 2, instances)
+        self.assertIsNotNone(active)
+        self.assertEqual(active.generation, old_generation + 1)
+        self.assertNotEqual(active.id, old.id)
+
+        # §29: новые сообщения, не редактирование прежних.
+        new_ids = tuple(active.message_ids)
+        self.assertFalse(set(new_ids) & set(old_ids), "экземпляры делят сообщения")
         again = _stored(h, draft.id)
-        self.assertEqual(tuple(again.delivered_message_ids), result_ids)
-        self.assertEqual(again.revision, stored.revision, "лишний revision")
+        self.assertEqual(tuple(again.delivered_message_ids), new_ids)
+
+        # §30–31: прежний экземпляр архивный; его снимок остаётся в чате,
+        # а кнопки с него снимаются.
+        with h.session_factory() as session:
+            archived = [
+                item for item in list_instances(session, draft.id) if item.id == old.id
+            ]
+        self.assertEqual(len(archived), 1)
+        self.assertEqual(archived[0].status, STATUS_ARCHIVED)
+        for mid in old_ids:
+            self.assertNotIn(mid, h.deleted_ids(), "архивный снимок удалён")
+            self.assertIn((h.chat_id, mid), h.bot._message_content, "снимка нет")
+        markup_calls = [
+            call
+            for call in h.calls
+            if call["type"] == "edit_markup" and call.get("message_id") == old_ids[0]
+        ]
+        self.assertTrue(markup_calls, "клавиатура архивного снимка не снята")
+        self.assertIsNone(markup_calls[-1].get("reply_markup"))
+
+        # И наоборот: управление есть у НОВОГО экземпляра (0 фото — кнопки
+        # на самом сообщении анонса, отдельной панели нет).
+        new_content = h.bot._message_content.get((h.chat_id, new_ids[0]))
+        self.assertIsNotNone(new_content, "сообщение нового экземпляра не найдено")
+        self.assertIsNotNone(
+            new_content[2], "у нового экземпляра нет кнопок — управление потеряно"
+        )
 
 
 @unittest.skipIf(

@@ -277,6 +277,7 @@ class InPlaceMediaTests(unittest.TestCase):
         # Экземпляр тот же, отпечаток обновлён.
         after = get_active_instance(h.session_factory(), draft.id)
         self.assertIsNotNone(after)
+        assert after is not None
         self.assertEqual(after.id, before.id)
         self.assertEqual(after.message_ids, before.message_ids)
         self.assertEqual(after.fingerprint, "replaced")

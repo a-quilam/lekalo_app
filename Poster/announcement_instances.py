@@ -276,7 +276,7 @@ def register_instance(
     try:
         _require_draft(session, checked_draft)
         _archive_active(session, checked_draft)
-        new_id = session.execute(
+        result = session.execute(
             announcement_instances.insert()
             .values(
                 draft_id=checked_draft,
@@ -289,7 +289,8 @@ def register_instance(
                 created_at=utcnow(),
             )
             .returning(announcement_instances.c.id)
-        ).scalar_one()
+        )
+        new_id = int(result.scalar_one())
         _commit(session)
     except (IntegrityError, OperationalError) as exc:
         # Гонка двух регистраций или занятая база: уникальный индекс «один
@@ -369,7 +370,7 @@ def replace_instance(
             )
             .values(status=STATUS_ARCHIVED)
         )
-        new_id = session.execute(
+        result = session.execute(
             announcement_instances.insert()
             .values(
                 draft_id=previous.draft_id,
@@ -386,7 +387,8 @@ def replace_instance(
                 created_at=utcnow(),
             )
             .returning(announcement_instances.c.id)
-        ).scalar_one()
+        )
+        new_id = int(result.scalar_one())
         _commit(session)
     except (IntegrityError, OperationalError) as exc:
         session.rollback()

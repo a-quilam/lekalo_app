@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import re
 import unittest
+from typing import TYPE_CHECKING
 
 from sqlalchemy import event
 
@@ -139,7 +140,15 @@ def _button_data(buttons, action: str) -> str:
     raise AssertionError(f"нет кнопки {prefix!r}; есть: {buttons}")
 
 
-class PanelTestMixin:
+if TYPE_CHECKING:
+    # Миксин вызывается только вместе с unittest.TestCase (см. классы ниже);
+    # для mypy база даёт методы assert*, в рантайме базой остаётся object.
+    _PanelTestBase = unittest.TestCase
+else:
+    _PanelTestBase = object
+
+
+class PanelTestMixin(_PanelTestBase):
     """Общие проверки ответа на callback и состава чата."""
 
     async def _assert_stale(
@@ -511,6 +520,7 @@ class RestartPanelTests(PanelTestMixin, unittest.TestCase):
             survivor,
             "без PRAGMA foreign_keys строка экземпляра переживает удаление",
         )
+        assert survivor is not None
         self.assertEqual(survivor.status, "active")
         # Фактическое поведение Harness: статус не менялся, но кнопка уже
         # не работает — защиту даёт проверка доступности черновика.

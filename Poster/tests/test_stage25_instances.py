@@ -337,9 +337,9 @@ class InstanceStoreTests(AnnouncementDatabaseTestCase):
         instance = self.register(message_ids=[401, 402, 403])
         self.assertEqual(instance.message_ids, (401, 402, 403))
         # Порядок отправки важен: это порядок элементов медиагруппы.
-        self.assertEqual(
-            get_instance(self.session, instance.id).message_ids, (401, 402, 403)
-        )
+        reloaded = get_instance(self.session, instance.id)
+        assert reloaded is not None
+        self.assertEqual(reloaded.message_ids, (401, 402, 403))
 
     def test_second_register_archives_previous_and_increments_generation(
         self,
@@ -451,7 +451,9 @@ class InstanceStoreTests(AnnouncementDatabaseTestCase):
         assert still_active is not None
         self.assertEqual(still_active.id, old.id)
         self.assertEqual(still_active.generation, 1)
-        self.assertEqual(get_instance(self.session, old.id).status, STATUS_ACTIVE)
+        still_stored = get_instance(self.session, old.id)
+        assert still_stored is not None
+        self.assertEqual(still_stored.status, STATUS_ACTIVE)
         self.assertEqual(
             len(list_instances(self.session, self.draft.draft_id)),
             1,
@@ -463,9 +465,9 @@ class InstanceStoreTests(AnnouncementDatabaseTestCase):
         old = self.register(message_ids=[1101])
         with self.assertRaises(AnnouncementValueError):
             replace_instance(self.session, old.id, [])
-        self.assertEqual(
-            get_active_instance(self.session, self.draft.draft_id).id, old.id
-        )
+        active_after_reject = get_active_instance(self.session, self.draft.draft_id)
+        assert active_after_reject is not None
+        self.assertEqual(active_after_reject.id, old.id)
 
     def test_strip_panel_removes_only_the_panel(self) -> None:
         instance = self.register(message_ids=[1101, 1102], panel_message_id=1199)
@@ -480,8 +482,12 @@ class InstanceStoreTests(AnnouncementDatabaseTestCase):
     def test_register_archives_previous_even_without_panel(self) -> None:
         first = self.register()
         second = self.register()
-        self.assertFalse(get_instance(self.session, first.id).is_active)
-        self.assertTrue(get_instance(self.session, second.id).is_active)
+        archived = get_instance(self.session, first.id)
+        assert archived is not None
+        self.assertFalse(archived.is_active)
+        active = get_instance(self.session, second.id)
+        assert active is not None
+        self.assertTrue(active.is_active)
 
     def test_register_validates_input(self) -> None:
         with self.assertRaises(AnnouncementValueError):
@@ -517,9 +523,9 @@ class InstanceStoreTests(AnnouncementDatabaseTestCase):
         # Сырое чтение: никаких изменений в черновике не появилось.
         marker = self.start_draft()  # второй черновик чтобы проверить изоляцию
         self.assertIsNone(get_active_instance(self.session, marker.draft_id))
-        self.assertEqual(
-            get_active_instance(self.session, draft.draft_id).id, instance.id
-        )
+        stored = get_active_instance(self.session, draft.draft_id)
+        assert stored is not None
+        self.assertEqual(stored.id, instance.id)
 
 
 def sqlite3_select_drafts():

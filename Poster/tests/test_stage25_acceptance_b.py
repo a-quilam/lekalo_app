@@ -637,13 +637,13 @@ class PickerLayoutAcceptance(unittest.TestCase):
         self.assertEqual(
             nav, [("1/2", "noop:1:2"), (NEXT, "pl_pickp:5")], f"пагинация пикера: {nav}"
         )
-        search_row = [
+        search_row: list[tuple[str, str | None]] = [
             (SEARCH_LABEL, "pl_pick_search"),
             (NEW_PLACE_LABEL, "pl_pick_add"),
         ]
         self.assertIn(search_row, rows, f"поиск и создание не одной строкой: {rows}")
         self.assertEqual(rows.count(search_row), 1)
-        template_row = [(TEMPLATE_LABEL, "pick_template")]
+        template_row: list[tuple[str, str | None]] = [(TEMPLATE_LABEL, "pick_template")]
         self.assertEqual(rows.count(template_row), 1, "нет строки личного шаблона")
         self.assertGreater(
             rows.index(template_row),

@@ -956,10 +956,11 @@ class ControlActionsParityTests(unittest.TestCase):
         # Счётчик фото в подписи соответствует фактической коллекции.
         self.assertIn(f"({photos_count})", _all_labels(_labels(markup)))
         # Все кнопки привязаны к действующему экземпляру (§32).
-        self.assertEqual(
-            {data.rsplit(":", 1)[1] for _l, data in inline_buttons(markup)},
-            {str(active.id)},
-        )
+        instance_suffixes = set()
+        for _label, data in inline_buttons(markup):
+            assert data is not None, "у кнопки управления нет callback_data"
+            instance_suffixes.add(data.rsplit(":", 1)[1])
+        self.assertEqual(instance_suffixes, {str(active.id)})
 
         screens = {}
         for action in controls.PANEL_ACTIONS:

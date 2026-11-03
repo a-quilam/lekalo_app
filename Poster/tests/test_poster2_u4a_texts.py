@@ -614,6 +614,7 @@ class DeadKeyScreenTests(_TempCatalog):
             **{
                 "places.card.canonical": "КАНОН: {name}",
                 "buttons.finished.main_menu": "МЕНЮ-КАТАЛОГ",
+                "buttons.nav.back": "НАЗАД-КАТАЛОГ",
             }
         )
         self.assertTrue(ui_texts.reload_texts(self.path).ok)
@@ -641,8 +642,9 @@ class DeadKeyScreenTests(_TempCatalog):
         # §18 (2.5): категории правки уже на экране после доставки.
         self.assertIn("МЕНЮ-КАТАЛОГ", [label for label, _ in h.screen_buttons()])
 
-        # Экран правки фотографий — тот же ключ заголовка, что шаг фото, и
-        # та же подпись выхода в меню (одна кнопка — одна подпись).
+        # Экран правки фотографий — тот же ключ заголовка, что шаг фото.
+        # §34–37: на экране фото выход — «◀️ Назад», а не «В меню»;
+        # подпись тоже берётся из каталога (`buttons.nav.back`), не литерал.
         photos = [
             data
             for _label, data in h.screen_buttons()
@@ -652,7 +654,7 @@ class DeadKeyScreenTests(_TempCatalog):
         self.assertTrue(
             h.screen_text().startswith(ui_texts.DEFAULTS["wizard.photos.title"])
         )
-        self.assertIn("МЕНЮ-КАТАЛОГ", [label for label, _ in h.screen_buttons()])
+        self.assertIn("НАЗАД-КАТАЛОГ", [label for label, _ in h.screen_buttons()])
 
     @scenario_test
     async def test_photos_edit_screen_title_follows_catalog(self, h: Harness) -> None:

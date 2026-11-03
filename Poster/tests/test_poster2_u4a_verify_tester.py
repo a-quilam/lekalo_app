@@ -539,6 +539,11 @@ class CompletenessTests(_Case):
         (`buttons.finished.main_menu`) подпись на всех экранах берётся из
         каталога. H3: прежняя кнопка «Применить изменения» удалена, поэтому
         проверяется живой ключ с тем же смыслом «одна кнопка — одна подпись».
+
+        §34–37: на экране фотографий «🏠 В меню» нет — выход оттуда
+        «◀️ Назад» (`buttons.nav.back`). Его подпись тоже обязана приходить
+        из каталога, поэтому проверяются оба ключа, а смысл теста
+        сохраняется: на каждом экране подпись взята из файла, не литералом.
         """
         from tests.test_stage27b_announcement_ui import (
             _callback,
@@ -548,7 +553,14 @@ class CompletenessTests(_Case):
             _start_to_template,
         )
 
-        self.write(_full_catalog(**{"buttons.finished.main_menu": "МЕНЮ-КАТАЛОГ"}))
+        self.write(
+            _full_catalog(
+                **{
+                    "buttons.finished.main_menu": "МЕНЮ-КАТАЛОГ",
+                    "buttons.nav.back": "НАЗАД-КАТАЛОГ",
+                }
+            )
+        )
         self.assertTrue(ui_texts.reload_texts(self.path).ok)
 
         await h.text("/start")
@@ -571,7 +583,8 @@ class CompletenessTests(_Case):
         ]
         await h.callback(photos[0])
         collected = [label for label, _data in h.screen_buttons()]
-        self.assertIn("МЕНЮ-КАТАЛОГ", collected)
+        self.assertIn("НАЗАД-КАТАЛОГ", collected)
+        self.assertNotIn("МЕНЮ-КАТАЛОГ", collected)
 
 
 class CatalogContractTests(unittest.TestCase):

@@ -426,6 +426,7 @@ class InstanceArchiveTests(unittest.TestCase):
         self.assertEqual(edited.message_ids, first_ids)
         self.assertEqual(edited.panel_message_id, first_panel)
         caption_id = delivery.caption_message_id(first_ids)
+        assert caption_id is not None
         self.assertEqual(
             h.bot.content_text(h.chat_id, caption_id),
             "Обновлено",

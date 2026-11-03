@@ -261,13 +261,17 @@ class ManageScreenAcceptanceTests(unittest.TestCase):
                     break
                 seen_offsets.add(next_page)
                 await h.callback(next_page)
-        labels = list(labels)
+        all_labels = list(labels)
 
         for code, emoji in SYSTEM_EMOJIS.items():
             with self.subTest(code=code):
-                matches = [label for label in labels if label.startswith(f"[{code}] ")]
+                matches = [
+                    label for label in all_labels if label.startswith(f"[{code}] ")
+                ]
                 self.assertEqual(
-                    len(matches), 1, f"системный кирпичик [{code}] не найден: {labels}"
+                    len(matches),
+                    1,
+                    f"системный кирпичик [{code}] не найден: {all_labels}",
                 )
                 self.assertIn(
                     emoji,
@@ -275,7 +279,9 @@ class ManageScreenAcceptanceTests(unittest.TestCase):
                     f"у системного [{code}] нет эмодзи {emoji}: {matches[0]!r}",
                 )
         # Коды не изменились: у каждого системного кирпичика свой `[код]`.
-        codes = [label.split("]")[0][1:] for label in labels if label.startswith("[")]
+        codes = [
+            label.split("]")[0][1:] for label in all_labels if label.startswith("[")
+        ]
         self.assertEqual(sorted(codes), sorted(SYSTEM_EMOJIS))
 
     @scenario_test
@@ -355,6 +361,7 @@ class CreateWizardFieldsAcceptanceTests(unittest.TestCase):
         self.assertEqual(_places(h), [], "площадка создана до конца мастера")
 
         city_msg = await h.text("Москва")
+        assert city_msg.message is not None
         self.assertIn("🗺 Адрес площадки", h.screen_text())
         self.assertEqual([label for label, _ in _rows(h)[-1]], [BACK_LABEL, SKIP_LABEL])
         self.assertEqual(_places(h), [])
@@ -367,6 +374,7 @@ class CreateWizardFieldsAcceptanceTests(unittest.TestCase):
         sends_before = len([call for call in h.calls if call["type"] == "message"])
 
         address_msg = await h.text("ул. Ленина, 1")
+        assert address_msg.message is not None
         self.assertIn("🔗 Ссылка площадки", h.screen_text())
         self.assertEqual([label for label, _ in _rows(h)[-1]], [BACK_LABEL, SKIP_LABEL])
         self.assertEqual(_places(h), [])
@@ -399,6 +407,7 @@ class CreateWizardFieldsAcceptanceTests(unittest.TestCase):
             (url_msg, "ссылка"),
         ):
             with self.subTest(field=label):
+                assert message.message is not None
                 self.assertIn(
                     message.message.message_id,
                     deleted,
@@ -453,6 +462,7 @@ class CreateWizardFieldsAcceptanceTests(unittest.TestCase):
         await h.callback("pl_create_skip")
 
         bad = await h.text("javascript:alert(1)")
+        assert bad.message is not None
         text = h.screen_text()
         self.assertIn("🔗 Ссылка площадки", text, "шаг сменился при ошибке")
         self.assertIn("Не удалось распознать ссылку", text, "нет понятной ошибки")
@@ -465,6 +475,7 @@ class CreateWizardFieldsAcceptanceTests(unittest.TestCase):
         )
 
         fixed = await h.text("https://t.me/poster")
+        assert fixed.message is not None
         self.assertEqual(_place(h).url, "https://t.me/poster")
         self.assertIn(fixed.message.message_id, h.deleted_ids())
 
