@@ -37,6 +37,135 @@ Developer → Tester (MEDIUM/HIGH) → Reviewer (HIGH) → checkpoint → ком
 пагинация 5/страница с no-op индикатором; ui_texts.yaml сохраняется и обновляется
 согласованно.
 
+## 2026-11-03 — Этап B (2.5) ЗАВЕРШЁН: commits c812aea → 3896482 → 4fbfd11 → d84f477
+
+- B1 (Developer 2 вызова: B1 + B1b + B1c-LOW): utils/pagination.py (PAGE_SIZE=5,
+  clamp_page, nav_buttons/nav_keyboard[_for_offset], стрелки — живые ключи
+  buttons.pagination.prev/next, фолбэк ◀️/▶️), handlers/noop.py (no-op callback,
+  группа 0 в bot.py). Переведены: «Мои анонсы», справочник/пикер/поиск мест,
+  шаблоны, кирпичики, предложения, конфликты, альтернативные названия.
+  Dead-key контракт: удалены 12 мёртвых ключей каталога (page_note, stranica,
+  dalee, peredat_adminku, nav.prev/next и др.).
+- B2 (Developer 1): format_announcement_date в calendar_view.py; _brick_text
+  (template_compiler) форматирует системный [дата] как ДД.ММ (дн); обновлены
+  golden-тесты; тест test_template_compiler.test_render_date_value исправлен
+  отдельным LOW-вызовом (упал на HEAD после B2).
+- B2b (Developer 1): plm_back/tp_pick_back восстанавливают страницу/поиск
+  (return_phase/return_page/return_query в place_sessions; place_phase/
+  place_query/place_search_page в template_sessions); пикер §16 — «🔎|➕» одной
+  строкой, без промежуточного экрана; handle_pick_add сохраняет контекст.
+- Независимая приёмка B: Tester 2 вызова (лимит steps у обоих — исследование
+  съело бюджет; файл приёмки в итоге написал Developer по фактам Tester-а —
+  смена подхода по протоколу п. 5). tests/test_stage25_acceptance_b.py: 15/15 OK.
+  Наблюдения: заголовок «Все места — 6» допустим; «Обзор анонса» служебный,
+  формат ДД.ММ.ГГГГ там оставлен (§17 — про рендер кирпичика).
+- Полный discover 2280 тестов OK (перед коммитом B2b).
+- Показатели этапа B: Developer 4, Tester 2; повторы 2 (лимит steps у
+  Tester-приёмки дважды); steps достигнут 4 раза; permission.rejected ~4
+  (edit-инструмент у менеджера запрещён — правки только через субагентов;
+  python3 -c/heredoc отклонены).
+- Урок для этапа C: задания на приёмку формулировать с готовыми фактами/
+  указателями на файлы, чтобы Tester не тратил steps на исследование.
+- Далее: этап C (анонсы, §18–37) — сначала Architect: модель экземпляров
+  (announcement_instances: message ids, поколение, активный/архивный), доставка
+  delivery.py под цельные анонсы, защита старых callback.
+
+## 2026-11-03 — Этап C, задача C1 ЗАВЕРШЕНА: commit 3380e5b
+
+- Миграция 26: таблица announcement_instances (draft_id, chat_id, message_ids
+  JSON, panel_message_id, generation, status active|archived, fingerprint,
+  created_at); триггеры identity-immutable + status-flow (archived→active
+  запрещён); unique-индекс «один active на draft». LATEST_VERSION=26.
+- Backfill НЕ делается (обосновано в docs/migrations.md ~стр. 2101):
+  chat_id доставки в publication_progress не сохранялся; экземпляры
+  накапливаются с первой публикации после обновления; 2.4.1 не затронут.
+- Store: Poster/announcement_instances.py — register/get_active/get/archive/
+  replace (атомарный, ловит IntegrityError→AnnouncementConflictError)/
+  strip_panel/list_instances + delete_instances (для §33).
+- FakeBot: send_media_group → по сообщению на каждый media; edit_message_media,
+  edit_message_reply_markup (валидация как у edit_caption).
+- Побочный реальный дефект: wizard_live.py:324 сравнивал число вызовов
+  (expected_segments) с числом сообщений в ids → исправлено на
+  expected_message_ids (сумма сообщений по партиям). Тест
+  test_poster2_u2b_photos.test_eleventh_photo... снова зелёный.
+- Обновлены журнальные ожидания в 20 тест-файлах (v25→v26).
+- Целевые наборы зелёные (в т.ч. test_stage25_instances 27 OK, live/delivery
+  78 OK, s5+redelivery 46 OK); ruff/black чисто. Полный discover не гонялся
+  (граница этапа C будет после C4).
+- Показатели C1: Developer 2 вызова (основной упёрся в steps, финал LOW
+  завершён с первого раза); permission.rejected: 0 у менеджера.
+- Уроки: задания с точными строками кода проходят быстрее; побочные дефекты
+  FakeBot-реализма фиксировать отдельной LOW-задачей с точным воспроизведением.
+- Next: C2 (HIGH): delivery.py caption-first + reply_markup + панель как
+  операция; _run_announcement_publication регистрирует экземпляр; снести
+  P3-удаление прошлой версии; _promote_live_post/wizard_live caption;
+  демонтаж _render_delivered; тесты сценариев А–Г §58.
+
+## 2026-11-03 — Этап C: C2a+C2b-1 ЗАВЕРШЕНЫ: commit 010a80f
+
+- C2a (Developer, 1 вызов): delivery.py caption-first — 0 фото sendMessage
+  с клавиатурой; 1 фото sendPhoto caption+reply_markup; 2–10 один
+  sendMediaGroup, caption ПЕРВОГО элемента; 11 фото группа(10)+sendPhoto
+  хвост без текста. Хелперы контракта: content_carries_keyboard(n)=n≤1,
+  needs_control_panel(n)=n≥2, caption_message_id(ids)=первый id.
+  progress/total = число партий (валидатор не тронут); RetryAfter и
+  идемпотентность сохранены.
+- Решения менеджера по контрактам: панель — отдельная операция ПОСЛЕ
+  доставки контента, id только в panel_message_id (не в
+  publication_progress.ids); при ретрае панель дозаполняется, если её нет;
+  сбой панели не валит доставку; previous_ids — инертная bookkeeping
+  (триггер/валидатор целы), код удаления по previous_ids снесён.
+- announcement_controls.py (новый): PANEL_CALLBACK_PREFIX="anp_",
+  panel_keyboard/send_panel, действия data/photos/extras/menu;
+  announcement_instances.set_panel_message.
+- C2b-1 (Developer, 2 вызова: основной упёрся в steps, финал завершил):
+  _run_announcement_publication — клавиатура 0/1 фото через
+  edit_message_reply_markup после регистрации (id нужен для callback),
+  панель send_panel при 2+ фото, register_instance, прежний active
+  архивируется + _archive_instance_controls (снятие кнопок у прежнего
+  сообщения, удаление старой панели). P3-удаление по previous_ids снесено.
+  Фикс: при resume живого блока его ids исключены из stale-удаления
+  (иначе архивный экземпляр удалялся).
+- wizard_live._edit_caption → caption_message_id(ids) (первый элемент).
+- ui_texts: +wizard.panel.text (yaml+DEFAULTS).
+- Тесты: test_stage25_delivery_instances.py — сценарии А–Г §58 + архив
+  прежнего экземпляра (2) + skip aw_open (демонтаж в C2b-2). Обновлены
+  устаревшие ожидания (7 тестов + h3_ux) на контракт §30–31 «архивный
+  снимок остаётся без кнопок» — не ослабление, фиксация нового контракта.
+  Целевой прогон: 120 tests OK (skipped=1). ruff/black чисто.
+- Показатели C2: Developer 4 вызова (2 упора в steps), Tester 0.
+- Next: C2b-2 (HIGH): демонтаж «✅ Анонс готов» (_render_delivered,
+  _delivered_keyboard, NAV_DELIVERED, _ensure_service_screen_below),
+  aw_open → переиздание нового экземпляра, снятие skip в
+  test_reopen_sends_new_instance, RETIRED_LITERALS «Анонс готов», ~48
+  вхождений в ~15 легаси-тест-файлах, wizard.finished.* тексты.
+  Затем C3 (anp_-обработчики вне ConversationHandler), C4 (in-place
+  обновление), приёмка C.
+
+## 2026-11-03 — Этап C: C2b-2 ЗАВЕРШЁН: commit f2091da
+
+- Экран «✅ Анонс готов» демонтирован: NAV_DELIVERED, _render_delivered,
+  _delivered_keyboard, DELIVERED_TEXT/PENDING_TEXT удалены;
+  _close_publication_without_screen → notice + _render_delivered_edit
+  (экран редактора сохранён, NAV_DELIVERED_EDIT жив).
+- aw_open: publication_sent → _republish_delivered (новый экземпляр,
+  generation+1, прежний archived, кнопки сняты). skip снят,
+  test_reopen_sends_new_instance зелёный.
+- ui_texts: wizard.finished.text/pending и buttons.finished.menu удалены
+  (dead-key тест зелёный); buttons.finished.edit сохранён (bricks.py).
+- RETIRED_LITERALS обновлены; ~15 легаси-тест-файлов переписаны (не
+  удалены), инварианты сохранены. Объединённый прогон 20 модулей:
+  Ran 378 tests OK. ruff/black чисто.
+- Показатели C2b-2: Developer 2 вызова (1 упор в steps, финал добит),
+  продуктовых дефектов сверх плана нет.
+- Next: C3 (MEDIUM/HIGH): anp_-обработчики вне ConversationHandler
+  (префикс готов, действия data/photos/extras/menu), клавиатуры
+  управления/панели, защита старых callback по instance_id; сценарии Е, Ж, З.
+  Затем C4 (HIGH): _update_active_instance in-place (editMessageText/
+  Caption/Media), замена при смене структуры медиа, панель N→0/1,
+  раскладки фото §34–37; сценарии Д, И. Затем приёмка C (Tester,
+  задание с готовыми фактами), make check на границе этапа.
+
 ## 2026-11-02 — Этап A (2.5) ЗАВЕРШЁН: commits fcd8364 → d58b318 → dc5c027 → ffea77e → 330fe40
 
 - A1: 🧩 + эмодзи системных кирпичиков + компактное меню (§9–10).

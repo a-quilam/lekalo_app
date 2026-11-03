@@ -49,6 +49,7 @@ try:
     import delivery as delivery_module
     import errors as errors_module
     import handlers.admin as admin_module
+    import handlers.announcement_panel as announcement_panel_module
     import handlers.announcement_wizard as announcement_wizard_module
     import handlers.bricks as bricks_module
     import handlers.main_menu as main_menu_module
@@ -629,6 +630,7 @@ class Harness:
             template_state_module.SessionLocal,
             templates_module.SessionLocal,
             announcement_wizard_module.SessionLocal,
+            announcement_panel_module.SessionLocal,
             wizard_live_module.SessionLocal,
             place_invite_module.SessionLocal,
         )
@@ -644,6 +646,7 @@ class Harness:
         template_state_module.SessionLocal = self.session_factory
         templates_module.SessionLocal = self.session_factory
         announcement_wizard_module.SessionLocal = self.session_factory
+        announcement_panel_module.SessionLocal = self.session_factory
         wizard_live_module.SessionLocal = self.session_factory
         place_invite_module.SessionLocal = self.session_factory
 
@@ -709,8 +712,9 @@ class Harness:
         template_state_module.SessionLocal = self._orig_session_local[9]
         templates_module.SessionLocal = self._orig_session_local[10]
         announcement_wizard_module.SessionLocal = self._orig_session_local[11]
-        wizard_live_module.SessionLocal = self._orig_session_local[12]
-        place_invite_module.SessionLocal = self._orig_session_local[13]
+        announcement_panel_module.SessionLocal = self._orig_session_local[12]
+        wizard_live_module.SessionLocal = self._orig_session_local[13]
+        place_invite_module.SessionLocal = self._orig_session_local[14]
         errors_module._last_error_notice.clear()
         errors_module._last_error_notice.update(self._orig_error_notice)
         self.engine.dispose()

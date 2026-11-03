@@ -17,6 +17,7 @@ from config import TELEGRAM_BOT_TOKEN
 from database import init_db
 from errors import error_handler
 from handlers.admin import admin_handlers
+from handlers.announcement_panel import announcement_panel_handlers
 from handlers.announcement_wizard import announcement_wizard_handlers
 from handlers.bricks import bricks_handlers
 from handlers.main_menu import main_menu_handlers
@@ -193,6 +194,14 @@ def build_application() -> Application:
     # `disabled`), и если пропустить нажатие в активный ConversationHandler,
     # его fallback `.*` покажет «кнопка устарела» вместо спокойного ответа.
     for handler in noop_handlers():
+        application.add_handler(handler)
+
+    # Кнопки готового анонса (`anp_{action}:{instance_id}`) — до конструктора:
+    # управление экземпляром не зависит от состояния диалога и обязано
+    # работать после рестарта (§30–33). PTB вызывает не более одного
+    # обработчика на группу, поэтому fallback `.*` конструктора нажатие не
+    # перехватывает, а состояние диалога остаётся нетронутым.
+    for handler in announcement_panel_handlers():
         application.add_handler(handler)
 
     # Адаптивный мастер анонсов Stage 27B — первым: у него собственные

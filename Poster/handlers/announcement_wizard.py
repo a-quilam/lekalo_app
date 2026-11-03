@@ -7538,6 +7538,20 @@ async def handle_unknown_command(
     )
 
 
+def _conversation_handler(context: ContextTypes.DEFAULT_TYPE):
+    """Диалог анонсов в текущем приложении (None — приложение не собрано)."""
+    application = getattr(context, "application", None)
+    if application is None:
+        return None
+    for group in application.handlers.values():
+        for handler in group:
+            if not isinstance(handler, ConversationHandler):
+                continue
+            if getattr(handler, "name", None) == CONVERSATION_NAME:
+                return handler
+    return None
+
+
 def remember_conversation_state(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -7551,21 +7565,36 @@ def remember_conversation_state(
     следующий текст пользователя не попал бы в вопросы анонса. Ошибка не
     ломает уже нарисованный экран: пользователь продолжит кнопками.
     """
-    application = getattr(context, "application", None)
-    if application is None:
+    handler = _conversation_handler(context)
+    if handler is None:
         return
-    for group in application.handlers.values():
-        for handler in group:
-            if not isinstance(handler, ConversationHandler):
-                continue
-            if getattr(handler, "name", None) != CONVERSATION_NAME:
-                continue
-            try:
-                key = handler._get_key(update)  # noqa: SLF001 — старт вне entry
-                handler._update_state(state, key)  # noqa: SLF001
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Не удалось открыть диалог анонса: %s", exc)
-            return
+    try:
+        key = handler._get_key(update)  # noqa: SLF001 — старт вне entry
+        handler._update_state(state, key)  # noqa: SLF001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Не удалось открыть диалог анонса: %s", exc)
+
+
+def forget_conversation_state(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """
+    Закрывает диалог анонсов, открытый вне его entry-точки (C3).
+
+    Кнопки готового анонса (`anp_`) обрабатываются отдельно от
+    ConversationHandler: «🏠 В меню» из панели обязана завершить и само
+    состояние диалога, иначе следующий `aw_`-callback попал бы в ветку
+    прежнего экрана. Ошибка не ломает уже нарисованное меню.
+    """
+    handler = _conversation_handler(context)
+    if handler is None:
+        return
+    try:
+        key = handler._get_key(update)  # noqa: SLF001 — закрытие вне entry
+        handler._update_state(ConversationHandler.END, key)  # noqa: SLF001
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Не удалось закрыть диалог анонса: %s", exc)
 
 
 async def handle_pick_callback(

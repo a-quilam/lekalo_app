@@ -43,6 +43,16 @@ ACTION_EXTRAS = "extras"
 ACTION_MENU = "menu"
 PANEL_ACTIONS = (ACTION_DATA, ACTION_PHOTOS, ACTION_EXTRAS, ACTION_MENU)
 
+# Фильтр обработчика: только известные действия и числовой id экземпляра.
+# Строже `parse_panel_callback` он не заменяет: подделанный callback с тем же
+# префиксом всё равно получит короткий ответ, а не доменную ошибку.
+PANEL_CALLBACK_PATTERN = rf"^{PANEL_CALLBACK_PREFIX}({'|'.join(PANEL_ACTIONS)}):\d+$"
+
+# Ответ на кнопку устаревшего экземпляра (§32, сценарий Ж). Кнопка могла
+# пережить архив, удаление записи или рестарт службы: пользователь получает
+# только пояснение, без правки экранов и записей в БД.
+STALE_INSTANCE_TEXT = tr("errors.stale.instance")
+
 
 def panel_callback(action: str, instance_id: int) -> str:
     """
