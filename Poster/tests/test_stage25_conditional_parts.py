@@ -67,6 +67,7 @@ from tests.stage19a_helpers import make_engine, temp_db_path
 from tests.stage27_helpers import OWNER_TG, AnnouncementDatabaseTestCase
 
 MIGRATION_27_NAME = "template_conditional_parts"
+MIGRATION_28_NAME = "template_snapshot_conditional_parts"
 
 
 def _journal(path: str) -> list[tuple[int, str]]:
@@ -110,9 +111,11 @@ class Migration27Tests(unittest.TestCase):
 
     def test_fresh_install_has_conditional_parts_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 27)
+        self.assertEqual(LATEST_VERSION, 28)
+        # 2.5.1 добавила 28 (`template_snapshot_conditional_parts`), поэтому
+        # проверяется позиция именно 27: сразу после 26.
         self.assertEqual(
-            _journal(self.path)[-2:],
+            _journal(self.path)[-3:-1],
             [(26, "announcement_instances"), (27, MIGRATION_27_NAME)],
         )
         columns = {
@@ -158,7 +161,9 @@ class Migration27Tests(unittest.TestCase):
             str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
         }
         self.assertNotIn("template_conditional_parts", before)
-        self.assertEqual(self.migrate(), LATEST_VERSION)
+        # Проверяется вклад ИМЕННО 27: до 28 база доводится отдельным шагом,
+        # иначе в добавочный набор попали бы объекты следующей миграции.
+        self.assertEqual(self.migrate(DEFAULT_MIGRATIONS[:27]), 27)
         after = {
             str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
         }
@@ -171,10 +176,16 @@ class Migration27Tests(unittest.TestCase):
             "миграция только добавочная",
         )
         self.assertEqual(_journal(self.path)[-1], (27, MIGRATION_27_NAME))
+        # 2.5.1 доводит базу до 28; повторный прогон по-прежнему no-op.
+        self.assertEqual(self.migrate(), LATEST_VERSION)
+        self.assertEqual(_journal(self.path)[-1], (28, MIGRATION_28_NAME))
+        latest = {
+            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
+        }
         self.assertEqual(self.migrate(), LATEST_VERSION)
         self.assertEqual(
             {str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")},
-            after,
+            latest,
             "повторный запуск ничего не меняет",
         )
 

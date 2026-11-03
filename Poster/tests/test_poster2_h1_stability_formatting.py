@@ -12,9 +12,11 @@ FakeBot и временную SQLite):
 2. рестарт на шаге фото: снимок и альбом сохраняются в черновик;
 3. resume не срабатывает в группе (там прежняя подсказка) и без активного
    черновика (обычный текст вне конструктора — прежняя подсказка);
-4. явный выход (`/cancel`, `/start`, `/help`, «🏠 В меню») закрывает приём
+4. явный выход (`/cancel`, `/start`, «🏠 В меню») закрывает приём
    ввода и ДО, и ПОСЛЕ рестарта: следующий текст/фото получает подсказку
-   меню, сохранённые значения и фотографии не меняются;
+   меню, сохранённые значения и фотографии не меняются; `/help` выходом
+   НЕ является (Poster 2.5.1): справка не снимает resume-снимок, и возврат
+   «◀️ Назад» ведёт на текущий шаг черновика;
 5. битые данные (удалённый черновик, мусор в снимке) безопасно дают
    подсказку вместо падения;
 6. entity `date_time` не ломает HTML-пайплайн: при захвате ввода она
@@ -47,7 +49,11 @@ from utils.tg_html import (
 
 try:
     from announcement_store import get_announcement_draft
-    from handlers.announcement_wizard import AW_PREVIEW, CONVERSATION_NAME
+    from handlers.announcement_wizard import (
+        AW_PREVIEW,
+        CONVERSATION_NAME,
+        RESUME_PAYLOAD_KEY,
+    )
     from models import AnnouncementDraft, AnnouncementValue, UserState
     from tests.integration_harness import (
         DEFAULT_USER_ID,
@@ -65,6 +71,7 @@ try:
         _seed_place,
         _start_to_template,
     )
+    from utils import screen as screen_utils
 
     INTEGRATION_IMPORT_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
@@ -386,9 +393,10 @@ class ExplicitExitAfterRestartTests(unittest.TestCase):
     Явный выход после рестарта: глобальные экраны меню закрывают ввод.
 
     После перезапуска службы у PTB нет состояния ConversationHandler, поэтому
-    `/cancel`, `/start`, `/help` и «🏠 В меню» обслуживают обработчики
+    `/cancel`, `/start` и «🏠 В меню» обслуживают обработчики
     `handlers/main_menu.py`. Без снятия resume-снимка следующий текст
-    записывался бы в значение шага и затирал сохранённое.
+    записывался бы в значение шага и затирал сохранённое. `/help` — не выход
+    (Poster 2.5.1): справка оставляет снимок и возвращает на текущий шаг.
     """
 
     @scenario_test
@@ -458,15 +466,34 @@ class ExplicitExitAfterRestartTests(unittest.TestCase):
         self.assertIsNone(_stored_value(h, draft.id, bricks["main"]))
 
     @scenario_test
-    async def test_help_after_restart_keeps_hint(self, h) -> None:
-        """Рестарт → /help (справка) → текст не уходит в черновик."""
+    async def test_help_after_restart_keeps_step(self, h) -> None:
+        """
+        Рестарт → /help (справка) → шаг черновика остаётся живым.
+
+        Poster 2.5.1: справка — не явный выход, resume-снимок она не
+        снимает. Возврат «◀️ Назад» ведёт на тот же шаг фотографий, а
+        присланное фото принимается шагом (а не уходит в подсказку меню).
+        """
         bricks = await _open_text_question(h)
         draft = _latest_draft(h)
         await h.restart()
         await h.text("/help")
+
+        payload = screen_utils.load_payload(DEFAULT_USER_ID) or {}
+        self.assertIn(
+            RESUME_PAYLOAD_KEY, payload, "справка после рестарта сняла resume-снимок"
+        )
+
+        await h.callback("help_back")
+        self.assertIn("Вопрос 1 из 1", h.screen_text(), "не вернулись на текущий шаг")
+        self.assertNotIn(OUTSIDE_TEXT, h.screen_text())
+
+        # Снимок жив: обычный текст продолжает шаг, а не проваливается в меню.
         await h.text("Текст после справки")
-        self.assertIn(OUTSIDE_TEXT, h.screen_text())
-        self.assertIsNone(_stored_value(h, draft.id, bricks["main"]))
+        self.assertNotIn(OUTSIDE_TEXT, h.screen_text())
+        self.assertEqual(
+            _stored_payload(h, draft.id, bricks["main"])["text"], "Текст после справки"
+        )
 
     @scenario_test
     async def test_main_menu_button_after_restart_keeps_hint(self, h) -> None:

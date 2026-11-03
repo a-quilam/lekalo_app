@@ -20,12 +20,15 @@
 - при изменении текста шаблона правило переносится в новую версию только
   при ОДНОЗНАЧНОМ совпадении фрагмента (`refresh_conditional_parts`),
   иначе помечается `stale` и не удаляется молча (§44);
-- копии шаблонов и снимки правила не переносят (§44): у снимка нет своей
-  таблицы правил, поэтому рендер снимка идёт без них.
+- КОПИЯ шаблона правила не переносит (§44); СНИМОК анонса с версии
+  Poster 2.5.1 (миграция 28) замораживает активные правила версии в
+  собственной таблице `template_snapshot_conditional_parts`, поэтому
+  последующая правка шаблона рендер существующего анонса не меняет.
 
-Таблица создаётся миграцией 27 и намеренно не добавлена в `models.py`
-(как `announcement_instances`): `create_all` не должен создавать её в
-обход журнала миграций. Здесь описана только Core-таблица для запросов.
+Таблицы создаются миграциями 27 и 28 и намеренно не добавлены в
+`models.py` (как `announcement_instances`): `create_all` не должен
+создавать их в обход журнала миграций. Здесь описаны только Core-таблицы
+для запросов.
 
 Модуль не зависит от Telegram. Права — те же, что у
 `template_store.update_template_content`: стандарт меняет администратор
@@ -80,8 +83,8 @@ SECTION_CONTENT = TEMPLATE_CONTENT
 SECTION_EXTENDED_CONTENT = TEMPLATE_EXTENDED_CONTENT
 CONDITIONAL_SECTIONS = (SECTION_CONTENT, SECTION_EXTENDED_CONTENT)
 
-# Таблица уже существует (миграция 27). Metadata локальная: к Base она не
-# подключена, `create_all` её не создаёт.
+# Таблицы уже существуют (миграции 27 и 28). Metadata локальная: к Base она
+# не подключена, `create_all` их не создаёт.
 _METADATA = MetaData()
 
 template_conditional_parts = Table(
@@ -114,6 +117,31 @@ template_conditional_parts = Table(
     ),
     Column("created_at", DateTime, nullable=False),
     Column("updated_at", DateTime, nullable=False),
+)
+
+# Замороженная копия правил внутри снимка шаблона (Poster 2.5.1, миграция 28).
+# Core-таблица по той же причине, что и `template_conditional_parts`: DDL
+# создаёт только журнал миграций, `create_all` её не воскрешает.
+template_snapshot_conditional_parts = Table(
+    "template_snapshot_conditional_parts",
+    _METADATA,
+    Column("id", Integer, primary_key=True),
+    Column(
+        "snapshot_id",
+        Integer,
+        ForeignKey("template_snapshots.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("section", Text, nullable=False),
+    Column(
+        "brick_id",
+        Integer,
+        ForeignKey("bricks.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("fragment", Text, nullable=False),
+    Column("occurrence", Integer, nullable=False, default=1, server_default="1"),
+    Column("created_at", DateTime, nullable=False),
 )
 
 
@@ -911,5 +939,6 @@ __all__ = [
     "list_conditional_parts",
     "refresh_conditional_parts",
     "template_conditional_parts",
+    "template_snapshot_conditional_parts",
     "update_conditional_part",
 ]

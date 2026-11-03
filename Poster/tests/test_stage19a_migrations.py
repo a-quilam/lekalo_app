@@ -110,6 +110,7 @@ class MigrationMechanismTests(unittest.TestCase):
                 (25, "single_address_brick"),
                 (26, "announcement_instances"),
                 (27, "template_conditional_parts"),
+                (28, "template_snapshot_conditional_parts"),
             ],
         )
 
@@ -221,6 +222,7 @@ class MigrationMechanismTests(unittest.TestCase):
                 (25, "single_address_brick"),
                 (26, "announcement_instances"),
                 (27, "template_conditional_parts"),
+                (28, "template_snapshot_conditional_parts"),
             ],
         )
 

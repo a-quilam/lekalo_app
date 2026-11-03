@@ -106,6 +106,7 @@ class BrickSchemaTests(BrickDatabaseTestCase):
                 (25, "single_address_brick"),
                 (26, "announcement_instances"),
                 (27, "template_conditional_parts"),
+                (28, "template_snapshot_conditional_parts"),
             ],
         )
         # 9 кирпичиков миграции 6 + системный `[адрес]` миграции 15

@@ -3,11 +3,11 @@
 Статус: **реализовано в Stage 19A, 19B, 20A, 20B, 21, 22A, 22B, 23, 24, 25, 26, 27A, 27C и 28**.
 Документ описывает фактический механизм, созданные таблицы, ограничения,
 автоматическую резервную копию, совместимость со старой базой и порядок
-безопасного применения миграций. Текущая последняя версия — **27**
-(`template_conditional_parts`, Poster 2.5 D1; до неё — 26
-`announcement_instances`, 25 `single_address_brick`, 24
-`template_content_and_extras_without_sections`, ещё раньше — 22
-`builtin_templates_v4` и 21 `place_city`).
+безопасного применения миграций. Текущая последняя версия — **28**
+(`template_snapshot_conditional_parts`, Poster 2.5.1; до неё — 27
+`template_conditional_parts`, 26 `announcement_instances`, 25
+`single_address_brick`, 24 `template_content_and_extras_without_sections`,
+ещё раньше — 22 `builtin_templates_v4` и 21 `place_city`).
 Целевая архитектура
 справочника мест, кирпичиков и шаблонов — в
 [`stage18_architecture.md`](stage18_architecture.md).
@@ -2209,6 +2209,61 @@ Poster 2.5 §38–45: автор сам задаёт фрагмент своег
 - Таблица намеренно описана только Core-таблицей в `conditional_parts.py`
   и не добавлена в `models.py` (как `announcement_instances`), чтобы
   `create_all` не создавал её в обход журнала миграций.
+
+### Версия 28 (Poster 2.5.1) — `template_snapshot_conditional_parts`
+
+Дефект 2.5: правила условных частей (§38–45) жили только у НЕИЗМЕНЯЕМОЙ
+версии шаблона, а снимок анонса собственных правил не имел. Поэтому
+`refresh_conditional_parts` при правке шаблона переносил правило в новую
+версию (или помечал `stale`), и УЖЕ СОЗДАННЫЙ черновик менял рендер.
+Обратная сторона: правило, добавленное к той же версии после создания
+анонса, начинало применяться к старому черновику.
+
+Poster 2.5.1 (требование владельца): правила входят в независимый снимок
+анонса и замораживаются в момент его создания.
+
+- Схема (одна транзакция `run_migrations`):
+  - новая таблица `template_snapshot_conditional_parts`: `id INTEGER
+    PRIMARY KEY`, `snapshot_id INTEGER NOT NULL` (FK
+    `template_snapshots.id ON DELETE CASCADE`), `section TEXT NOT NULL`,
+    `brick_id INTEGER NOT NULL` (FK `bricks.id ON DELETE RESTRICT`),
+    `fragment TEXT NOT NULL` (точный фрагмент исходного текста),
+    `occurrence INTEGER NOT NULL DEFAULT 1`, `created_at DATETIME NOT NULL`;
+  - индекс `ix_template_snapshot_conditional_parts_snapshot_section
+    (snapshot_id, section)` — рендер читает правила одной секции одного
+    снимка;
+  - добавочная колонка `template_snapshots.conditional_rules_frozen INTEGER
+    NOT NULL DEFAULT 0` с `CHECK (conditional_rules_frozen IN (0, 1))`.
+- **Смысл признака.** `0` — legacy-снимок: правила берутся по версии
+  черновика (прежний путь рендера, ничего не меняется). `1` — правила
+  заморожены: рендер читает ТОЛЬКО `template_snapshot_conditional_parts`.
+  Пустая заморозка (`1` без строк) — это семантика «на момент создания
+  правил не было», а не legacy: правило, добавленное позже, к такому
+  снимку не применяется.
+- **Backfill НЕ выполняется** — решение владельца релиза 2.5.1. Рабочая
+  база перед выпуском очищается утверждённым протоколом
+  (`db_maintenance.py`, `make db-maintain-clean`), поэтому
+  пользовательских снимков к моменту применения миграции не остаётся.
+  Уже существующие строки `template_snapshots` получают `frozen = 0` из
+  `DEFAULT` и продолжают рендериться прежним путём — миграция не
+  превращает их молча в «снимок без правил».
+- **Заморозка при создании.** `template_store.create_template_snapshot`
+  в ОДНОЙ транзакции со снимком копирует активные правила его версии
+  (`template_conditional_parts` с `status = 'active'`) и ставит
+  `conditional_rules_frozen = 1`. `stale`-правила не копируются: они не
+  применялись и на версии. Промежуточного состояния «снимок без
+  заморозки» не существует.
+- **Что не трогается.** Тексты версий и снимков, привязки кирпичиков,
+  ревизии, шаблоны и существующие правила версий остаются как есть.
+  Миграция только добавляет таблицу, индекс и колонку; на базе версии 27
+  `PRAGMA integrity_check` = `ok`, `foreign_key_check` пуст, повторный
+  запуск ничего не меняет.
+- Таблица намеренно описана только Core-таблицей в `conditional_parts.py`
+  (как `template_conditional_parts` и `announcement_instances`), чтобы
+  `create_all` не создавал её в обход журнала миграций. Колонка-признак
+  добавлена в ORM-модель `TemplateSnapshot` последней: `ALTER TABLE ADD
+  COLUMN` дописывает её в конец, поэтому порядок колонок после миграции
+  совпадает со свежим `create_all`.
 
 ## 9. Как добавлять миграции в будущих этапах
 

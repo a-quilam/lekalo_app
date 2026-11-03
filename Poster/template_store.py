@@ -531,6 +531,62 @@ def _insert_snapshot_bindings(
         )
 
 
+def _freeze_snapshot_conditional_parts(
+    session: Session,
+    *,
+    snapshot_id: int,
+    version_id: int,
+    now: datetime,
+) -> None:
+    """
+    Копирует активные условные правила версии в снимок (Poster 2.5.1, §44).
+
+    Копия делается в транзакции создания снимка: `stale`-правила сюда не
+    попадают (они не применялись и на версии), поэтому состав совпадает с
+    тем, что давал `active_rules_for_version` на момент создания.
+
+    Признак `conditional_rules_frozen` выставляется ВСЕГДА, даже когда
+    активных правил нет: пустая заморозка означает «на момент создания
+    правил не было», и правило, добавленное к версии позже, к снимку уже не
+    применится. Legacy-снимки с `frozen = 0` остаются на прежнем пути
+    рендера — по правилам версии черновика.
+    """
+    from conditional_parts import (
+        STATUS_ACTIVE,
+        template_conditional_parts,
+        template_snapshot_conditional_parts,
+    )
+
+    rules = session.execute(
+        select(
+            template_conditional_parts.c.section,
+            template_conditional_parts.c.brick_id,
+            template_conditional_parts.c.fragment,
+            template_conditional_parts.c.occurrence,
+        )
+        .where(
+            template_conditional_parts.c.version_id == version_id,
+            template_conditional_parts.c.status == STATUS_ACTIVE,
+        )
+        .order_by(template_conditional_parts.c.id)
+    ).all()
+    if rules:
+        session.execute(
+            template_snapshot_conditional_parts.insert(),
+            [
+                {
+                    "snapshot_id": snapshot_id,
+                    "section": str(rule.section),
+                    "brick_id": int(rule.brick_id),
+                    "fragment": str(rule.fragment),
+                    "occurrence": int(rule.occurrence),
+                    "created_at": now,
+                }
+                for rule in rules
+            ],
+        )
+
+
 # --- Встроенный стандарт ----------------------------------------------------
 
 
@@ -1583,6 +1639,10 @@ def create_template_snapshot(
         extended_content=version.extended_content,
         builtin_version=version.builtin_version,
         idempotency_key=key,
+        # Poster 2.5.1: правила фиксируются ниже, в той же транзакции.
+        # Признак ставится при вставке: `template_snapshots` защищена
+        # триггером `no_update`, снимок нельзя переписать после создания.
+        conditional_rules_frozen=1,
         created_at=now,
     )
     session.add(snapshot)
@@ -1592,6 +1652,16 @@ def create_template_snapshot(
             session,
             snapshot_id=snapshot.id,
             bindings=[(binding.code, binding.brick_id) for binding in binding_ids],
+        )
+        # Poster 2.5.1: правила условных частей входят в снимок и
+        # замораживаются здесь же, в одной транзакции с текстами и
+        # привязками (§44). Дальнейшая правка шаблона (`refresh_*` переносит
+        # правило в новую версию или помечает `stale`) на снимок не влияет.
+        _freeze_snapshot_conditional_parts(
+            session,
+            snapshot_id=snapshot.id,
+            version_id=version.id,
+            now=now,
         )
         if not _still_readable(session, actor.id, actor.telegram_user_id, template):
             session.rollback()
@@ -1977,11 +2047,13 @@ def render_template_snapshot(
     from template_compiler import render_template
     from template_parser import parse_template  # ленивый импорт
 
-    # TODO(Poster 2.5 §59): условные части снимков. У `template_snapshots`
-    # нет собственной таблицы правил (§44: копии и снимки правила не
-    # переносят), поэтому снимок рендерится без вырезания фрагментов.
-    # Когда правила снимков появятся, вырезание должно идти здесь — по
-    # исходному тексту и до `parse_template`, как в `render_template_version`.
+    # Poster 2.5.1: снимок теперь может иметь замороженную копию правил
+    # (`template_snapshot_conditional_parts`, миграция 28). Этот путь рендера
+    # её осознанно НЕ применяет: `render_template_snapshot` — просмотр
+    # самостоятельного снимка вне анонса, а правила замораживаются для
+    # конкретного черновика и применяются в
+    # `announcement_store._conditional_snapshot_texts`. Живой рендер
+    # черновика (включая legacy-снимки) идёт через анонс, не здесь.
     tokens_by_text = {
         TEMPLATE_CONTENT: parse_template(snapshot_row.content),
     }

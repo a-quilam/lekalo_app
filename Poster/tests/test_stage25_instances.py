@@ -57,6 +57,7 @@ from tests.stage27_helpers import AnnouncementDatabaseTestCase
 CHAT_ID = 777
 MIGRATION_26_NAME = "announcement_instances"
 MIGRATION_27_NAME = "template_conditional_parts"
+MIGRATION_28_NAME = "template_snapshot_conditional_parts"
 
 
 def _journal(path: str) -> list[tuple[int, str]]:
@@ -100,9 +101,11 @@ class Migration26Tests(unittest.TestCase):
 
     def test_fresh_install_has_instances_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 27)
+        self.assertEqual(LATEST_VERSION, 28)
+        # 2.5.1 добавила 28 (`template_snapshot_conditional_parts`):
+        # проверяется позиция 26/27, последняя версия в журнале — 28.
         self.assertEqual(
-            _journal(self.path)[-3:],
+            _journal(self.path)[-4:-1],
             [
                 (25, "single_address_brick"),
                 (26, MIGRATION_26_NAME),
@@ -165,7 +168,9 @@ class Migration26Tests(unittest.TestCase):
             str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
         }
         self.assertNotIn("announcement_instances", before)
-        self.assertEqual(self.migrate(), LATEST_VERSION)
+        # Проверяется вклад 26–27: до 28 база доводится отдельным шагом,
+        # иначе в добавочный набор попали бы объекты следующей миграции.
+        self.assertEqual(self.migrate(DEFAULT_MIGRATIONS[:27]), 27)
         after = {
             str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
         }
@@ -184,15 +189,17 @@ class Migration26Tests(unittest.TestCase):
                 "ix_template_conditional_parts_version_section",
             },
         )
-        self.assertEqual(
-            _journal(self.path)[-2:],
-            [(26, MIGRATION_26_NAME), (27, MIGRATION_27_NAME)],
-        )
-        # Повторный запуск ничего не добавляет и не падает.
+        self.assertEqual(_journal(self.path)[-1], (27, MIGRATION_27_NAME))
+        # 2.5.1 доводит базу до 28; повторный прогон по-прежнему no-op.
+        self.assertEqual(self.migrate(), LATEST_VERSION)
+        self.assertEqual(_journal(self.path)[-1], (28, MIGRATION_28_NAME))
+        latest = {
+            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
+        }
         self.assertEqual(self.migrate(), LATEST_VERSION)
         self.assertEqual(
             {str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")},
-            after,
+            latest,
         )
 
     def test_two_active_instances_for_one_draft_are_impossible(self) -> None:

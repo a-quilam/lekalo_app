@@ -1195,6 +1195,15 @@ class TemplateSnapshot(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
     )
+    # Poster 2.5.1: 1 — условные правила заморожены в снимке при его
+    # создании (`template_snapshot_conditional_parts`), 0 — legacy-снимок,
+    # который рендерится по правилам версии черновика (прежний путь).
+    # Колонка объявлена последней: `ALTER TABLE ADD COLUMN` миграции 28
+    # дописывает её в конец, и порядок колонок совпадает со свежим
+    # `create_all`.
+    conditional_rules_frozen: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -1226,6 +1235,10 @@ class TemplateSnapshot(Base):
         CheckConstraint(
             "idempotency_key IS NULL OR length(trim(idempotency_key)) > 0",
             name="ck_template_snapshots_idempotency_key",
+        ),
+        CheckConstraint(
+            "conditional_rules_frozen IN (0, 1)",
+            name="ck_template_snapshots_conditional_rules_frozen",
         ),
         Index(
             "ux_template_snapshots_idempotency",

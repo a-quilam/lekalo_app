@@ -24,7 +24,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import delete, select
 from sqlalchemy import update as sqlalchemy_update
@@ -72,6 +72,7 @@ from models import (
     AnnouncementValue,
     Brick,
     Place,
+    TemplateSnapshot,
     TemplateVersion,
     User,
     utcnow,
@@ -101,6 +102,9 @@ from template_types import (
     TEMPLATE_KIND_STANDARD,
 )
 from utils.tg_html import escape_html, sanitize_html
+
+if TYPE_CHECKING:  # pragma: no cover — только для аннотаций
+    from template_compiler import ConditionalRule
 
 _UNSET = object()
 
@@ -2838,19 +2842,34 @@ def _conditional_snapshot_texts(
     """
     Исходные тексты снимка с вырезанными условными частями (§38–45).
 
-    Правила привязаны к НЕИЗМЕНЯЕМОЙ версии шаблона, поэтому берутся по
-    `template_id`/`template_version` черновика: текст снимка — копия текста
-    этой версии. У снимка собственной таблицы правил нет (§44), так что
-    без версии черновика (legacy-аномалия) вырезание просто не делается.
+    Poster 2.5.1: снимок, созданный после заморозки правил
+    (`template_snapshots.conditional_rules_frozen = 1`), рендерится
+    ИСКЛЮЧИТЕЛЬНО по собственной копии правил
+    (`template_snapshot_conditional_parts`). Поэтому последующая правка
+    шаблона — перенос правила в новую версию, пометка `stale` или новое
+    правило той же версии — рендер существующего анонса не меняет (§44).
+
+    Legacy-снимки (`frozen = 0`, появившиеся до миграции 28) и черновики без
+    снимка рендерятся прежним путём: правила берутся по
+    `template_id`/`template_version` черновика. Без версии (legacy-аномалия)
+    вырезание просто не делается.
     """
     from conditional_parts import active_rules_for_version
-    from template_compiler import _brick_value_empty, apply_conditional_parts
 
     raw_texts = {
         text_name: raw
         for text_name, raw in snapshot.texts.items()
         if isinstance(raw, str)
     }
+    if _snapshot_rules_frozen(session, snapshot.snapshot_id):
+        frozen_rules = _frozen_snapshot_rules(session, snapshot.snapshot_id)
+        return _apply_rules_to_texts(
+            raw_texts,
+            rules_by_section=frozen_rules,
+            values_by_id=values_by_id,
+            definitions_by_id=definitions_by_id,
+        )
+
     if row.template_id is None or row.template_version is None:
         return raw_texts
     version_id = session.scalar(
@@ -2862,16 +2881,83 @@ def _conditional_snapshot_texts(
     if version_id is None:
         return raw_texts
 
+    legacy_rules: dict[str, tuple["ConditionalRule", ...]] = {
+        text_name: active_rules_for_version(session, int(version_id), text_name)
+        for text_name in raw_texts
+    }
+    return _apply_rules_to_texts(
+        raw_texts,
+        rules_by_section=legacy_rules,
+        values_by_id=values_by_id,
+        definitions_by_id=definitions_by_id,
+    )
+
+
+def _snapshot_rules_frozen(session: Session, snapshot_id: int | None) -> bool:
+    """Заморожены ли правила у этого снимка (миграция 28)."""
+    if snapshot_id is None:
+        return False
+    frozen = session.scalar(
+        select(TemplateSnapshot.conditional_rules_frozen).where(
+            TemplateSnapshot.id == snapshot_id
+        )
+    )
+    return bool(frozen)
+
+
+def _frozen_snapshot_rules(
+    session: Session, snapshot_id: int
+) -> dict[str, tuple["ConditionalRule", ...]]:
+    """
+    Правила из замороженной копии снимка, сгруппированные по секциям.
+
+    Отсутствие секции в результате = «на момент создания правил в ней не
+    было», поэтому вырезать нечего.
+    """
+    from conditional_parts import template_snapshot_conditional_parts
+    from template_compiler import ConditionalRule
+
+    rows = session.execute(
+        select(
+            template_snapshot_conditional_parts.c.section,
+            template_snapshot_conditional_parts.c.brick_id,
+            template_snapshot_conditional_parts.c.fragment,
+            template_snapshot_conditional_parts.c.occurrence,
+        )
+        .where(template_snapshot_conditional_parts.c.snapshot_id == snapshot_id)
+        .order_by(template_snapshot_conditional_parts.c.id)
+    ).all()
+    grouped: dict[str, list[ConditionalRule]] = {}
+    for part in rows:
+        grouped.setdefault(str(part.section), []).append(
+            ConditionalRule(
+                brick_id=int(part.brick_id),
+                fragment=str(part.fragment),
+                occurrence=int(part.occurrence),
+            )
+        )
+    return {section: tuple(rules) for section, rules in grouped.items()}
+
+
+def _apply_rules_to_texts(
+    raw_texts: Mapping[str, str],
+    *,
+    rules_by_section: Mapping[str, Sequence["ConditionalRule"]],
+    values_by_id: Mapping[int, object],
+    definitions_by_id: Mapping[int, BrickDefinition],
+) -> dict[str, str]:
+    """Вырезает условные части по уже выбранным правилам каждой секции."""
+    from template_compiler import _brick_value_empty, apply_conditional_parts
+
+    def _is_empty(brick_id: int) -> bool:
+        return _brick_value_empty(brick_id, values_by_id, definitions_by_id)
+
     result: dict[str, str] = {}
     for text_name, raw in raw_texts.items():
-        rules = active_rules_for_version(session, int(version_id), text_name)
+        rules = rules_by_section.get(text_name, ())
         if not rules:
             result[text_name] = raw
             continue
-
-        def _is_empty(brick_id: int) -> bool:
-            return _brick_value_empty(brick_id, values_by_id, definitions_by_id)
-
         result[text_name] = apply_conditional_parts(raw, rules, is_empty=_is_empty)
     return result
 

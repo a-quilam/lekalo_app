@@ -1191,7 +1191,7 @@ class ConflictMigrationTests(unittest.TestCase):
         # поверх R4-овской 20, H2 — 24 (`template_content_and_extras...
         # _without_sections`), Poster 2.4 P1 — 25 (`single_address_brick`);
         # все применяются штатно.
-        self.assertEqual(LATEST_VERSION, 27)
+        self.assertEqual(LATEST_VERSION, 28)
 
     def test_migration_19_on_filled_database_keeps_data(self) -> None:
         from sqlalchemy import text

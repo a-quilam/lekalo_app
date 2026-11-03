@@ -4001,6 +4001,87 @@ MIGRATION_27_CONDITIONAL_PARTS = Migration(
 )
 
 
+# --- Версия 28: заморозка правил в снимке (Poster 2.5.1, §44) --------------
+#
+# Дефект 2.5: правила условных частей жили только у версии шаблона, поэтому
+# правка шаблона (`refresh_conditional_parts`) переносила правило в новую
+# версию или помечала его `stale` — и УЖЕ СОЗДАННЫЙ анонс менял рендер.
+# Обратная сторона: правило, добавленное к той же версии после создания
+# анонса, начинало применяться к старому черновику.
+#
+# Poster 2.5.1: правила входят в независимый снимок анонса и замораживаются
+# в момент его создания. Копия делается в той же транзакции, что и сам
+# снимок (`template_store.create_template_snapshot`), поэтому «снимок без
+# правил» как промежуточное состояние не существует.
+#
+# Backfill НЕ выполняется — решение владельца релиза 2.5.1: рабочая база
+# перед выпуском очищается утверждённым протоколом (`db_maintenance.py`,
+# `make db-maintain-clean`), пользовательских снимков к моменту применения
+# миграции не остаётся. Уже существующие (legacy) снимки получают
+# `conditional_rules_frozen = 0` из DEFAULT и продолжают рендериться
+# прежним путём — по правилам версии, указанной в черновике. Так старые
+# снимки не превращаются молча в «снимок без правил»: 0 значит «правила
+# не заморожены», 1 — «заморожены, состав зафиксирован при создании».
+#
+# Пометка «правил не было» отличается от legacy намеренно: пустая заморозка
+# (frozen=1 без строк) — это семантика «на момент создания правил не было»,
+# и правило, добавленное позже, к такому снимку уже не применяется.
+
+MIGRATION_28_SNAPSHOT_CONDITIONAL_PARTS = Migration(
+    version=28,
+    name="template_snapshot_conditional_parts",
+    statements=(
+        # Копия активных правил версии на момент создания снимка. Отдельная
+        # таблица, а не ссылка на `template_conditional_parts`: строка
+        # правила версии живёт и меняется (`version_id` переписывается при
+        # переносе, `status` становится `stale`), а снимок обязан остаться
+        # ровно тем, каким был (§44).
+        #
+        # Колонки повторяют смысл правила версии: `section` — одна из двух
+        # авторских секций, `fragment` — точный фрагмент исходного текста,
+        # `occurrence` — 1-based номер вхождения. `brick_id` — управляющий
+        # кирпичик, тот же, что был привязан к версии на момент копирования.
+        """
+        CREATE TABLE template_snapshot_conditional_parts (
+            id INTEGER NOT NULL PRIMARY KEY,
+            snapshot_id INTEGER NOT NULL,
+            section TEXT NOT NULL,
+            brick_id INTEGER NOT NULL,
+            fragment TEXT NOT NULL,
+            occurrence INTEGER NOT NULL DEFAULT 1,
+            created_at DATETIME NOT NULL,
+            CONSTRAINT ck_template_snapshot_conditional_parts_section
+                CHECK (section IN ('content', 'extended_content')),
+            CONSTRAINT ck_template_snapshot_conditional_parts_occurrence
+                CHECK (occurrence >= 1),
+            CONSTRAINT fk_template_snapshot_conditional_parts_snapshot
+                FOREIGN KEY (snapshot_id) REFERENCES template_snapshots (id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_template_snapshot_conditional_parts_brick
+                FOREIGN KEY (brick_id) REFERENCES bricks (id)
+                ON DELETE RESTRICT
+        )
+        """,
+        # Рендер читает правила одной секции одного снимка: ровно этот
+        # индекс покрывает запрос `snapshot_id + section`.
+        """
+        CREATE INDEX ix_template_snapshot_conditional_parts_snapshot_section
+            ON template_snapshot_conditional_parts (snapshot_id, section)
+        """,
+        # Признак на самом снимке: 0 — legacy-снимок (рендер по правилам
+        # версии черновика, прежний путь), 1 — правила заморожены в момент
+        # создания. DEFAULT 0 нужен и для уже существующих строк: без
+        # backfill они остаются legacy.
+        """
+        ALTER TABLE template_snapshots
+            ADD COLUMN conditional_rules_frozen INTEGER NOT NULL DEFAULT 0
+            CONSTRAINT ck_template_snapshots_conditional_rules_frozen
+            CHECK (conditional_rules_frozen IN (0, 1))
+        """,
+    ),
+)
+
+
 DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_1_USERS_PLACES,
     MIGRATION_2_PLACE_CONTACTS_UI,
@@ -4029,6 +4110,7 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_25_SINGLE_ADDRESS_BRICK,
     MIGRATION_26_ANNOUNCEMENT_INSTANCES,
     MIGRATION_27_CONDITIONAL_PARTS,
+    MIGRATION_28_SNAPSHOT_CONDITIONAL_PARTS,
 )
 
 LATEST_VERSION = DEFAULT_MIGRATIONS[-1].version if DEFAULT_MIGRATIONS else 0
