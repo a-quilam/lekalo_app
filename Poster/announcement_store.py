@@ -2402,6 +2402,123 @@ def mark_announcement_publication_sent(
     return _details_by_id(session, actor, row.id)
 
 
+def record_in_place_publication(
+    session: Session,
+    *,
+    actor_telegram_user_id: int | None,
+    draft_id: int,
+    message_ids: Sequence[object],
+    html: str,
+    photos: Sequence[object],
+    fingerprint: str,
+) -> AnnouncementDraftDetails:
+    """
+    Фиксирует правку активного экземпляра НА МЕСТЕ (§26–28).
+
+    `editMessageText`/`editMessageCaption`/`editMessageMedia` не создают
+    новое сообщение, поэтому адреса доставки, поколение экземпляра и его
+    чат остаются прежними. Меняется только payload доставленной версии и её
+    отпечаток — иначе `_has_pending_changes` считал бы правку непримененной
+    и следующее действие отправило бы второй экземпляр.
+
+    Триггер схемы `trg_announcement_drafts_published_immutable` запрещает
+    менять опубликованный payload в статусе `sent` и разрешает ровно один
+    проверяемый переход `sent -> sending` с `previous_ids`, равными текущим
+    `ids`. Поэтому запись идёт двумя UPDATE в ОДНОЙ транзакции:
+
+    1) `sent -> sending` с payload новой версии и `previous_ids = ids`
+       (адреса прошлой версии — те же сообщения: они не заменяются);
+    2) `sending -> sent` с новым отпечатком и без `previous_ids`.
+
+    Промежуточный `sending` не виден другим сессиям: транзакция фиксируется
+    один раз, при сбое откатывается целиком. `previous_ids` не остаются в
+    прогрессе: прежняя версия не стала архивным снимком — она и есть
+    текущая, отредактированная.
+    """
+    actor = _require_actor(session, actor_telegram_user_id)
+    row = _load_owned_draft(session, actor, draft_id)
+    if row.publication_status != PUBLICATION_STATUS_SENT:
+        raise AnnouncementPublicationError(
+            "Правка на месте возможна только у доставленного анонса."
+        )
+    progress = dict(_publication_progress_from_json(row.publication_progress))
+    current_ids = list(_progress_ids(progress, "ids"))
+    checked_ids = list(_progress_ids({"ids": list(message_ids)}, "ids"))
+    # Порядок адресов значим: в альбоме текст живёт в подписи ПЕРВОГО
+    # элемента (`delivery.caption_message_id`), поэтому перестановка ids —
+    # тоже другая доставка, а не правка на месте.
+    if not checked_ids or tuple(checked_ids) != tuple(current_ids):
+        raise AnnouncementPublicationError(
+            "Правка на месте не меняет адреса сообщений: состав доставки другой."
+        )
+    checked_photos: list[str] = []
+    seen_photos: set[str] = set()
+    for item in photos or ():
+        file_id = _validated_photo_id(item)
+        if file_id not in seen_photos:
+            seen_photos.add(file_id)
+            checked_photos.append(file_id)
+    html = html or ""
+    length = check_announcement_length(html, has_photos=bool(checked_photos))
+    if length.over:
+        raise AnnouncementStageError(
+            "Анонс не помещается в сообщение: "
+            f"{length.length} из {length.limit} символов."
+        )
+    # Та же нормализация замороженного текста, что у `begin`: пустая подпись
+    # с фото — невидимый маркер, анонс без фото — техническая заглушка.
+    if html:
+        frozen_text = html
+    elif checked_photos:
+        frozen_text = EMPTY_CAPTION_TEXT
+    else:
+        frozen_text = PLACEHOLDER_TEXT
+    fingerprint = (fingerprint or "").strip()
+    if not fingerprint:
+        raise AnnouncementValueError("Отпечаток доставки не может быть пустым.")
+    revision = row.revision
+    try:
+        # Шаг 1: разрешённый триггером переход с переносом адресов прошлой
+        # версии. Прогресс описывает ту же доставку, поэтому остальные ключи
+        # (`step`/`total`) сохраняются.
+        hop = {**progress, "previous_ids": current_ids}
+        _cas_update_draft(
+            session,
+            draft_id=row.id,
+            revision=revision,
+            fields={
+                "publication_status": PUBLICATION_STATUS_SENDING,
+                "publication_text": frozen_text,
+                "publication_photos": json.dumps(checked_photos, ensure_ascii=False),
+                "publication_progress": _publication_progress_to_json(hop),
+                "publication_error": None,
+                "published_at": None,
+            },
+        )
+        revision += 1
+        # Шаг 2: возврат в `sent` с новым отпечатком и БЕЗ previous_ids —
+        # адреса прошлой версии не смешиваются с текущей и не превращают её
+        # в архивный снимок.
+        final = {**hop, "fingerprint": fingerprint}
+        final.pop("previous_ids", None)
+        _cas_update_draft(
+            session,
+            draft_id=row.id,
+            revision=revision,
+            fields={
+                "publication_status": PUBLICATION_STATUS_SENT,
+                "publication_progress": _publication_progress_to_json(final),
+                "publication_error": None,
+                "published_at": utcnow(),
+            },
+        )
+        _commit(session)
+    except Exception:
+        session.rollback()
+        raise
+    return _details_by_id(session, actor, row.id)
+
+
 def reset_failed_announcement_publication(
     session: Session,
     *,

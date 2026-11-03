@@ -50,7 +50,10 @@ import delivery
 from announcement_instances import (
     get_active_instance,
     register_instance,
+    replace_instance,
     set_panel_message,
+    strip_panel,
+    update_instance_fingerprint,
 )
 from announcement_store import (
     FIELD_STATUS_KNOWN,
@@ -80,6 +83,7 @@ from announcement_store import (
     mark_announcement_publication_failed,
     mark_announcement_publication_sent,
     record_announcement_publication_progress,
+    record_in_place_publication,
     remove_announcement_extra,
     remove_announcement_photo,
     reset_failed_announcement_publication,
@@ -4441,7 +4445,11 @@ async def _render_photos(
                     ],
                     [
                         InlineKeyboardButton(
-                            tr("buttons.admin.glavnoe_menyu"), callback_data="main_menu"
+                            tr("buttons.nav.back"),
+                            callback_data=(
+                                f"aw_photos:{details.draft_id}:"
+                                f"{details.revision}:{page}"
+                            ),
                         )
                     ],
                 ]
@@ -4482,34 +4490,58 @@ async def _render_photos(
             ]
         )
 
+    # §34–37: раскладка зависит от числа фото и пересчитывается после
+    # каждого изменения (экран рисуется заново, поэтому клавиатура всегда
+    # соответствует фактической коллекции). «🏠 В меню» здесь нет: выход с
+    # экрана фотографий — «◀️ Назад» к управлению текущим анонсом.
+    editable = not _edit_blocked(details)
     rows: list[list[InlineKeyboardButton]] = []
-    if not _edit_blocked(details):
+    add_button = InlineKeyboardButton(
+        tr("buttons.wizard.dobavit_foto"),
+        callback_data=f"aw_photo_add:{details.draft_id}:{details.revision}",
+    )
+    if not editable:
+        pass
+    elif total == 0:
+        # §35: ноль фото — только добавление. Кнопок удаления нет.
+        rows.append([add_button])
+    elif total == 1:
+        # §36: одна фотография — добавление и удаление в одной строке;
+        # нумерованных удалений и «удалить все» быть не должно.
         rows.append(
             [
+                add_button,
                 InlineKeyboardButton(
-                    tr("buttons.wizard.dobavit_foto"),
+                    tr("buttons.wizard.udalit_edinstvennoe_foto"),
                     callback_data=(
-                        f"aw_photo_add:{details.draft_id}:{details.revision}"
+                        f"aw_photo_del:{details.draft_id}:{details.revision}:0"
                     ),
-                )
+                ),
             ]
         )
-    start = page * PHOTO_PAGE_SIZE
-    if not _edit_blocked(details):
+    else:
+        # §37: две и более — добавление, удаление конкретных фото по две в
+        # строке и отдельное «удалить все» с подтверждением.
+        rows.append([add_button])
+        start = page * PHOTO_PAGE_SIZE
+        current: list[InlineKeyboardButton] = []
         for offset in range(min(PHOTO_PAGE_SIZE, max(0, total - start))):
             index = start + offset
-            rows.append(
-                [
-                    InlineKeyboardButton(
-                        tr("buttons.wizard.udalit_foto", value=index + 1),
-                        callback_data=(
-                            f"aw_photo_del:{details.draft_id}:"
-                            f"{details.revision}:{index}"
-                        ),
-                    )
-                ]
+            current.append(
+                InlineKeyboardButton(
+                    tr("buttons.wizard.udalit_foto", value=index + 1),
+                    callback_data=(
+                        f"aw_photo_del:{details.draft_id}:"
+                        f"{details.revision}:{index}"
+                    ),
+                )
             )
-    if total and not _edit_blocked(details) and not details.publication_sent:
+            if len(current) == 2:
+                rows.append(current)
+                current = []
+        if current:
+            rows.append(current)
+    if total and editable and not details.publication_sent:
         # H3: у доставленного анонса вложения уже стоят в чате выше —
         # отдельный предпросмотр дублировал бы готовый пост.
         rows.append(
@@ -4543,7 +4575,7 @@ async def _render_photos(
         )
     if nav:
         rows.append(nav)
-    if total and not _edit_blocked(details):
+    if total > 1 and editable:
         rows.append(
             [
                 InlineKeyboardButton(
@@ -4554,30 +4586,21 @@ async def _render_photos(
                 )
             ]
         )
-    if details.publication_sent:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.finished.main_menu"), callback_data="main_menu"
-                )
-            ]
-        )
-    else:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.wizard.k_obzoru"),
-                    callback_data=(f"aw_preview:{details.draft_id}:{details.revision}"),
-                )
-            ]
-        )
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.admin.glavnoe_menyu"), callback_data="main_menu"
-                )
-            ]
-        )
+    # §34: «Назад» ведёт к управлению текущим анонсом — к экрану правки у
+    # доставленного анонса (его кнопки живут у самого поста/панели) или к
+    # обзору до первой отправки.
+    rows.append(
+        [
+            InlineKeyboardButton(
+                tr("buttons.nav.back"),
+                callback_data=(
+                    f"aw_edit:{details.draft_id}:{details.revision}"
+                    if details.publication_sent
+                    else f"aw_preview:{details.draft_id}:{details.revision}"
+                ),
+            )
+        ]
+    )
     await _render(update, context, "\n".join(lines), InlineKeyboardMarkup(rows))
     return AW_PREVIEW
 
@@ -4912,8 +4935,8 @@ async def _finish_and_deliver(
     )
     if length.over:
         return await _render_length_problem(update, context, preview, length)
+    current = _delivery_fingerprint(preview.html, preview.draft.photos)
     if details.publication_status == PUBLICATION_STATUS_SENT:
-        current = _delivery_fingerprint(preview.html, preview.draft.photos)
         if (
             details.delivery_fingerprint == current
             and preview.draft.delivered_message_ids
@@ -4926,6 +4949,21 @@ async def _finish_and_deliver(
                 notice=notice
                 or tr("wizard.finish_and_deliver.eta_versiya_anonsa_otpravlena"),
             )
+        # §26–28: активный экземпляр обновляется НА МЕСТЕ, пока структура
+        # медиа та же. Новая отправка здесь создала бы вторую копию анонса,
+        # хотя Telegram умеет править текст/подпись/файл существующего
+        # сообщения. Смена структуры (0↔1↔N) остаётся путём замены
+        # экземпляра — тогда `None` пропускает поток к обычной доставке.
+        in_place = await _apply_in_place_change(
+            update,
+            context,
+            details,
+            preview,
+            fingerprint=current,
+            notice=notice,
+        )
+        if in_place is not None:
+            return in_place
     # S4 п.5 / U5: верхний блок (медиа или текст) уже стоит в чате. Если его
     # payload совпадает с текущим и прошлую версию заменять не нужно, он и есть
     # готовый пост: повторная отправка создала бы второй альбом или вторую
@@ -5393,6 +5431,18 @@ async def _archive_instance_controls(bot, chat_id: int, instance) -> None:
             logger.info(
                 "Панель архивного экземпляра #%s не удалена: %s", instance.id, exc
             )
+        else:
+            # Панели в чате больше нет — адрес на удалённое сообщение не
+            # оставляем: снимок хранит текст, фото и состав вложений (§31).
+            try:
+                with SessionLocal() as session:
+                    strip_panel(session, instance.id)
+            except Exception as exc:  # noqa: BLE001 — снимок уже архивный
+                logger.info(
+                    "Адрес панели архивного экземпляра #%s не снят: %s",
+                    instance.id,
+                    exc,
+                )
     message_id = delivery.caption_message_id(instance.message_ids)
     if message_id is None:
         return
@@ -5406,6 +5456,278 @@ async def _archive_instance_controls(bot, chat_id: int, instance) -> None:
         logger.info(
             "Клавиатура архивного экземпляра #%s не снята: %s", instance.id, exc
         )
+
+
+async def _apply_in_place_change(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    preview,
+    *,
+    fingerprint: str,
+    notice: str | None = None,
+) -> int | None:
+    """
+    Применяет правку доставленного анонса к его активному экземпляру (§26–28).
+
+    Пока структура медиа та же (0/1/N фото не меняется), новая версия НЕ
+    отправляется: правится существующее сообщение (`editMessageText` /
+    `editMessageCaption` / `editMessageMedia`), поэтому адреса доставки,
+    поколение экземпляра и кнопки остаются на месте, а в чате не появляется
+    вторая копия анонса.
+
+    `None` — правка на месте неприменима: состав медиа изменился, активного
+    экземпляра нет, либо Telegram отказал. Тогда вызывающий слой идёт обычным
+    путём замены экземпляра (§28: смена структуры — контролируемая замена),
+    а прежний активный остаётся нетронутым до подтверждённой доставки.
+
+    `int` — экран, на котором остаётся автор (правка применена).
+    """
+    photos = tuple(preview.draft.photos)
+    # Прежний payload доставленной версии — единственный надёжный источник
+    # структуры: у текстового экземпляра `message_ids` тоже длина 1.
+    previous_photos = tuple(details.publication_photos)
+    if len(photos) != len(previous_photos):
+        return None
+    try:
+        with SessionLocal() as session:
+            instance = get_active_instance(session, details.draft_id)
+    except Exception as exc:  # noqa: BLE001 — без экземпляра остаётся обычный путь
+        logger.warning(
+            "Активный экземпляр анонса #%s не прочитан: %s", details.draft_id, exc
+        )
+        return None
+    if instance is None or not instance.is_active:
+        return None
+    chat_id = ctx.chat(update).id
+    # Текст для правки — тот же, что ушёл бы в новую отправку: с фото пустой
+    # видимый текст остаётся пустой подписью, а не технической заглушкой.
+    text = preview.html or ""
+    if photos and (text == PLACEHOLDER_TEXT or not delivery.visible_text(text)):
+        text = ""
+    edited = await _edit_active_instance_in_place(
+        context.bot,
+        chat_id,
+        instance,
+        text=text,
+        photos=photos,
+        previous_photos=previous_photos,
+        previous_text=details.publication_text,
+        fingerprint=fingerprint,
+    )
+    if not edited:
+        return None
+    try:
+        with SessionLocal() as session:
+            fresh = record_in_place_publication(
+                session,
+                actor_telegram_user_id=_user_id(update),
+                draft_id=details.draft_id,
+                message_ids=list(instance.message_ids),
+                html=preview.html,
+                photos=photos,
+                fingerprint=fingerprint,
+            )
+    except Exception:  # noqa: BLE001 — сообщение в чате уже обновлено
+        # Правка Telegram подтверждена, поэтому автору не показываем сбой
+        # учёта. Повторное действие доведёт запись: правка того же
+        # содержимого отвечает «message is not modified», и прогресс
+        # обновится без второй копии в чате.
+        logger.exception(
+            "Правка анонса #%s не зафиксирована в прогрессе", details.draft_id
+        )
+        try:
+            fresh = _session_details(_user_id(update), details.draft_id)
+        except AnnouncementError:
+            fresh = details
+    _set_details(_ui(context), fresh)
+    return await _close_publication_without_screen(
+        update,
+        context,
+        fresh,
+        notice=notice,
+    )
+
+
+def _instance_photo_count(instance) -> int:
+    """Сколько вложений описывает экземпляр (0 — текст, 1 — фото, N — альбом)."""
+    return len(getattr(instance, "message_ids", ()) or ())
+
+
+async def _edit_active_instance_in_place(
+    bot,
+    chat_id: int,
+    instance,
+    *,
+    text: str,
+    photos: Sequence[str],
+    previous_photos: Sequence[str],
+    previous_text: str | None = None,
+    fingerprint: str,
+) -> bool:
+    """
+    Обновляет АКТИВНЫЙ экземпляр правкой сообщения, без новой отправки (§28).
+
+    Что и чем правится — зависит от числа фото, потому что Telegram
+    по-разному хранит текст:
+
+    - 0 фото — текст живёт в сообщении: `editMessageText`;
+    - 1 фото — текст в подписи единственного сообщения: `editMessageCaption`;
+    - N фото — подпись альбома принадлежит ПЕРВОМУ элементу группы
+      (`delivery.caption_message_id`), поэтому подпись правится по нему.
+
+    Подпись правится только когда текст действительно изменился: при замене
+    одного файла лишний `editMessageCaption` перерисовывал бы сообщение без
+    причины. Замена самих файлов при том же числе фото — `editMessageMedia`
+    по элементам, которые отличаются от прежней доставленной версии.
+
+    Меняются только содержимое и отпечаток экземпляра: `generation` и
+    `message_ids` не трогаются (триггер схемы их и не разрешает менять),
+    архивных снимков не появляется, кнопки/панель остаются на месте.
+
+    `True` — правка подтверждена Telegram (в том числе «message is not
+    modified»). `False` — правка не удалась: вызывающий слой обязан оставить
+    прежний экземпляр рабочим и не терять фото (§28/§30).
+
+    Предусловие: число фото payload совпадает с числом фото экземпляра.
+    Смена структуры (0↔1↔N) идёт путём замены экземпляра, а не правкой.
+    """
+    current_photos = list(photos)
+    # Число фото экземпляра берётся из прежнего payload: `message_ids` у
+    # текстового экземпляра тоже длина 1, поэтому по ним 0 и 1 не различить.
+    instance_photos = len(tuple(previous_photos or ()))
+    if len(current_photos) != instance_photos:
+        logger.info(
+            "Экземпляр #%s: структура медиа изменилась (%s → %s) — нужна замена.",
+            instance.id,
+            instance_photos,
+            len(current_photos),
+        )
+        return False
+    message_id = delivery.caption_message_id(instance.message_ids)
+    if message_id is None:
+        return False
+    caption = text or ""
+    media_changed = list(current_photos) != list(previous_photos or ())
+    # Текст сравнивается по видимому содержимому: маркер пустой подписи и
+    # техническая заглушка не являются правкой (S4 §5.6).
+    text_changed = (
+        previous_text is None
+        or delivery.visible_text(caption) != delivery.visible_text(previous_text)
+    )
+    if text_changed:
+        try:
+            if instance_photos == 0:
+                await delivery.call_telegram(
+                    lambda: bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=caption,
+                        parse_mode="HTML",
+                        link_preview_options=delivery.FINAL_LINK_PREVIEW,
+                    )
+                )
+            else:
+                # 1 фото и альбом: текст — подпись. В альбоме это ПЕРВЫЙ
+                # элемент (`caption_message_id`), а не последний.
+                await delivery.call_telegram(
+                    lambda: bot.edit_message_caption(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        caption=caption or None,
+                        parse_mode="HTML" if caption else None,
+                    )
+                )
+        except Exception as exc:  # noqa: BLE001 — решение по типу ниже
+            if delivery.is_not_modified(exc):
+                # Содержимое уже актуально: это успех, а не сбой правки.
+                logger.info(
+                    "Экземпляр #%s уже актуален (message is not modified).",
+                    instance.id,
+                )
+            else:
+                logger.warning(
+                    "Экземпляр #%s не обновлён на месте (%s) — "
+                    "прежний остаётся рабочим.",
+                    instance.id,
+                    exc,
+                )
+                return False
+    elif not media_changed:
+        # Ни текста, ни файлов: править нечего, но отпечаток всё равно
+        # фиксируется вызывающим слоем.
+        return True
+    if media_changed:
+        # Замена файлов при неизменном числе фото: альбом нельзя «дополнить»,
+        # но отдельный элемент группы правится `editMessageMedia`.
+        if not await _replace_instance_media(
+            bot,
+            chat_id,
+            instance,
+            current_photos,
+            previous_photos=previous_photos,
+            caption=caption,
+        ):
+            return False
+    try:
+        with SessionLocal() as session:
+            update_instance_fingerprint(session, instance.id, fingerprint)
+    except Exception as exc:  # noqa: BLE001 — правка уже в чате
+        logger.warning("Отпечаток экземпляра #%s не сохранён: %s", instance.id, exc)
+    return True
+
+
+async def _replace_instance_media(
+    bot,
+    chat_id: int,
+    instance,
+    photos: Sequence[str],
+    *,
+    previous_photos: Sequence[str],
+    caption: str,
+) -> bool:
+    """
+    Доводит вложения экземпляра до текущего payload (§28).
+
+    `editMessageCaption` меняет только подпись, поэтому заменённый файл при
+    том же числе фото правится `editMessageMedia` по каждому элементу,
+    который отличается от прежнего. Адреса сообщений при этом те же: это
+    по-прежнему один экземпляр, а не новая доставка. `True` — состав
+    вложений соответствует payload (или правка не требуется).
+    """
+    from telegram import InputMediaPhoto
+
+    shown = tuple(str(item) for item in (photos or ()))
+    previous = tuple(str(item) for item in (previous_photos or ()))
+    if len(previous) != len(shown):
+        # Состав изменился — это путь замены экземпляра, не правки на месте.
+        return False
+    for index, (old_id, new_id) in enumerate(zip(previous, shown)):
+        if old_id == new_id:
+            continue
+        message_id = int(instance.message_ids[index])
+        media = InputMediaPhoto(
+            media=new_id,
+            caption=(caption or None) if index == 0 else None,
+            parse_mode="HTML" if (index == 0 and caption) else None,
+        )
+        try:
+            await delivery.call_telegram(
+                lambda media=media, message_id=message_id: bot.edit_message_media(
+                    chat_id=chat_id, message_id=message_id, media=media
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — решение по типу ниже
+            if delivery.is_not_modified(exc):
+                continue
+            logger.warning(
+                "Вложение %s экземпляра #%s не заменено: %s",
+                index,
+                instance.id,
+                exc,
+            )
+            return False
+    return True
 
 
 async def _ensure_delivered_instance(
@@ -5434,11 +5756,23 @@ async def _ensure_delivered_instance(
     try:
         with SessionLocal() as session:
             current = get_active_instance(session, draft_id)
-            if current is None or tuple(current.message_ids) != tuple(checked_ids):
+            if current is None:
+                # Первая доставка: активного экземпляра ещё нет.
                 instance = register_instance(
                     session,
                     draft_id,
                     chat_id,
+                    checked_ids,
+                    fingerprint=fingerprint,
+                )
+                fresh = True
+            elif tuple(current.message_ids) != tuple(checked_ids):
+                # §28: смена структуры медиа — контролируемая замена активного
+                # экземпляра. `replace_instance` архивирует прежний и вставляет
+                # новый в ОДНОЙ транзакции, поэтому двух активных не бывает.
+                instance = replace_instance(
+                    session,
+                    current.id,
                     checked_ids,
                     fingerprint=fingerprint,
                 )

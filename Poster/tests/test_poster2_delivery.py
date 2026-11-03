@@ -844,11 +844,12 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         self, h
     ) -> None:
         """
-        H3 + §30–31: сохранение значения — обычная замена без промоушена.
+        §26–28 (2.5): сохранение значения правит копию НА МЕСТЕ.
 
-        Контент другой, промоушен запрещён; прежний экземпляр остаётся в чате
-        архивным снимком (без кнопок), а не удаляется: история доставленных
-        версий сохраняется. Отдельной кнопки «Применить изменения» нет.
+        Копия в чате одна: `message_id` тот же, текст обновлён правкой
+        (`editMessageText`), новый экземпляр и архивный снимок не образуются,
+        `publication_progress["ids"]` не меняется. Отдельной кнопки «Применить
+        изменения» нет.
         """
         from tests.test_stage27b_announcement_ui import (
             _callback,
@@ -870,18 +871,16 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
 
         updated = self._assert_single_copy(h, draft.id, text="Обновлено")
         stored = _stored(h, draft.id)
-        self.assertNotEqual(updated, first)
-        self.assertEqual(tuple(stored.delivered_message_ids), (updated,))
-        self.assertEqual(tuple(stored.previous_message_ids), (first,))
-        # §30–31: прежняя версия НЕ удаляется — остаётся архивным снимком.
-        self.assertNotIn(first, h.deleted_ids(), "прежний экземпляр не удаляется")
-        self.assertEqual(
-            _copies(h, "Значение"), [first], "старая копия осталась в чате"
-        )
-        self.assertIsNone(
-            _final_markup(h, first), "у прежнего экземпляра клавиатура снята"
-        )
-        # Новая версия получила управление.
+        # §28: тот же message_id — правка на месте, а не новая версия.
+        self.assertEqual(updated, first, "правка ушла в существующее сообщение")
+        self.assertEqual(tuple(stored.delivered_message_ids), (first,))
+        self.assertEqual(tuple(stored.previous_message_ids), (), "замены не было")
+        self.assertNotIn(first, h.deleted_ids(), "сообщение не удаляется")
+        # Текст в чате обновлён: старой копии «Значение» не осталось.
+        self.assertEqual(_copies(h, "Значение"), [], "старой копии нет")
+        self.assertEqual(_copies(h, "Обновлено"), [first], "текст обновлён")
+        self.assertEqual(h.bot.content_text(h.chat_id, first), stored.publication_text)
+        # Управление осталось на том же сообщении.
         self.assertIsNotNone(_final_markup(h, updated))
 
     @scenario_test

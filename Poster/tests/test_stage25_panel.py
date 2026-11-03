@@ -54,7 +54,7 @@ try:
         _only_active,
         _stored,
     )
-    from tests.test_stage27b_announcement_ui import _callback, _open_edit
+    from tests.test_stage27b_announcement_ui import _callback
 
     INTEGRATION_IMPORT_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
@@ -350,15 +350,15 @@ class StalePanelCallbackTests(PanelTestMixin, unittest.TestCase):
         draft = await _delivered_without_photos(h)
         first = _only_active(h, draft.id)
 
-        # Переиздание через правку значения (aw_qmanage-цепочка): прежний
-        # экземпляр становится архивным, кнопки с него снимаются.
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
-        await h.text("Обновлено")
+        # §29–30 (2.5): правка значения идёт НА МЕСТЕ и экземпляр не меняет;
+        # архивный снимок образуется только при переиздании — повторным
+        # открытием из «Мои анонсы» (`aw_open`).
+        await h.callback("main_menu")
+        await h.callback("my_announcements")
+        await h.callback(_callback(h, "aw_open"))
 
         active = _only_active(h, draft.id)
-        self.assertNotEqual(active.id, first.id, "правка выпустила новую версию")
+        self.assertNotEqual(active.id, first.id, "переиздание выпустило версию")
         self.assertEqual(active.generation, first.generation + 1)
         self.assertEqual(
             [item for item in _instances(h, draft.id) if item.id == first.id][0].status,

@@ -166,6 +166,32 @@ Developer → Tester (MEDIUM/HIGH) → Reviewer (HIGH) → checkpoint → ком
   раскладки фото §34–37; сценарии Д, И. Затем приёмка C (Tester,
   задание с готовыми фактами), make check на границе этапа.
 
+## 2026-11-03 — Этап C: C3 ЗАВЕРШЁН: commit 51e4881
+
+- handlers/announcement_panel.py (новый, группа 0 bot.py до конструктора):
+  anp_{action}:{instance_id} вне ConversationHandler; действия data→
+  _render_delivered_edit, photos→_render_photos, extras→_enter_extras,
+  menu→главное меню + forget_conversation_state; remember_conversation_state
+  для aw_-цепочки после рестарта; гейт _edit_blocked.
+- PANEL_CALLBACK_PATTERN (строгий regex) + errors.stale.instance в
+  ui_texts (yaml+DEFAULTS, docs/ui_texts.md обновлён).
+- Stale-защита (Ж): archived/несуществующий/чужой чат/удалённый черновик →
+  только callback_answer alert, ноль правок экранов/БД. З: после
+  Harness.restart() действия работают из БД; каскад: prod PRAGMA foreign_keys
+  удаляет строку, Harness — через _details-гейт (обе ветки закреплены тестом).
+- Фикс Harness: SessionLocal handlers.announcement_panel не патчился →
+  anp_-callback уходил в реальную post_bot.db (патч добавлен в init/close).
+- test_stage25_panel.py: 9 тестов (Е/Ж/З). test_poster2_u2b_finish_tester.py
+  актуализирован под §18 (8 OK): IDOR, подделки, двойное нажатие.
+- Целевые прогоны: 108 tests OK, 151 regression OK. ruff/black чисто.
+- Показатели C3: Developer 3 вызова (1 упор в steps, финал — тесты,
+  1 микро-фикс tester-файла); продуктовых дефектов 0 (кроме фикса Harness).
+- Next: C4 (HIGH): редактирование доставленного in-place (editMessageText/
+  Caption/Media вместо переиздания), замена экземпляра только при смене
+  структуры медиа (0↔1↔N), панель N→0/1, раскладки фото §34–37; сценарии
+  Д, И §58. Затем приёмка C (Tester, задание с готовыми фактами),
+  полный make check на границе этапа.
+
 ## 2026-11-02 — Этап A (2.5) ЗАВЕРШЁН: commits fcd8364 → d58b318 → dc5c027 → ffea77e → 330fe40
 
 - A1: 🧩 + эмодзи системных кирпичиков + компактное меню (§9–10).

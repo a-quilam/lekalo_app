@@ -431,6 +431,37 @@ def set_panel_message(
     return rowcount
 
 
+def update_instance_fingerprint(
+    session: Session, instance_id: int, fingerprint: str | None
+) -> int:
+    """
+    Обновляет отпечаток содержимого экземпляра после ПРАВКИ НА МЕСТЕ (§26–28).
+
+    Правка через `editMessageText`/`editMessageCaption`/`editMessageMedia`
+    не создаёт новый экземпляр: сообщения, чат и поколение те же, меняется
+    только отпечаток payload. Триггер схемы разрешает менять ровно
+    `fingerprint`/`panel_message_id`/`status` — идентичность экземпляра
+    остаётся неизменяемой, поэтому архивный снимок не превращается в
+    подменяемую ссылку на живой анонс.
+
+    Возвращает число изменённых строк (0 — экземпляра нет).
+    """
+    checked = _validated_id(instance_id, field_name="instance_id")
+    checked_fingerprint = _validated_fingerprint(fingerprint)
+    try:
+        result = session.execute(
+            update(announcement_instances)
+            .where(announcement_instances.c.id == checked)
+            .values(fingerprint=checked_fingerprint)
+        )
+        rowcount = int(getattr(result, "rowcount", 0) or 0)
+        _commit(session)
+    except Exception:
+        session.rollback()
+        raise
+    return rowcount
+
+
 def strip_panel(session: Session, instance_id: int) -> int:
     """
     Снимает отдельную панель управления (кнопки переехали на сообщение).

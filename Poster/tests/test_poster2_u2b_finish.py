@@ -13,7 +13,7 @@ Poster 2.5 (C2b-2): экрана «✅ Анонс готов» больше не
 - «В меню» оставляет готовый пост и ровно один служебный экран;
 - инвариант порядка: все `message_id` постов ниже `message_id` служебного
   экрана — по фактическим id из FakeBot (`call_message_ids`), в том числе
-  после замены версии;
+  после правки на месте (id поста не меняется);
 - H3: изменения применяются сразу, строки «есть неприменённые изменения» и
   кнопки «Применить изменения» больше нет; повторное сохранение того же
   значения не создаёт копию, устаревшая кнопка не меняет анонс.
@@ -203,8 +203,19 @@ class DeliveredScreenTests(unittest.TestCase):
         await h.text("Новое значение")
         self.assertNotIn("Изменения пока не отправлены", h.screen_text())
         self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
-        self.assertEqual(len(h.posts()), 3, "новая версия ушла сразу")
-        self.assertIn("Новое значение", h.posts()[-1] or "")
+        # §28: правка значения применяется к существующему сообщению на
+        # месте — второй копии анонса в чате не появляется. Текст берём из
+        # фактического содержимого сообщения: у анонса без фото пост — живой
+        # блок, и финальный текст пришёл `editMessageText`, а запись
+        # `send_message` хранит версию на момент создания.
+        self.assertEqual(len(h.posts()), 2, "правка на месте, а не новая версия")
+        current = h.current_post_ids()
+        self.assertEqual(len(current), 1, f"активных версий: {current}")
+        ((message_id, shown),) = current.items()
+        self.assertIn("Новое значение", shown or "")
+        self.assertEqual(
+            h.bot.content_text(h.chat_id, message_id), shown, "текст — из чата"
+        )
         self.assertEqual(_details(h, draft.id).publication_status, "sent")
 
 
@@ -460,6 +471,7 @@ class MessageOrderInvariantTests(unittest.TestCase):
 
     @scenario_test
     async def test_replacement_version_keeps_screen_below_post(self, h) -> None:
+        """§26–28 (2.5): правка на месте — id тот же, порядок сообщений сохранён."""
         await h.text("/start")
         draft, _bricks = await _delivered(h)
         first_ids = _details(h, draft.id).delivered_message_ids
@@ -470,22 +482,32 @@ class MessageOrderInvariantTests(unittest.TestCase):
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Обновлено")
-        # H3: новая версия ушла сразу, без «Применить изменения».
+        # H3: правка уходит сразу, без «Применить изменения», и без копии.
 
         stored = _details(h, draft.id)
         self.assertEqual(stored.publication_status, "sent")
-        self.assertEqual(tuple(stored.previous_message_ids), first_ids)
-        self.assertIn("Обновлено", h.posts()[-1] or "")
-        # §30–31: прежняя версия остаётся в чате архивным снимком без кнопок,
-        # а не удаляется: история доставок сохраняется.
+        self.assertEqual(
+            tuple(stored.delivered_message_ids), first_ids, "экземпляр тот же"
+        )
+        self.assertEqual(tuple(stored.previous_message_ids), (), "замены не было")
+        # §28: текст обновлён в том же сообщении — читаем фактическое
+        # содержимое чата: у анонса без фото пост — живой блок, и финальный
+        # текст пришёл `editMessageText`, а не `send_message`.
+        for message_id in first_ids:
+            self.assertIn("Обновлено", h.bot.content_text(h.chat_id, message_id) or "")
+        self.assertEqual(len(h.current_post_ids()), len(first_ids))
+        # §30–31: пост не удаляется и не переотправляется — вторая версия и
+        # архивный снимок не образуются.
         self.assertFalse(
             set(first_ids) & set(h.deleted_ids()),
-            "прежний экземпляр не удаляется",
+            "пост не удаляется",
         )
+        self.assertEqual(len(h.posts()), len(first_ids), "копий анонса не появилось")
+        # Управление осталось на самом сообщении.
         for message_id in first_ids:
-            self.assertIsNone(
+            self.assertIsNotNone(
                 _final_markup(h, message_id),
-                "с прежнего экземпляра снята клавиатура",
+                "правка на месте сохранила клавиатуру",
             )
         self._assert_order(h)
 
@@ -576,9 +598,12 @@ class DeliveredApplyTests(unittest.TestCase):
         rows = _keyboard_rows(h)
         self.assertEqual([label for label, _data in rows[0]], EDIT_ROW, rows)
         self.assertEqual([label for label, _data in rows[-1]], [EDIT_MENU], rows)
-        # Одна новая версия от самой правки (H3: применяется сразу), не две.
-        self.assertEqual(len(h.posts()), 2)
-        self.assertIn("Другое значение", h.posts()[-1] or "")
+        # §28 (2.5): правка ушла в то же сообщение — единственный пост в
+        # чате остался один (`h.posts()` дополнительно отдаёт записи доставки,
+        # включая архивные, поэтому текущую версию считаем по ids).
+        self.assertEqual(len(h.current_post_ids()), 1, "правка на месте, копий нет")
+        ((message_id, shown),) = h.current_post_ids().items()
+        self.assertIn("Другое значение", shown or "")
         self.assertEqual(_details(h, draft.id).publication_status, "sent")
 
     @scenario_test

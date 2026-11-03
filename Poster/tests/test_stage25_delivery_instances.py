@@ -396,8 +396,16 @@ class DeliveryResumeTests(unittest.TestCase):
 )
 class InstanceArchiveTests(unittest.TestCase):
     @scenario_test
-    async def test_album_edit_archives_previous_and_removes_panel(self, h) -> None:
-        """§30–31: новая версия активна, прежняя — архивный снимок без кнопок."""
+    async def test_album_edit_in_place_then_reopen_archives_previous(self, h) -> None:
+        """
+        §26–28 + §30–31: правка альбома идёт на месте, архив даёт переоткрытие.
+
+        Пока структура медиа та же, текст правится в существующем альбоме
+        (`editMessageCaption` по первому элементу): экземпляр, его поколение и
+        панель не меняются. Архивный снимок появляется только там, где он и
+        задуман, — при повторном открытии анонса из «Мои анонсы»: прежний
+        экземпляр остаётся в чате без кнопок, панель группы убирается.
+        """
         await h.text("/start")
         draft = await _delivered_with_photos(h, 3)
         first = _only_active(h, draft.id)
@@ -409,6 +417,33 @@ class InstanceArchiveTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
         await h.text("Обновлено")
+
+        # Правка применена к тому же экземпляру: копий и архива нет.
+        self.assertEqual(len(_instances(h, draft.id)), 1)
+        edited = _only_active(h, draft.id)
+        self.assertEqual(edited.id, first.id)
+        self.assertEqual(edited.generation, first.generation)
+        self.assertEqual(edited.message_ids, first_ids)
+        self.assertEqual(edited.panel_message_id, first_panel)
+        caption_id = delivery.caption_message_id(first_ids)
+        self.assertEqual(
+            h.bot.content_text(h.chat_id, caption_id),
+            "Обновлено",
+            "подпись альбома обновлена на месте",
+        )
+        self.assertEqual(
+            len([call for call in h.calls if call["type"] == "media_group"]),
+            1,
+            "второй альбом не отправлен",
+        )
+        # В записи `sendMediaGroup` остаётся подпись на момент отправки, а в
+        # чате она уже обновлена правкой на месте (проверено выше).
+        self.assertEqual(h.posts(), [ANNOUNCEMENT_TEXT])
+
+        # §29–30: переоткрытие из «Мои анонсы» отправляет новый экземпляр.
+        await h.callback("main_menu")
+        await h.callback("my_announcements")
+        await h.callback(_callback(h, "aw_open"))
 
         instances = _instances(h, draft.id)
         self.assertEqual(len(instances), 2, f"история: {instances}")
@@ -422,12 +457,15 @@ class InstanceArchiveTests(unittest.TestCase):
         archived = [item for item in instances if item.id == first.id][0]
         self.assertEqual(archived.status, "archived")
         self.assertEqual(archived.message_ids, first_ids, "снимок не переписан")
-        self.assertEqual(archived.panel_message_id, first_panel)
+        # §31: снимок сохраняет текст, фото и состав вложений; адрес панели,
+        # которой в чате больше нет, не остаётся живой ссылкой.
+        self.assertIsNone(archived.panel_message_id)
+        # Правка на месте обновила отпечаток: снимок описывает то, что
+        # реально осталось в чате (подпись «Обновлено»), а не версию до неё.
+        self.assertEqual(archived.fingerprint, edited.fingerprint)
 
-        # У прежнего сообщения снята клавиатура (панель удалена), а контент
-        # остался: текст и фото в чате не трогаем.
-        caption_id = delivery.caption_message_id(first_ids)
-        self.assertIsNotNone(caption_id)
+        # У прежнего сообщения снята клавиатура, а контент остался: текст и
+        # фото в чате не трогаем. Панель прежней группы удалена.
         self.assertIsNone(
             _final_markup(h, caption_id),
             "клавиатура прежнего экземпляра должна быть снята",
@@ -437,12 +475,15 @@ class InstanceArchiveTests(unittest.TestCase):
             "текст/фото прежнего экземпляра остаются в чате",
         )
         self.assertIn(first_panel, h.deleted_ids(), "панель прежней версии убрана")
-        # Обе версии видны как доставленные посты.
-        self.assertEqual(h.posts(), [ANNOUNCEMENT_TEXT, "Обновлено"])
+        self.assertEqual(
+            h.posts(),
+            [ANNOUNCEMENT_TEXT, "Обновлено"],
+            "обе версии видны как доставленные посты",
+        )
 
     @scenario_test
-    async def test_text_edit_archives_previous_without_deleting_it(self, h) -> None:
-        """§30–31: текстовый анонс остаётся снимком, удаляется только клавиатура."""
+    async def test_text_edit_in_place_then_reopen_archives_previous(self, h) -> None:
+        """§28 + §30–31: текст правится на месте, архив — при переоткрытии."""
         await h.text("/start")
         draft = await _delivered_without_photos(h)
         first = _only_active(h, draft.id)
@@ -453,20 +494,39 @@ class InstanceArchiveTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_qgoto"))
         await h.text("Обновлено")
 
+        self.assertEqual(len(_instances(h, draft.id)), 1, "правка не плодит экземпляры")
+        edited = _only_active(h, draft.id)
+        self.assertEqual(edited.id, first.id)
+        self.assertEqual(edited.message_ids, (first_id,))
+        self.assertEqual(h.bot.content_text(h.chat_id, first_id), "Обновлено")
+        self.assertIsNotNone(_final_markup(h, first_id))
+
+        await h.callback("main_menu")
+        await h.callback("my_announcements")
+        await h.callback(_callback(h, "aw_open"))
+
         instances = _instances(h, draft.id)
         self.assertEqual(len(instances), 2)
         active = _only_active(h, draft.id)
-        self.assertEqual(active.generation, 2)
+        self.assertNotEqual(active.id, first.id)
+        self.assertEqual(active.generation, first.generation + 1)
         archived = [item for item in instances if item.id == first.id][0]
         self.assertEqual(archived.status, "archived")
         self.assertEqual(archived.message_ids, (first_id,))
+        # Правка на месте обновила отпечаток: снимок описывает то, что
+        # реально осталось в чате (текст «Обновлено»), а не версию до правки.
+        self.assertEqual(archived.fingerprint, edited.fingerprint)
 
         self.assertIsNone(
             _final_markup(h, first_id),
             "клавиатура прежнего экземпляра снята",
         )
         self.assertNotIn(first_id, h.deleted_ids(), "прежний текст не удаляется")
-        self.assertEqual(h.bot.content_text(h.chat_id, first_id), ANNOUNCEMENT_TEXT)
+        self.assertEqual(
+            h.bot.content_text(h.chat_id, first_id),
+            "Обновлено",
+            "архивный снимок сохраняет свой текст",
+        )
         # Управление нового экземпляра — у нового сообщения.
         new_markup = _final_markup(h, active.message_ids[0])
         self.assertIsNotNone(new_markup)
@@ -476,7 +536,8 @@ class InstanceArchiveTests(unittest.TestCase):
                 for _l, data in inline_buttons(new_markup)
             )
         )
-        self.assertEqual(h.posts(), [ANNOUNCEMENT_TEXT, "Обновлено"])
+        self.assertNotEqual(active.message_ids, first.message_ids)
+        self.assertEqual(h.posts(), ["Обновлено", "Обновлено"])
 
 
 # --- повторное открытие ----------------------------------------------------
