@@ -466,8 +466,9 @@ class CatalogScreenTests(_TempCatalog):
         await h.text("/help")
         record = h.bot.rich_records[-1]
         heading = record["rich_message"]["blocks"][0]
-        self.assertEqual(heading["type"], "section_heading")
-        self.assertEqual(heading["heading"], "Справка-правка")
+        # Официальная схема Bot API 10.1: type "heading", текст в поле text.
+        self.assertEqual(heading["type"], "heading")
+        self.assertEqual(heading["text"], "Справка-правка")
 
     @scenario_test
     async def test_invalid_catalog_keeps_menu_alive_with_defaults(

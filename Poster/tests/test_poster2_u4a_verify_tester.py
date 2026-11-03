@@ -129,9 +129,11 @@ class OwnerScenarioTests(_Case):
         # 2. справка: настоящий Rich Message, заголовок — из каталога
         await h.text("/help")
         record = h.bot.rich_records[-1]
-        self.assertEqual(
-            record["rich_message"]["blocks"][0]["heading"], "СПРАВКА-ПРИЁМКА"
-        )
+        heading = record["rich_message"]["blocks"][0]
+        # Официальная схема Bot API 10.1: заголовок — `type: "heading"`,
+        # текст в поле `text` (поля `heading` в схеме нет).
+        self.assertEqual(heading["type"], "heading")
+        self.assertEqual(heading["text"], "СПРАВКА-ПРИЁМКА")
 
         # 3. хаб кирпичиков
         await h.callback("manage")

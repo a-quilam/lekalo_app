@@ -86,6 +86,33 @@ MENU_CALLBACKS = [
 ]
 
 
+def _rich_text(payload: dict) -> str:
+    """
+    Плоский текст Rich Message: заголовки, абзацы, списки, summary.
+
+    Схема Bot API 10.1: заголовок — `type: "heading"` с полем `text`,
+    элементы списка — объекты `{"blocks": [...]}`, а не строки.
+    """
+    parts: list[str] = []
+
+    def walk(block: dict) -> None:
+        kind = block.get("type")
+        if kind in {"heading", "paragraph"}:
+            parts.append(str(block.get("text") or ""))
+        elif kind == "list":
+            for item in block.get("items") or ():
+                for child in (item or {}).get("blocks") or ():
+                    walk(child)
+        elif kind == "details":
+            parts.append(str(block.get("summary") or ""))
+            for child in block.get("blocks") or ():
+                walk(child)
+
+    for block in payload.get("blocks") or ():
+        walk(block)
+    return "\n".join(parts)
+
+
 def _user(session, telegram_user_id: int = DEFAULT_USER_ID):
     user = session.scalar(select(User).where(User.telegram_user_id == telegram_user_id))
     if user is None:
@@ -295,14 +322,7 @@ class MainMenuTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("help")
         record = h.bot.rich_records[0]
-        text = "\n".join(
-            str(block.get("heading") or block.get("text") or block.get("summary") or "")
-            for block in record["rich_message"]["blocks"]
-        )
-        for section in record["rich_message"]["blocks"]:
-            for child in section.get("blocks") or ():
-                text += "\n" + str(child.get("text") or "")
-                text += "\n" + "\n".join(child.get("items") or ())
+        text = _rich_text(record["rich_message"])
         self.assertIn("Создание анонса", text)
         self.assertIn("Создать анонс", text)
         self.assertIn("Создать по личному шаблону", text)

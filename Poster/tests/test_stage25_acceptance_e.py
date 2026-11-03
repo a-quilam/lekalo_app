@@ -13,10 +13,11 @@ Poster 2.5, независимая приёмка этапа E (Rich Message —
    `sendRichMessage`; аргумент — валидный `InputRichMessage` способом
    `blocks` (ровно один способ), обычного `sendMessage` с текстом справки нет.
 2. §51 — заголовок «Poster — помощь», введение из спецификации и ровно
-   десять свёрнутых (`is_open=False`) раскрываемых разделов с нужными
-   названиями; текст «Условных частей» объясняет скрытие тире и строки цены
-   без программных выражений; раздел «Команды» сверяется с ФАКТИЧЕСКИ
-   зарегистрированными `CommandHandler` (своя копия списка не используется).
+   десять свёрнутых (`is_open` не передаётся вовсе) раскрываемых разделов
+   с нужными названиями; текст «Условных частей» объясняет скрытие тире и
+   строки цены без программных выражений; раздел «Команды» сверяется с
+   ФАКТИЧЕСКИ зарегистрированными `CommandHandler` (своя копия списка не
+   используется).
 3. §53 — кнопка возврата «🏠 В меню» с `callback_data=main_menu`; возврат
    восстанавливает меню, удаляет временный Rich Message, не оставляет двух
    клавиатур и не трогает доставленный анонс.
@@ -82,9 +83,11 @@ SECTION_TITLES = (
     "Команды",
 )
 
-# §53: кнопка возврата из справки.
-BACK_LABEL = "🏠 В меню"
-BACK_DATA = "main_menu"
+# §53 + Poster 2.5.1: кнопка возврата из справки на экран-источник.
+BACK_LABEL = "◀️ Назад"
+BACK_DATA = "help_back"
+# Прежняя кнопка «🏠 В меню» с Rich Message убрана (2.5.1).
+LEGACY_BACK_DATA = "main_menu"
 
 # Главное меню (§10): четыре постоянные кнопки.
 MENU_BUTTONS = [
@@ -120,12 +123,17 @@ def _details_of(record: dict) -> list[dict]:
 def _block_text(block: dict) -> str:
     """Весь текст одного блока (details — вместе с вложенными)."""
     kind = block.get("type")
-    if kind == "section_heading":
-        return str(block.get("heading") or "")
+    if kind == "heading":
+        return str(block.get("text") or "")
     if kind == "paragraph":
         return str(block.get("text") or "")
     if kind == "list":
-        return "\n".join(str(item) for item in block.get("items") or ())
+        # items — объекты InputRichBlockListItem со своим blocks (схема 10.1).
+        return "\n".join(
+            _block_text(child)
+            for item in block.get("items") or ()
+            for child in (item or {}).get("blocks") or ()
+        )
     if kind == "details":
         parts = [str(block.get("summary") or "")]
         parts.extend(_block_text(child) for child in block.get("blocks") or ())
@@ -247,8 +255,9 @@ class RichHelpDeliveryTests(unittest.TestCase):
         self.assertEqual(record["chat_id"], h.chat_id)
 
         blocks = _blocks_of(record)
-        self.assertEqual(blocks[0]["type"], "section_heading")
-        self.assertEqual(blocks[0]["heading"], HELP_TITLE)
+        self.assertEqual(blocks[0]["type"], "heading")
+        self.assertEqual(blocks[0]["text"], HELP_TITLE)
+        self.assertEqual(blocks[0]["size"], 1)
         self.assertIn(HELP_INTRO, _rich_plain_text(record), "введение §51")
 
     @scenario_test
@@ -260,8 +269,10 @@ class RichHelpDeliveryTests(unittest.TestCase):
         details = _details_of(record)
         self.assertEqual(len(details), 10, "в справке должно быть 10 разделов")
         for block in details:
-            self.assertIs(
-                block.get("is_open"), False, "раздел должен быть свёрнут (§52)"
+            self.assertNotIn(
+                "is_open",
+                block,
+                "свёрнутый раздел не передаёт is_open (схема Bot API 10.1)",
             )
             self.assertTrue(block.get("summary"), "пустое название раздела")
             self.assertTrue(block.get("blocks"), "раскрываемый блок без содержимого")
@@ -299,13 +310,24 @@ class RichHelpDeliveryTests(unittest.TestCase):
         self.assertEqual(registered - listed, set(), "команда не описана в справке")
 
     @scenario_test
-    async def test_help_keyboard_has_main_menu_return(self, h) -> None:
+    async def test_help_keyboard_has_single_back_button(self, h) -> None:
+        """
+        §53 + 2.5.1: на Rich Message ровно одна кнопка «◀️ Назад» (help_back).
+
+        Кнопка «🏠 В меню» с Rich Message убрана: справка возвращает на
+        реальный экран-источник, а не безусловно в меню.
+        """
         await h.text("/start")
         await h.callback("help")
         record = _rich_records(h)[0]
 
-        self.assertEqual(
-            inline_buttons(record["reply_markup"]), [(BACK_LABEL, BACK_DATA)]
+        buttons = inline_buttons(record["reply_markup"])
+        self.assertEqual(buttons, [(BACK_LABEL, BACK_DATA)])
+        self.assertEqual(len(buttons), 1, "на Rich Message должна быть одна кнопка")
+        self.assertNotIn(
+            LEGACY_BACK_DATA,
+            [data for _label, data in buttons],
+            "старая кнопка main_menu осталась на Rich Message",
         )
 
 
@@ -447,13 +469,23 @@ class RichHelpReturnTests(unittest.TestCase):
         )
 
     @scenario_test
-    async def test_help_inside_constructor_closes_dialog_without_crash(self, h) -> None:
+    async def test_help_inside_constructor_returns_to_current_step(self, h) -> None:
+        """
+        2.5.1: справка из конструктора возвращает на ТЕКУЩИЙ шаг черновика.
+
+        Прежний контракт «🏠 В меню» снимал resume-снимок и закрывал
+        конструктор. Теперь источник не стирается: «◀️ Назад» ведёт в
+        вопрос, на котором автор остановился, а resume-снимок жив (после
+        рестарта текст продолжает шаг — H1).
+        """
+        from handlers.announcement_wizard import RESUME_PAYLOAD_KEY
         from tests.test_stage27b_announcement_ui import (
             _choose_personal,
             _seed_personal_template,
             _seed_place,
             _start_to_template,
         )
+        from utils import screen as screen_utils
 
         await h.text("/start")
         place_id, _alias_id = _seed_place(h)
@@ -467,7 +499,12 @@ class RichHelpReturnTests(unittest.TestCase):
         self.assertEqual(len(_live_keyboards(h)), 1, _live_messages(h))
 
         await h.callback(BACK_DATA)
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn("Вопрос 1 из 1", h.screen_text(), "не вернулись в конструктор")
+        self.assertNotIn("Что хотите сделать?", h.screen_text())
+        payload = screen_utils.load_payload(h.user_id) or {}
+        self.assertIn(
+            RESUME_PAYLOAD_KEY, payload, "справка сняла resume-снимок конструктора"
+        )
 
 
 # --- 3. Rich Message только в справке --------------------------------------
@@ -495,7 +532,8 @@ class RichHelpIsolationTests(unittest.TestCase):
             visited.append((callback, h.screen_text().splitlines()[0]))
             self.assertEqual(_rich_records(h), [], f"Rich Message в разделе {callback}")
             self.assertTrue(h.screen_text(), f"раздел {callback} остался без экрана")
-            await h.callback(BACK_DATA)
+            # Экраны разделов по-прежнему выходят в меню прежней кнопкой.
+            await h.callback(LEGACY_BACK_DATA)
 
         await h.callback("pick_place")
         visited.append(("pick_place", h.screen_text().splitlines()[0]))
@@ -552,7 +590,7 @@ class RichHelpFailureTests(unittest.TestCase):
             h, BadRequest("Bad Request: unsupported rich message")
         )
         # Возврат из плашки сбоя работает обычным экраном.
-        await h.callback(BACK_DATA)
+        await h.callback(LEGACY_BACK_DATA)
         self.assertIn("Что хотите сделать?", h.screen_text())
 
     @scenario_test
@@ -603,7 +641,7 @@ class RichHelpFailureTests(unittest.TestCase):
         self.assertIn("message", kinds)  # меню — обычное сообщение
         rich = [call for call in h.calls if call["type"] == "rich_message"]
         self.assertEqual(len(rich), 1)
-        self.assertEqual(rich[0]["rich_message"]["blocks"][0]["heading"], HELP_TITLE)
+        self.assertEqual(rich[0]["rich_message"]["blocks"][0]["text"], HELP_TITLE)
 
         # Обычные сообщения не содержат ни заголовка, ни разделов справки.
         plain = [

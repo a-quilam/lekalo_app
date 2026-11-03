@@ -89,17 +89,24 @@ def _callbacks(h, prefix: str = "") -> list[str]:
 
 
 def _rich_plain_text(payload: dict) -> str:
-    """Весь текст Rich Message одним куском: заголовки, абзацы, списки."""
+    """
+    Весь текст Rich Message одним куском: заголовки, абзацы, списки.
+
+    Схема Bot API 10.1: заголовок — `type: "heading"` с полем `text`,
+    элементы списка — объекты `{"blocks": [...]}`, а не строки.
+    """
     parts: list[str] = []
 
     def walk(block: dict) -> None:
         kind = block.get("type")
-        if kind == "section_heading":
-            parts.append(block.get("heading", ""))
+        if kind == "heading":
+            parts.append(block.get("text", ""))
         elif kind == "paragraph":
             parts.append(block.get("text", ""))
         elif kind == "list":
-            parts.extend(block.get("items") or ())
+            for item in block.get("items") or ():
+                for child in item.get("blocks") or ():
+                    walk(child)
         elif kind == "details":
             parts.append(block.get("summary", ""))
             for child in block.get("blocks") or ():

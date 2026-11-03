@@ -13,9 +13,10 @@ Poster 2.5, этап E (§46–54, §60–61): справка как насто�
     текст ошибки;
 (в) `/help` через настоящее `Application.process_update`: ровно ОДИН
     `sendRichMessage` (не `sendMessage`), корректный `rich_message`,
-    кнопка «🏠 В меню» в `reply_markup`;
-(г) возврат в меню удаляет временное сообщение справки (delete_message),
-    меню рисуется обычным экраном, анонсы/прочие данные не затрагиваются;
+    ровно одна кнопка возврата «◀️ Назад» (`help_back`) в `reply_markup`;
+(г) возврат «◀️ Назад» удаляет временное сообщение справки (delete_message)
+    и перерисовывает экран-источник (Poster 2.5.1), анонсы/прочие данные
+    не затрагиваются;
 (д) другие разделы Rich Message не используют (§54).
 
 Реальные Telegram, `.env` и `post_bot.db` не используются: FakeBot,
@@ -42,6 +43,7 @@ try:
         InputRichBlockDetails,
         InputRichBlockDivider,
         InputRichBlockList,
+        InputRichBlockListItem,
         InputRichBlockParagraph,
         InputRichBlockSectionHeading,
         InputRichMessage,
@@ -61,6 +63,12 @@ try:
     IMPORT_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
     IMPORT_ERROR = str(exc)
+
+
+# §53 + Poster 2.5.1: единственная кнопка возврата из справки — «◀️ Назад»
+# (`help_back`), старая «🏠 В меню» (`main_menu`) с Rich Message убрана.
+BACK_LABEL = "◀️ Назад"
+BACK_DATA = "help_back"
 
 
 class StubBot:
@@ -117,6 +125,16 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _list_item_texts(block: InputRichBlockList) -> list[str]:
+    """Тексты элементов списка: `items[].blocks[]` → абзацы."""
+    texts: list[str] = []
+    for item in block.items:
+        for child in item.blocks:
+            if isinstance(child, InputRichBlockParagraph):
+                texts.append(child.text)
+    return texts
+
+
 # —— 1. Структура справки ————————————————————————————————————————————
 
 
@@ -146,8 +164,11 @@ class HelpStructureTests(unittest.TestCase):
     def test_heading_and_intro_are_present(self) -> None:
         payload = self.rich.to_dict()
         first = _blocks(payload)[0]
-        self.assertEqual(first["type"], "section_heading")
-        self.assertEqual(first["heading"], "Poster — помощь")
+        # Официальная схема: type "heading", текст в поле text, size обязателен.
+        self.assertEqual(first["type"], "heading")
+        self.assertEqual(first["text"], "Poster — помощь")
+        self.assertEqual(first["size"], 1)
+        self.assertNotIn("heading", first)
         texts = [
             block.get("text", "")
             for block in _blocks(payload)
@@ -159,7 +180,7 @@ class HelpStructureTests(unittest.TestCase):
         details = self._details()
         self.assertEqual(len(details), 10)
         for block in details:
-            self.assertFalse(block.is_open, "раздел должен быть свёрнут (§52)")
+            self.assertIsNone(block.is_open, "раздел должен быть свёрнут (§52)")
             self.assertTrue(block.summary.strip(), "пустое название раздела")
 
     def test_details_are_real_expandable_blocks(self) -> None:
@@ -167,7 +188,11 @@ class HelpStructureTests(unittest.TestCase):
         details = [b for b in _blocks(payload) if b["type"] == "details"]
         self.assertEqual(len(details), 10)
         for block in details:
-            self.assertEqual(block["is_open"], False)
+            self.assertNotIn(
+                "is_open",
+                block,
+                "свёрнутый блок не должен передавать is_open (схема Bot API)",
+            )
             self.assertTrue(block["blocks"], "раскрываемый блок без содержимого")
             self.assertIn("summary", block)
 
@@ -198,7 +223,7 @@ class HelpStructureTests(unittest.TestCase):
                 if isinstance(child, InputRichBlockParagraph):
                     parts.append(child.text)
                 elif isinstance(child, InputRichBlockList):
-                    parts.extend(child.items)
+                    parts.extend(_list_item_texts(child))
             return "\n".join(parts)
 
         self.assertIn("Создать анонс", text_of("Создание анонса"))
@@ -244,7 +269,7 @@ class HelpStructureTests(unittest.TestCase):
                 if isinstance(child, InputRichBlockParagraph):
                     parts.append(child.text)
                 elif isinstance(child, InputRichBlockList):
-                    parts.extend(child.items)
+                    parts.extend(_list_item_texts(child))
             return "\n".join(parts)
 
         edited = text_of("Редактирование анонса")
@@ -277,7 +302,7 @@ class HelpStructureTests(unittest.TestCase):
                 if isinstance(child, InputRichBlockParagraph):
                     values.append(child.text)
                 elif isinstance(child, InputRichBlockList):
-                    values.extend(child.items)
+                    values.extend(_list_item_texts(child))
                 for value in values:
                     self.assertNotIn("{", value, "в справке остался маркер")
                     self.assertNotIn("}", value, "в справке остался маркер")
@@ -300,7 +325,7 @@ class HelpStructureTests(unittest.TestCase):
         items: list[str] = []
         for child in details[0].blocks:
             if isinstance(child, InputRichBlockList):
-                items.extend(child.items)
+                items.extend(_list_item_texts(child))
         listed = {
             token.split()[0].rstrip(",")
             for item in items
@@ -330,13 +355,23 @@ class ValidationTests(unittest.TestCase):
     def test_empty_heading_is_rejected(self) -> None:
         with self.assertRaises(RichMessageError):
             validate_rich_message(
-                InputRichMessage(blocks=(InputRichBlockSectionHeading(heading="  "),))
+                InputRichMessage(blocks=(InputRichBlockSectionHeading(text="  "),))
             )
 
     def test_empty_list_is_rejected(self) -> None:
         with self.assertRaises(RichMessageError):
             validate_rich_message(
                 InputRichMessage(blocks=(InputRichBlockList(items=()),))
+            )
+
+    def test_list_item_with_empty_blocks_is_rejected(self) -> None:
+        with self.assertRaises(RichMessageError):
+            validate_rich_message(
+                InputRichMessage(
+                    blocks=(
+                        InputRichBlockList(items=(InputRichBlockListItem(blocks=()),)),
+                    )
+                )
             )
 
     def test_empty_paragraph_is_rejected(self) -> None:
@@ -376,7 +411,7 @@ class AdapterTests(unittest.TestCase):
     def test_reply_markup_is_passed_through(self) -> None:
         bot = StubBot(answer=_message())
         keyboard = InlineKeyboardMarkup(
-            [[InlineKeyboardButton("🏠 В меню", callback_data="main_menu")]]
+            [[InlineKeyboardButton(BACK_LABEL, callback_data=BACK_DATA)]]
         )
         _run(
             send_rich_message(
@@ -486,10 +521,10 @@ class HelpFlowTests(unittest.TestCase):
         self.assertEqual(list(payload), ["blocks"])
         details = [b for b in _blocks(payload) if b["type"] == "details"]
         self.assertEqual(len(details), 10)
-        self.assertTrue(all(block["is_open"] is False for block in details))
+        self.assertTrue(all("is_open" not in block for block in details))
 
         labels = [label for label, _data in inline_buttons(record["reply_markup"])]
-        self.assertIn("🏠 В меню", labels)
+        self.assertEqual(labels, [BACK_LABEL], "на справке должна быть одна кнопка")
 
         # обычный sendMessage под видом Rich Message не отправлялся
         rich_calls = [c for c in h.calls if c["type"] == "rich_message"]
@@ -506,18 +541,17 @@ class HelpFlowTests(unittest.TestCase):
         await h.callback("help")
         rich = [c for c in h.calls if c["type"] == "rich_message"]
         self.assertEqual(len(rich), 1)
-        self.assertEqual(
-            rich[0]["rich_message"]["blocks"][0]["type"], "section_heading"
-        )
+        self.assertEqual(rich[0]["rich_message"]["blocks"][0]["type"], "heading")
 
     @scenario_test
-    async def test_return_to_menu_deletes_help_message(self, h: Harness) -> None:
+    async def test_back_returns_to_menu_and_deletes_help(self, h: Harness) -> None:
+        """Poster 2.5.1: «◀️ Назад» из справки, открытой в меню, возвращает меню."""
         await h.text("/start")
         await h.callback("help")
         rich_id = h.bot.rich_records[0]["message_id"]
         self.assertEqual(h.user_data()["help_rich_message_id"], rich_id)
 
-        await h.callback("main_menu")
+        await h.callback(BACK_DATA)
 
         self.assertIn(rich_id, h.deleted_ids(), "временная справка не удалена")
         self.assertNotIn("help_rich_message_id", h.user_data())
@@ -537,16 +571,27 @@ class HelpFlowTests(unittest.TestCase):
 
     @scenario_test
     async def test_help_does_not_touch_announcements(self, h: Harness) -> None:
-        """§53: возврат не затрагивает пользовательские анонсы/черновики."""
+        """
+        §53 + 2.5.1: возврат не затрагивает пользовательские анонсы/черновики.
+
+        Справка открыта из «📂 Мои анонсы». Сам список — экран конструктора
+        без персистентного контекста (`announcement_ui` очищается веткой
+        конструктора до `render_help`), поэтому возврат идёт в главное меню:
+        это безопасный фолбэк, а не потеря данных — черновики остаются.
+        """
         await h.text("/start")
         await h.callback("my_announcements")
         await h.callback("help")
-        deletes_before_menu = len(h.deleted_ids())
-        await h.callback("main_menu")
+        deletes_before_back = len(h.deleted_ids())
+        await h.callback(BACK_DATA)
 
         # новых удалений ровно одно — сообщение справки
-        self.assertEqual(len(h.deleted_ids()), deletes_before_menu + 1)
+        self.assertEqual(len(h.deleted_ids()), deletes_before_back + 1)
         self.assertEqual(len(h.bot.rich_records), 1)
+        self.assertIn("Что хотите сделать?", h.screen_text(), "вернулись не в меню")
+        # Список анонсов доступен по-прежнему: черновики не тронуты.
+        await h.callback("my_announcements")
+        self.assertIn("Мои анонсы", h.screen_text())
 
     @scenario_test
     async def test_other_sections_do_not_use_rich_message(self, h: Harness) -> None:

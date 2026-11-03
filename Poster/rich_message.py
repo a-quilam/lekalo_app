@@ -16,12 +16,17 @@ Telegram Bot API 10.1 ввёл самостоятельный тип струк�
 - таймауты, повторные попытки и разбор `ok=false` — штатные средства PTB
   (`telegram.request`), ошибки приходят готовыми `telegram.error.*`.
 
-Документация Bot API при разработке была недоступна (сеть), структура
-взята из спецификации Poster 2.5 §48–49. Названия типов блоков совпадают
-с именами классов (`section_heading`, `paragraph`, `list`, `divider`), для
-`details` спецификация задаёт `type: "details"` явно. Если официальная
-схема назовёт поля иначе, правится ТОЛЬКО таблица `_TYPE_FIELDS` и
-`to_dict` соответствующих блоков — остальной код не меняется.
+Схема сериализации сверена с официальной документацией Telegram Bot API
+10.1 (core.telegram.org/bots/api, разделы InputRichMessage /
+InputRichBlock):
+
+- `heading` — поля `text` и обязательный `size` (1–6, 1 — крупнейший);
+- `paragraph` — `text`;
+- `list` — `items` из объектов `InputRichBlockListItem`, у каждого свой
+  `blocks` (элемент списка — не блок, в `RichBlock` не входит);
+- `divider` — без полей;
+- `details` — `summary`, `blocks` и необязательный `is_open`: поле
+  передаётся ТОЛЬКО при True, отсутствие означает «свёрнут».
 
 Rich Message используется ИСКЛЮЧИТЕЛЬНО для справки (§46): анонсы
 отправляются обычными сообщениями/альбомами.
@@ -69,12 +74,14 @@ class RichMessageError(ValueError):
 
 @dataclass(frozen=True)
 class InputRichBlockSectionHeading:
-    """Заголовок раздела (`InputRichBlockSectionHeading`, §49)."""
+    """Заголовок раздела (`InputRichBlockSectionHeading`, `type: "heading"`)."""
 
-    heading: str
+    text: str
+    # 1 — самый крупный заголовок, 6 — самый мелкий (официальная схема).
+    size: int = 1
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "section_heading", "heading": self.heading}
+        return {"type": "heading", "text": self.text, "size": self.size}
 
 
 @dataclass(frozen=True)
@@ -88,13 +95,34 @@ class InputRichBlockParagraph:
 
 
 @dataclass(frozen=True)
+class InputRichBlockListItem:
+    """
+    Элемент списка (`InputRichBlockListItem`).
+
+    Это НЕ блок: объект живёт только внутри `InputRichBlockList`, поэтому в
+    `RichBlock`/`BLOCK_TYPES` не входит. `blocks` — содержимое элемента
+    (например, один абзац), обязательное и непустое.
+    """
+
+    blocks: Sequence[RichBlock]
+
+    def to_dict(self, *, depth: int = 0) -> dict[str, Any]:
+        return {
+            "blocks": [block_to_dict(block, depth=depth) for block in self.blocks],
+        }
+
+
+@dataclass(frozen=True)
 class InputRichBlockList:
     """Список действий (`InputRichBlockList`, §49)."""
 
-    items: Sequence[str]
+    items: Sequence[InputRichBlockListItem]
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"type": "list", "items": list(self.items)}
+    def to_dict(self, *, depth: int = 0) -> dict[str, Any]:
+        return {
+            "type": "list",
+            "items": [item.to_dict(depth=depth) for item in self.items],
+        }
 
 
 @dataclass(frozen=True)
@@ -111,7 +139,8 @@ class InputRichBlockDetails:
     Раскрываемый блок (`InputRichBlockDetails`, §49).
 
     `is_open` — необязательный флаг «развернуть сразу»: справка показывает
-    разделы свёрнутыми (§52), раскрытие не отправляет новое сообщение.
+    разделы свёрнутыми, поэтому поле не передаётся вовсе (отсутствие =
+    свёрнуто). True передаётся как есть; False избыточно и не сериализуется.
     """
 
     summary: str
@@ -124,8 +153,8 @@ class InputRichBlockDetails:
             "summary": self.summary,
             "blocks": [block_to_dict(block, depth=depth + 1) for block in self.blocks],
         }
-        if self.is_open is not None:
-            payload["is_open"] = bool(self.is_open)
+        if self.is_open:
+            payload["is_open"] = True
         return payload
 
 
@@ -262,11 +291,13 @@ def validate_rich_message(message: InputRichMessage | Mapping[str, Any]) -> None
         _validate_blocks(message.blocks, depth=0)
 
 
-def _validate_blocks(blocks: Any, *, depth: int) -> None:
+def _validate_blocks(
+    blocks: Any, *, depth: int, where: str = "InputRichMessage.blocks"
+) -> None:
     if isinstance(blocks, (str, bytes)) or not isinstance(blocks, Sequence):
-        raise RichMessageError("InputRichMessage.blocks: ожидается список блоков.")
+        raise RichMessageError(f"{where}: ожидается список блоков.")
     if not blocks:
-        raise RichMessageError("InputRichMessage.blocks: список блоков пуст.")
+        raise RichMessageError(f"{where}: список блоков пуст.")
     for block in blocks:
         _validate_block(block, depth=depth)
 
@@ -277,18 +308,21 @@ def _validate_block(block: Any, *, depth: int) -> None:
             f"Неизвестный блок Rich Message: {type(block).__name__}."
         )
     if isinstance(block, InputRichBlockSectionHeading):
-        _require_text(block.heading, "SectionHeading.heading")
+        _require_text(block.text, "Heading.text")
+        _require_size(block.size, "Heading.size")
     elif isinstance(block, InputRichBlockParagraph):
         _require_text(block.text, "Paragraph.text")
     elif isinstance(block, InputRichBlockList):
         if isinstance(block.items, (str, bytes)) or not isinstance(
             block.items, Sequence
         ):
-            raise RichMessageError("List.items: ожидается список строк.")
+            raise RichMessageError(
+                "List.items: ожидается список InputRichBlockListItem."
+            )
         if not block.items:
             raise RichMessageError("List.items: список пуст.")
         for item in block.items:
-            _require_text(item, "List.items[]")
+            _validate_list_item(item, depth=depth)
     elif isinstance(block, InputRichBlockDivider):
         return
     elif isinstance(block, InputRichBlockDetails):
@@ -301,6 +335,25 @@ def _validate_block(block: Any, *, depth: int) -> None:
                 f"(максимум {MAX_DETAILS_DEPTH})."
             )
         _validate_blocks(block.blocks, depth=depth + 1)
+
+
+def _validate_list_item(item: Any, *, depth: int) -> None:
+    """Элемент списка: обязательный непустой список валидных блоков."""
+    if not isinstance(item, InputRichBlockListItem):
+        raise RichMessageError(
+            "List.items: ожидается InputRichBlockListItem, "
+            f"получено {type(item).__name__}."
+        )
+    _validate_blocks(item.blocks, depth=depth, where="ListItem.blocks")
+
+
+def _require_size(value: Any, what: str) -> int:
+    """`size` заголовка: целое 1–6 (1 — крупнейший), bool не принимается."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RichMessageError(f"{what}: ожидается целое число 1–6.")
+    if not 1 <= value <= 6:
+        raise RichMessageError(f"{what}: вне диапазона 1–6 (получено {value}).")
+    return value
 
 
 # —— отправка ————————————————————————————————————————————————————————

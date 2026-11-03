@@ -20,7 +20,8 @@
   каталог нередактируемым. Это осознанное решение, зафиксировано в отчёте.
 
 Структура (§52): главный заголовок, введение, короткая подсказка, затем
-десять СВЁРНУТЫХ раскрываемых разделов (`is_open=False`): при первом
+десять СВЁРНУТЫХ раскрываемых разделов (поле `is_open` не передаётся —
+по официальной схеме отсутствие поля и означает «свёрнуто»): при первом
 открытии видно только название и перечень тем, раскрытие не отправляет
 новое сообщение.
 
@@ -33,6 +34,7 @@ from rich_message import (
     InputRichBlockDetails,
     InputRichBlockDivider,
     InputRichBlockList,
+    InputRichBlockListItem,
     InputRichBlockParagraph,
     InputRichBlockSectionHeading,
     InputRichMessage,
@@ -233,7 +235,8 @@ def build_help_rich_message() -> InputRichMessage:
     структуру: изменяемых общих объектов нет.
     """
     blocks: list[RichBlock] = [
-        InputRichBlockSectionHeading(heading=tr("help.rich.title")),
+        # 1 — самый крупный заголовок официальной схемы Bot API.
+        InputRichBlockSectionHeading(text=tr("help.rich.title"), size=1),
         InputRichBlockParagraph(text=tr("help.rich.intro")),
         InputRichBlockParagraph(text=tr("help.rich.hint")),
         InputRichBlockDivider(),
@@ -244,10 +247,17 @@ def build_help_rich_message() -> InputRichMessage:
                 summary=tr(title_key),
                 # §52: при первом открытии видны заголовок, описание и
                 # перечень свёрнутых блоков; раскрытие ничего не отправляет.
-                is_open=False,
+                # is_open не передаётся: отсутствие поля = свёрнуто.
                 blocks=(
                     InputRichBlockParagraph(text=_fill(paragraph)),
-                    InputRichBlockList(items=tuple(_fill(item) for item in items)),
+                    InputRichBlockList(
+                        items=tuple(
+                            InputRichBlockListItem(
+                                blocks=(InputRichBlockParagraph(text=_fill(item)),)
+                            )
+                            for item in items
+                        )
+                    ),
                 ),
             )
         )
