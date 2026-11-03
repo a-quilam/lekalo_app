@@ -3937,6 +3937,70 @@ MIGRATION_26_ANNOUNCEMENT_INSTANCES = Migration(
 )
 
 
+# --- Версия 27: условные части шаблонов (Poster 2.5, §38–45) ----------------
+
+MIGRATION_27_CONDITIONAL_PARTS = Migration(
+    version=27,
+    name="template_conditional_parts",
+    statements=(
+        # Poster 2.5 §38–45: автор сам задаёт фрагмент текста, который
+        # скрывается, если управляющий кирпичик пуст. Синтаксиса условий в
+        # самом тексте нет: правило — отдельная строка со ссылкой на
+        # конкретную НЕИЗМЕНЯЕМУЮ версию шаблона. Поэтому правка текста
+        # создаёт новую версию, а правила старой остаются историей (§44).
+        #
+        # `fragment` — точный фрагмент ИСХОДНОГО текста секции (не HTML).
+        # `occurrence` нужен для §42-Е: два одинаковых вхождения одного
+        # фрагмента различаются номером вхождения (1-based). Без него
+        # правило не смогло бы однозначно указать, какое из них скрывать.
+        #
+        # `brick_id` — единственный управляющий кирпичик (§41); он обязан
+        # быть привязан к той же версии. `status`:
+        #   * `active` — правило действует;
+        #   * `stale` — фрагмент/кирпичик в текущей версии больше не
+        #     находятся однозначно; правило не применяется к случайному
+        #     похожему месту и не удаляется молча (§44).
+        """
+        CREATE TABLE template_conditional_parts (
+            id INTEGER NOT NULL PRIMARY KEY,
+            template_id INTEGER NOT NULL,
+            version_id INTEGER NOT NULL,
+            section TEXT NOT NULL,
+            brick_id INTEGER NOT NULL,
+            fragment TEXT NOT NULL,
+            occurrence INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            CONSTRAINT ck_template_conditional_parts_section
+                CHECK (section IN ('content', 'extended_content')),
+            CONSTRAINT ck_template_conditional_parts_status
+                CHECK (status IN ('active', 'stale')),
+            CONSTRAINT ck_template_conditional_parts_occurrence
+                CHECK (occurrence >= 1),
+            CONSTRAINT ck_template_conditional_parts_fragment_not_empty
+                CHECK (length(trim(fragment)) > 0),
+            CONSTRAINT fk_template_conditional_parts_template
+                FOREIGN KEY (template_id) REFERENCES templates (id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_template_conditional_parts_version
+                FOREIGN KEY (version_id) REFERENCES template_versions (id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_template_conditional_parts_brick
+                FOREIGN KEY (brick_id) REFERENCES bricks (id)
+                ON DELETE RESTRICT
+        )
+        """,
+        # Правила читаются по версии и секции: редактор показывает их вместе
+        # с одним текстом, рендер — только для отрисовываемой секции.
+        """
+        CREATE INDEX ix_template_conditional_parts_version_section
+            ON template_conditional_parts (version_id, section)
+        """,
+    ),
+)
+
+
 DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_1_USERS_PLACES,
     MIGRATION_2_PLACE_CONTACTS_UI,
@@ -3964,6 +4028,7 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_24_TEMPLATE_CONTENT,
     MIGRATION_25_SINGLE_ADDRESS_BRICK,
     MIGRATION_26_ANNOUNCEMENT_INSTANCES,
+    MIGRATION_27_CONDITIONAL_PARTS,
 )
 
 LATEST_VERSION = DEFAULT_MIGRATIONS[-1].version if DEFAULT_MIGRATIONS else 0

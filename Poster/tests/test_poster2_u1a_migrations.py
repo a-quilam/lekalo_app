@@ -196,13 +196,13 @@ class PlaceCityMigrationTests(_Base):
         )
 
     def test_latest_version_is_twenty_five(self) -> None:
-        self.assertEqual(LATEST_VERSION, 26)
+        self.assertEqual(LATEST_VERSION, 27)
         self.assertEqual(self.migrate(), LATEST_VERSION)
         journal = self.journal()
         self.assertIn((21, "place_city"), journal)
         self.assertIn((22, "builtin_templates_v4"), journal)
         self.assertIn((24, "template_content_and_extras_without_sections"), journal)
-        self.assertEqual(journal[-1], (26, "announcement_instances"))
+        self.assertEqual(journal[-1], (27, "template_conditional_parts"))
 
     def test_columns_are_added_nullable_and_rows_keep_null_city(self) -> None:
         self.migrate()

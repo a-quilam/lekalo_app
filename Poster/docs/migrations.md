@@ -3,11 +3,11 @@
 Статус: **реализовано в Stage 19A, 19B, 20A, 20B, 21, 22A, 22B, 23, 24, 25, 26, 27A, 27C и 28**.
 Документ описывает фактический механизм, созданные таблицы, ограничения,
 автоматическую резервную копию, совместимость со старой базой и порядок
-безопасного применения миграций. Текущая последняя версия — **22**
-(`builtin_templates_v4`, Poster 2.0 U1a; до неё — 21 `place_city`,
-20 `brick_proposal_description`, 19 `brick_code_conflicts`,
-18 `builtin_templates_v3`, ещё раньше — 17 `archive_legacy_drafts`
-и 16 `announcement_draft_origin`).
+безопасного применения миграций. Текущая последняя версия — **27**
+(`template_conditional_parts`, Poster 2.5 D1; до неё — 26
+`announcement_instances`, 25 `single_address_brick`, 24
+`template_content_and_extras_without_sections`, ещё раньше — 22
+`builtin_templates_v4` и 21 `place_city`).
 Целевая архитектура
 справочника мест, кирпичиков и шаблонов — в
 [`stage18_architecture.md`](stage18_architecture.md).
@@ -2162,6 +2162,53 @@ Poster 2.5 §19–33: готовый анонс — цельное сообще�
 - **Что не трогается.** Логика доставки (`delivery.send_announcement_post`)
   и схема `announcement_drafts` не меняются: экземпляры читаются
   приложением, старый путь публикации работает без них.
+
+### Версия 27 (Poster 2.5 D1) — `template_conditional_parts`
+
+Poster 2.5 §38–45: автор сам задаёт фрагмент своего текста, который
+скрывается, если управляющий кирпичик пуст. Синтаксиса условий в самом
+тексте НЕТ: правило — отдельная строка БД, привязанная к конкретной
+неизменяемой версии шаблона и ровно к одной секции (`content` или
+`extended_content`). Правила живут рядом с версией, а не внутри её текста,
+поэтому добавление правила не создаёт новую версию и не меняет `revision`
+шаблона.
+
+- Схема (одна транзакция `run_migrations`):
+  `id INTEGER PRIMARY KEY`, `template_id INTEGER NOT NULL` (FK
+  `templates.id ON DELETE CASCADE`), `version_id INTEGER NOT NULL` (FK
+  `template_versions.id ON DELETE CASCADE`), `section TEXT NOT NULL`,
+  `brick_id INTEGER NOT NULL` (FK `bricks.id ON DELETE RESTRICT`),
+  `fragment TEXT NOT NULL` (точный фрагмент ИСХОДНОГО текста, не HTML),
+  `occurrence INTEGER NOT NULL DEFAULT 1` (1-based номер вхождения, §42-Е),
+  `status TEXT NOT NULL DEFAULT 'active'`, `created_at DATETIME NOT NULL`,
+  `updated_at DATETIME NOT NULL`.
+- Ограничения: `section IN ('content', 'extended_content')`,
+  `status IN ('active', 'stale')`, `occurrence >= 1`,
+  `length(trim(fragment)) > 0` — пустое правило не сохраняется.
+- Индекс `ix_template_conditional_parts_version_section (version_id,
+  section)`: редактор показывает правила одной секции вместе с её текстом,
+  рендер читает только отрисовываемую секцию.
+- `ON DELETE CASCADE` на версии: архивные версии не переписываются, а
+  удаление шаблона не оставляет висящих правил. `ON DELETE RESTRICT` на
+  кирпичике: правило без управляющего кирпичика бессмысленно, поэтому
+  кирпичик нельзя удалить, пока на него ссылается правило — сначала автор
+  явно удаляет правило.
+- **Статус `stale`.** При изменении текста шаблона правило переносится в
+  новую версию только при ОДНОЗНАЧНОМ совпадении (фрагмент встречается
+  ровно один раз и кирпичик по-прежнему привязан к версии). Иначе правило
+  помечается `stale` и НЕ удаляется и НЕ применяется к случайному похожему
+  месту (§44): автор видит проблему в редакторе и перенастраивает её сам.
+- **Копии и снимки.** Копия шаблона и снимок версии правила не переносят
+  (§44): у снимка нет своей таблицы правил, поэтому рендер снимка идёт без
+  вырезания (TODO со ссылкой на §59 — отдельная задача).
+- **Что не трогается.** Тексты `content`/`extended_content` версий и
+  снимков, привязки кирпичиков, ревизии и шаблоны остаются как есть.
+  Миграция только добавляет таблицу и один индекс; на базе версии 26
+  `PRAGMA integrity_check` = `ok`, `foreign_key_check` пуст, повторный
+  запуск ничего не меняет.
+- Таблица намеренно описана только Core-таблицей в `conditional_parts.py`
+  и не добавлена в `models.py` (как `announcement_instances`), чтобы
+  `create_all` не создавал её в обход журнала миграций.
 
 ## 9. Как добавлять миграции в будущих этапах
 

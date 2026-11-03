@@ -34,7 +34,8 @@ Poster 2.3 H2: шаблон — единый текст `content` и необя�
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+import logging
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -67,6 +68,8 @@ SYSTEM_DATE_CODE = "дата"
 # Порядок обработки текстов шаблона предсказуем: сначала канонический, затем
 # расширенный. Ключи — те же, что в моделях и снимках.
 _TEXT_ORDER = (TEMPLATE_CONTENT, TEMPLATE_EXTENDED_CONTENT)
+
+logger = logging.getLogger(__name__)
 
 
 class TemplateCompileError(ValueError):
@@ -397,6 +400,36 @@ class _Rendered:
     has_newline: bool = False
 
 
+def _brick_value_empty(
+    brick_id: int,
+    values_by_id: Mapping[int, Any],
+    definitions_by_id: Mapping[int, BrickDefinition],
+) -> bool:
+    """
+    Пусто ли значение кирпичика для рендера и для условных частей (§41).
+
+    Единственный источник правды: и `_render_node`, и вырезание фрагментов
+    обязаны считать пустым одно и то же. Пусто — нет значения в
+    `values_by_id`, `None`, строка из пробелов или значение, у которого
+    после подстановки нет видимого текста (`""`, `<b></b>`).
+    """
+    if brick_id not in values_by_id:
+        return True
+    value = values_by_id[brick_id]
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return True
+    if isinstance(value, SafeHtml):
+        # U1b: значение уже прошло allow-list; видимость считаем по HTML.
+        return not visible_announcement_text(str(value))
+    definition = definitions_by_id.get(brick_id)
+    if definition is None:
+        raise TemplateCompileError(
+            f"Определение кирпичика #{brick_id} не найдено: "
+            "нельзя подменить тип значения на short_text."
+        )
+    return not visible_announcement_text(_escape_html(_brick_text(value, definition)))
+
+
 def _render_node(
     node: Any,
     values_by_id: Mapping[int, Any],
@@ -651,6 +684,131 @@ def _assemble_text(lines: Sequence[_Line]) -> str:
     while kept and not kept[-1]:
         kept.pop()
     return "\n".join(kept)
+
+
+@dataclass(frozen=True)
+class ConditionalRule:
+    """
+    Правило условной части, применяемое к ИСХОДНОМУ тексту (§41).
+
+    `fragment` — точный фрагмент авторского текста, `occurrence` (1-based)
+    различает одинаковые вхождения (§42-Е). `brick_id` — единственный
+    управляющий кирпичик: фрагмент скрывается, только когда он пуст.
+    """
+
+    brick_id: int
+    fragment: str
+    occurrence: int = 1
+
+
+def _rule_span(text: str, fragment: str, occurrence: int) -> tuple[int, int] | None:
+    """Позиция `occurrence`-го вхождения; `None` — фрагмента нет."""
+    start = -1
+    for _ in range(max(1, occurrence)):
+        start = text.find(fragment, start + 1)
+        if start < 0:
+            return None
+    return start, start + len(fragment)
+
+
+def _selected_rule_spans(
+    text: str, rules: Iterable[ConditionalRule]
+) -> list[tuple[int, int]]:
+    """
+    Отбирает непересекающиеся фрагменты в порядке позиции.
+
+    Пересечения недопустимы: два правила не могут скрывать общий кусок
+    текста. Более позднее правило игнорируется с предупреждением, а не
+    расширяет/дробит первое. Пропавший фрагмент (текст изменился) тоже не
+    применяется: правило не должно скрывать случайное похожее место §44.
+    """
+    spans: list[tuple[int, int]] = []
+    for rule in rules:
+        if not rule.fragment:
+            logger.warning(
+                "Условная часть кирпичика #%s пропущена: пустой фрагмент.",
+                rule.brick_id,
+            )
+            continue
+        span = _rule_span(text, rule.fragment, rule.occurrence)
+        if span is None:
+            logger.warning(
+                "Условная часть кирпичика #%s пропущена: фрагмент не найден.",
+                rule.brick_id,
+            )
+            continue
+        if any(span[0] < end and start < span[1] for start, end in spans):
+            logger.warning(
+                "Условная часть кирпичика #%s пересекается с другой и "
+                "проигнорирована.",
+                rule.brick_id,
+            )
+            continue
+        spans.append(span)
+    spans.sort()
+    return spans
+
+
+def _whole_line_range(text: str, start: int, end: int) -> tuple[int, int] | None:
+    """
+    Диапазон удаления целой строки вместе с одним лишним переводом строки.
+
+    Строка считается целой, если фрагмент занимает её целиком (допустимы
+    только пробелы по краям). Вместе с ней поглощается одна соседняя
+    пустая строка — иначе на месте абзаца остался бы лишний интервал.
+    """
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    if line_end < 0:
+        line_end = len(text)
+    if text[line_start:start].strip() or text[end:line_end].strip():
+        return None
+    deletion_start = line_start
+    deletion_end = line_end
+    if line_end < len(text):
+        # Перевод строки самой строки входит в удаление.
+        deletion_end += 1
+        next_end = text.find("\n", deletion_end)
+        if next_end < 0:
+            next_end = len(text)
+        if deletion_end == next_end:
+            # Следующая строка пуста: она тоже лишняя (§41/§42-Д).
+            deletion_end += 1 if next_end < len(text) else 0
+    elif deletion_start > 0:
+        # Последняя строка: забираем перевод строки у предыдущей границы.
+        deletion_start -= 1
+        previous_start = text.rfind("\n", 0, deletion_start) + 1
+        if previous_start == deletion_start:
+            deletion_start = previous_start
+    return deletion_start, deletion_end
+
+
+def apply_conditional_parts(
+    text: str,
+    rules: Iterable[ConditionalRule],
+    *,
+    is_empty: Callable[[int], bool],
+) -> str:
+    """
+    Вырезает авторские фрагменты, чей управляющий кирпичик пуст (§38–45).
+
+    Работает с ИСХОДНЫМ текстом до `parse_template`: фрагменты ищутся по
+    логическому тексту, а не по экранированному HTML (§45). Заполненный
+    кирпичик не меняет текст вообще — фрагмент остаётся и рендерится
+    обычным путём. Пунктуация вне авторского фрагмента не чистится:
+    эвристик нет (§38/§41).
+    """
+    active = [rule for rule in rules if is_empty(rule.brick_id)]
+    if not active:
+        return text
+    deletions: list[tuple[int, int]] = []
+    for start, end in _selected_rule_spans(text, active):
+        whole_line = _whole_line_range(text, start, end)
+        deletions.append(whole_line if whole_line is not None else (start, end))
+    result = text
+    for start, end in sorted(deletions, reverse=True):
+        result = result[:start] + result[end:]
+    return result
 
 
 def render_template(

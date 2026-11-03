@@ -72,6 +72,7 @@ from models import (
     AnnouncementValue,
     Brick,
     Place,
+    TemplateVersion,
     User,
     utcnow,
 )
@@ -2771,7 +2772,6 @@ def build_announcement_render_payload(
     if snapshot is None:
         raise AnnouncementStageError("Сначала выберите шаблон анонса.")
     details = _draft_details(session, actor, row)
-    tokens_by_text = snapshot_tokens_by_text(snapshot)
 
     all_brick_ids = set(snapshot.brick_ids)
     all_brick_ids.update(extra.brick_id for extra in details.extras)
@@ -2790,10 +2790,6 @@ def build_announcement_render_payload(
         definition = definitions[extra.brick_id]
         extra_nodes.append(BrickNode(code=definition.code, brick_id=definition.id))
 
-    texts: dict[str, tuple[Any, ...]] = {}
-    for text_name, tokens in tokens_by_text.items():
-        texts[text_name] = tuple(tokens)
-
     values_by_id: dict[int, object] = {}
     for value in details.values:
         result = BrickValueResult(
@@ -2811,12 +2807,73 @@ def build_announcement_render_payload(
         brick_ids_by_code=snapshot_brick_ids_by_code(snapshot),
     ).items():
         values_by_id.setdefault(brick_id, raw)
+
+    texts = _conditional_snapshot_texts(
+        session,
+        row=row,
+        snapshot=snapshot,
+        values_by_id=values_by_id,
+        definitions_by_id=definitions,
+    )
+    tokens_by_text = snapshot_tokens_by_text(snapshot, texts=texts)
+    prepared: dict[str, tuple[Any, ...]] = {
+        text_name: tuple(tokens) for text_name, tokens in tokens_by_text.items()
+    }
     return AnnouncementRenderPayload(
-        tokens_by_text=texts,
+        tokens_by_text=prepared,
         values_by_id=values_by_id,
         definitions_by_id=definitions,
         use_extended=bool(extra_nodes),
     )
+
+
+def _conditional_snapshot_texts(
+    session: Session,
+    *,
+    row: AnnouncementDraft,
+    snapshot: AnnouncementTemplateSnapshot,
+    values_by_id: Mapping[int, object],
+    definitions_by_id: Mapping[int, BrickDefinition],
+) -> dict[str, str]:
+    """
+    Исходные тексты снимка с вырезанными условными частями (§38–45).
+
+    Правила привязаны к НЕИЗМЕНЯЕМОЙ версии шаблона, поэтому берутся по
+    `template_id`/`template_version` черновика: текст снимка — копия текста
+    этой версии. У снимка собственной таблицы правил нет (§44), так что
+    без версии черновика (legacy-аномалия) вырезание просто не делается.
+    """
+    from conditional_parts import active_rules_for_version
+    from template_compiler import _brick_value_empty, apply_conditional_parts
+
+    raw_texts = {
+        text_name: raw
+        for text_name, raw in snapshot.texts.items()
+        if isinstance(raw, str)
+    }
+    if row.template_id is None or row.template_version is None:
+        return raw_texts
+    version_id = session.scalar(
+        select(TemplateVersion.id).where(
+            TemplateVersion.template_id == row.template_id,
+            TemplateVersion.version == row.template_version,
+        )
+    )
+    if version_id is None:
+        return raw_texts
+
+    result: dict[str, str] = {}
+    for text_name, raw in raw_texts.items():
+        rules = active_rules_for_version(session, int(version_id), text_name)
+        if not rules:
+            result[text_name] = raw
+            continue
+
+        def _is_empty(brick_id: int) -> bool:
+            return _brick_value_empty(brick_id, values_by_id, definitions_by_id)
+
+        result[text_name] = apply_conditional_parts(raw, rules, is_empty=_is_empty)
+    return result
 
 
 def build_announcement_fields(

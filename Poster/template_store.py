@@ -1833,18 +1833,60 @@ def render_template_version(
     from template_compiler import render_template
     from template_parser import parse_template  # ленивый импорт
 
-    tokens_by_text = {
-        TEMPLATE_CONTENT: parse_template(version_row.content),
-    }
-    if version_row.extended_content is not None:
-        tokens_by_text[TEMPLATE_EXTENDED_CONTENT] = parse_template(
-            version_row.extended_content
-        )
     brick_ids = set(bindings_by_code.values())
     definitions = _load_brick_definitions(session, brick_ids)
+    texts = _apply_conditional_texts(
+        session,
+        version_id=version_row.id,
+        texts={
+            TEMPLATE_CONTENT: version_row.content,
+            **(
+                {TEMPLATE_EXTENDED_CONTENT: version_row.extended_content}
+                if version_row.extended_content is not None
+                else {}
+            ),
+        },
+        values_by_id=values_by_id,
+        definitions_by_id=definitions,
+    )
+    tokens_by_text = {
+        text_name: parse_template(raw) for text_name, raw in texts.items()
+    }
     for tokens in tokens_by_text.values():
         _restore_bindings_on_tokens(tokens, bindings_by_code)
     return render_template(tokens_by_text, values_by_id, definitions)
+
+
+def _apply_conditional_texts(
+    session: Session,
+    *,
+    version_id: int,
+    texts: Mapping[str, str],
+    values_by_id: Mapping[int, Any],
+    definitions_by_id: Mapping[int, BrickDefinition],
+) -> dict[str, str]:
+    """
+    Вырезает условные части (§38–45) из исходных текстов ДО разбора.
+
+    Фрагменты ищутся по логическому тексту, а не по экранированному HTML
+    (§45). Пустота управляющего кирпичика считается тем же правилом, что
+    и в рендере компилятора. `stale`-правила не применяются (§44).
+    """
+    from conditional_parts import active_rules_for_version
+    from template_compiler import _brick_value_empty, apply_conditional_parts
+
+    result: dict[str, str] = {}
+    for text_name, raw in texts.items():
+        rules = active_rules_for_version(session, version_id, text_name)
+        if not rules:
+            result[text_name] = raw
+            continue
+
+        def _is_empty(brick_id: int) -> bool:
+            return _brick_value_empty(brick_id, values_by_id, definitions_by_id)
+
+        result[text_name] = apply_conditional_parts(raw, rules, is_empty=_is_empty)
+    return result
 
 
 def render_template_snapshot(
@@ -1882,6 +1924,11 @@ def render_template_snapshot(
     from template_compiler import render_template
     from template_parser import parse_template  # ленивый импорт
 
+    # TODO(Poster 2.5 §59): условные части снимков. У `template_snapshots`
+    # нет собственной таблицы правил (§44: копии и снимки правила не
+    # переносят), поэтому снимок рендерится без вырезания фрагментов.
+    # Когда правила снимков появятся, вырезание должно идти здесь — по
+    # исходному тексту и до `parse_template`, как в `render_template_version`.
     tokens_by_text = {
         TEMPLATE_CONTENT: parse_template(snapshot_row.content),
     }

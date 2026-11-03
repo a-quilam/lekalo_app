@@ -339,13 +339,18 @@ def _parse_snapshot_text(
     snapshot: AnnouncementTemplateSnapshot,
     text_name: str,
     bindings: Mapping[str, int],
+    *,
+    texts: Mapping[str, str] | None = None,
 ) -> list[Any] | None:
     """
     Разбирает один текст снимка и проставляет brick_id во всех токенах.
 
     Привязки берутся только из снимка: код не разрешается заново.
+    `texts` подменяет исходный текст (уже с вырезанными условными частями,
+    Poster 2.5 §38–45): вырезание обязано произойти ДО разбора.
     """
-    raw = snapshot.texts.get(text_name)
+    source = snapshot.texts if texts is None else texts
+    raw = source.get(text_name)
     if raw is None:
         return None
     try:
@@ -388,17 +393,23 @@ def iter_snapshot_bricks(
 
 def snapshot_tokens_by_text(
     snapshot: AnnouncementTemplateSnapshot,
+    *,
+    texts: Mapping[str, str] | None = None,
 ) -> dict[str, list[Any]]:
     """
     Разбирает снимок и проставляет brick_id во всех токенах.
 
     Используется сервисом для передачи компилятору Stage 24. Повторного
     разрешения кодов по названию здесь нет.
+
+    `texts` — уже подготовленные тексты (Poster 2.5 §38–45): условные части
+    вырезаются из ИСХОДНОГО текста до разбора, поэтому заменять текст после
+    `parse_template` нельзя. Без `texts` берутся тексты самого снимка.
     """
     bindings = _bindings_by_code(snapshot)
     result: dict[str, list[Any]] = {}
     for text_name in TEXT_ORDER:
-        tokens = _parse_snapshot_text(snapshot, text_name, bindings)
+        tokens = _parse_snapshot_text(snapshot, text_name, bindings, texts=texts)
         if tokens is not None:
             result[text_name] = tokens
     return result

@@ -370,7 +370,7 @@ class MigrationEighteenOwnerTests(unittest.TestCase):
     """Требование 2: обновляются только доказуемо нетронутые копии v2."""
 
     def setUp(self) -> None:
-        self.assertEqual(LATEST_VERSION, 26)
+        self.assertEqual(LATEST_VERSION, 27)
         self.path = temp_db_path("poster-r2-owner-m18-")
         self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
         self.engine = make_engine(self.path)

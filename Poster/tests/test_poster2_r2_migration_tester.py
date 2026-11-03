@@ -292,18 +292,20 @@ class MigrationEighteenContentTests(_Base):
         # R3 добавил миграцию 19, R4 — 20, H2 — 24
         # (`template_content_and_extras_without_sections`), Poster 2.4 P1 —
         # 25 (`single_address_brick`), Poster 2.5 C1 — 26
-        # (`announcement_instances`); записи 18 остаются на своём месте.
-        self.assertEqual(LATEST_VERSION, 26)
+        # (`announcement_instances`), D1 — 27 (`template_conditional_parts`);
+        # записи 18 остаются на своём месте.
+        self.assertEqual(LATEST_VERSION, 27)
         versions = _sql(
             self.path,
             "SELECT version, name FROM schema_migrations ORDER BY version",
         )
         self.assertIn((18, "builtin_templates_v3"), versions)
         self.assertEqual(
-            versions[-3], (24, "template_content_and_extras_without_sections")
+            versions[-4], (24, "template_content_and_extras_without_sections")
         )
-        self.assertEqual(versions[-2], (25, "single_address_brick"))
-        self.assertEqual(versions[-1], (26, "announcement_instances"))
+        self.assertEqual(versions[-3], (25, "single_address_brick"))
+        self.assertEqual(versions[-2], (26, "announcement_instances"))
+        self.assertEqual(versions[-1], (27, "template_conditional_parts"))
 
     def test_untouched_initial_copy_gets_v4_and_new_name(self) -> None:
         rows = self.versions(1)

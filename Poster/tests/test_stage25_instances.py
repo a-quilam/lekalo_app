@@ -56,6 +56,7 @@ from tests.stage27_helpers import AnnouncementDatabaseTestCase
 
 CHAT_ID = 777
 MIGRATION_26_NAME = "announcement_instances"
+MIGRATION_27_NAME = "template_conditional_parts"
 
 
 def _journal(path: str) -> list[tuple[int, str]]:
@@ -99,10 +100,14 @@ class Migration26Tests(unittest.TestCase):
 
     def test_fresh_install_has_instances_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 26)
+        self.assertEqual(LATEST_VERSION, 27)
         self.assertEqual(
-            _journal(self.path)[-2:],
-            [(25, "single_address_brick"), (26, MIGRATION_26_NAME)],
+            _journal(self.path)[-3:],
+            [
+                (25, "single_address_brick"),
+                (26, MIGRATION_26_NAME),
+                (27, MIGRATION_27_NAME),
+            ],
         )
         columns = {
             str(row[1]): (str(row[2]).upper(), int(row[3]), row[4])
@@ -153,8 +158,8 @@ class Migration26Tests(unittest.TestCase):
             _sql(self.path, "PRAGMA integrity_check"), [("ok",)], "целостность"
         )
 
-    def test_upgrade_from_v25_adds_only_instances(self) -> None:
-        """Upgrade-путь: база v25 получает ровно одну новую таблицу."""
+    def test_upgrade_from_v25_adds_only_new_tables(self) -> None:
+        """Upgrade-путь: база v25 получает только добавочные таблицы."""
         self.assertEqual(self.migrate(DEFAULT_MIGRATIONS[:25]), 25)
         before = {
             str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
@@ -166,7 +171,7 @@ class Migration26Tests(unittest.TestCase):
         }
         added = after - before
         self.assertIn("announcement_instances", added)
-        # Никаких перестроек прежних таблиц: миграция только добавочная.
+        # Никаких перестроек прежних таблиц: миграции только добавочные.
         self.assertEqual(
             added,
             {
@@ -175,9 +180,14 @@ class Migration26Tests(unittest.TestCase):
                 "ux_announcement_instances_active",
                 "trg_announcement_instances_identity_immutable",
                 "trg_announcement_instances_status_flow",
+                MIGRATION_27_NAME,
+                "ix_template_conditional_parts_version_section",
             },
         )
-        self.assertEqual(_journal(self.path)[-1], (26, MIGRATION_26_NAME))
+        self.assertEqual(
+            _journal(self.path)[-2:],
+            [(26, MIGRATION_26_NAME), (27, MIGRATION_27_NAME)],
+        )
         # Повторный запуск ничего не добавляет и не падает.
         self.assertEqual(self.migrate(), LATEST_VERSION)
         self.assertEqual(
