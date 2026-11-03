@@ -4,14 +4,14 @@ Poster 2.2 U5: независимая приёмка — текстовый ан
 
 Сценарии задания:
 1. Последний кирпичик → шаг фото → «⏭ Пропустить»: в чате одна копия текста,
-   она выше экрана «✅ Анонс готов.» с ровно двумя кнопками.
+   она выше рабочего экрана редактора анонса (§18, 2.5).
 2. Завершение сразу после последнего кирпичика (кнопка «Отправить» в обзоре,
    минуя шаг фото): тоже одна копия.
 3. H3: «Изменить» → правка значения: старая копия заменена сразу, второй
    копии нет (кнопки «Применить изменения» больше нет).
 4. Повторное завершение без правки: «уже отправлена», новой отправки нет.
 5. Фото-путь (1 фото и альбом): по-прежнему одна копия поста, фото на месте.
-6. Рестарт доставленного текстового анонса: экран завершения цел, дублей нет.
+6. Рестарт доставленного текстового анонса: редактор цел, дублей нет.
 
 Дефект U5-D1 (очистка устаревшего живого блока не выполнялась на пути
 «Повторить отправку») исправлен: снимок `live_message_ids` снимается до
@@ -164,11 +164,14 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
         await _no_photos(h)
 
         message_id = _assert_single_copy(self, h, draft.id)
-        # Экран завершения: фиксированный текст и ровно две кнопки.
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        # §18 (2.5): экрана «✅ Анонс готов» нет — рабочий редактор анонса.
+        self.assertIn("✏️ Изменить анонс", h.screen_text())
         self.assertEqual(
-            [label for label, _data in h.screen_buttons()],
-            ["✏️ Изменить", "🏠 В меню"],
+            [label for label, _data in h.screen_buttons()[:2]],
+            ["📝 Данные", "🖼 Фото (0)"],
+        )
+        self.assertEqual(
+            [label for label, _data in h.screen_buttons()[-1:]], ["🏠 В меню"]
         )
         # Постом стал сам живой блок: второй отправки не было.
         self.assertEqual(set(_stored(h, draft.id).delivered_message_ids), live_ids)
@@ -238,16 +241,22 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
 
     @scenario_test
     async def test_repeated_finish_does_not_send_another_copy(self, h) -> None:
-        """П.4: повторное завершение без правки — «уже отправлена»."""
+        """П.4: повторная отправка без правки — «уже отправлена»."""
         await h.text("/start")
         draft = await _to_photo_step(h)
         await _no_photos(h)
         first = _assert_single_copy(self, h, draft.id)
-        posts_before = len(h.posts())
 
         await h.callback("main_menu")
         await h.callback("aw_start")
         await h.callback(_callback(h, "aw_open", f":{draft.id}"))
+        # §29–30 (2.5): открытие готового анонса публикует ОДИН новый цельный
+        # экземпляр; прежний остаётся архивным снимком.
+        stored = _stored(h, draft.id)
+        self.assertEqual(tuple(stored.previous_message_ids), (first,))
+        second = tuple(stored.delivered_message_ids)[0]
+        self.assertNotEqual(second, first)
+        self.assertEqual(_copies(h, TEXT), [first, second])
         self.assertEqual(
             [
                 data
@@ -257,7 +266,6 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
             [],
             "у доставленного анонса не должно быть кнопки отправки",
         )
-        stored = _stored(h, draft.id)
         sends_before = len(
             [
                 call
@@ -267,8 +275,7 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
         )
         await h.callback(f"aw_send:{draft.id}:{stored.revision}")
 
-        self.assertEqual(_assert_single_copy(self, h, draft.id), first)
-        self.assertEqual(set(_stored(h, draft.id).delivered_message_ids), {first})
+        self.assertEqual(tuple(_stored(h, draft.id).delivered_message_ids), (second,))
         new_sends = [
             call
             for call in h.calls
@@ -276,7 +283,7 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
         ][sends_before:]
         # Повторное завершение не отправляет пост: только правки экрана.
         self.assertEqual(new_sends, [], "повторное завершение отправило сообщение")
-        self.assertEqual(len(h.posts()), posts_before)
+        self.assertEqual(len(h.posts()), 2, "ровно две доставленные версии")
         self.assertIn(
             "уже отправлена",
             " ".join(text for text in h.answer_texts() if text),
@@ -354,7 +361,7 @@ class PhotoAndRestartSingleCopyTests(unittest.TestCase):
 
     @scenario_test
     async def test_restart_after_delivery_keeps_single_copy(self, h) -> None:
-        """П.6: рестарт, «Мои анонсы», экран завершения — без дублей."""
+        """П.6: рестарт, «Мои анонсы», экран редактора — без дублей."""
         await h.text("/start")
         draft = await _to_photo_step(h)
         await _no_photos(h)
@@ -372,14 +379,24 @@ class PhotoAndRestartSingleCopyTests(unittest.TestCase):
         )
         await h.callback(_callback(h, "aw_open", f":{draft.id}"))
 
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        # §18/§29–30 (2.5): экрана «✅ Анонс готов» нет, а повторное открытие
+        # публикует НОВЫЙ цельный экземпляр — ровно один.
+        self.assertIn("✏️ Изменить анонс", h.screen_text())
         self.assertEqual(
-            [label for label, _data in h.screen_buttons()],
-            ["✏️ Изменить", "🏠 В меню"],
+            [label for label, _data in h.screen_buttons()[:2]],
+            ["📝 Данные", "🖼 Фото (0)"],
         )
-        self.assertEqual(_assert_single_copy(self, h, draft.id), first)
-        self.assertEqual(len(self._media_calls(h)), sends_before)
-        self.assertNotIn(first, h.deleted_ids())
+        stored = _stored(h, draft.id)
+        self.assertEqual(tuple(stored.previous_message_ids), (first,))
+        second = tuple(stored.delivered_message_ids)[0]
+        self.assertNotEqual(second, first)
+        self.assertEqual(_copies(h, TEXT), [first, second])
+        self.assertEqual(len(self._media_calls(h)), sends_before, "фото не пересланы")
+        self.assertNotIn(first, h.deleted_ids(), "прежний экземпляр не удаляется")
+        self.assertIsNone(_final_markup(h, first), "с прежнего снята клавиатура")
+        screen_id = h.screen_message_id()
+        assert screen_id is not None
+        self.assertLess(second, screen_id, "новый анонс выше служебного экрана")
 
         # «Изменить» после рестарта открывает компактный экран правки.
         await _open_edit(h)

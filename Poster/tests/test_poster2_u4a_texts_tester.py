@@ -72,7 +72,10 @@ RETIRED_LITERALS = {
         "Нажмите кнопку с нужным вариантом.",
     ],
     "handlers/announcement_wizard.py": [
-        "✅ Анонс готов.\\n\\n",
+        # C2b-2: итоговый экран удалён — тексты не должны вернуться в код
+        # (упоминания самого названия экрана в комментариях допустимы).
+        "Сообщение выше можно скопировать или переслать.",
+        "✏️ Изменения пока не отправлены в чат.",
         "✏️ Редактирование анонса\\n\\n",
         "Готовый анонс можно отправить только в личный чат автора.",
         # U4a-fix D3: подпись одной кнопки не должна расходиться по экранам.
@@ -166,7 +169,8 @@ class RetiredLiteralTests(unittest.TestCase):
             "handlers/admin.py": "admin.conflict.notification_html",
             "errors.py": "errors.internal",
             "utils/screen.py": "screen.legacy_keyboard_reset",
-            "handlers/announcement_wizard.py": "wizard.finished.text",
+            # §18 (2.5): экрана «Анонс готов» нет — каталог задаёт текст редактора.
+            "handlers/announcement_wizard.py": "wizard.finished.edit_text",
             "handlers/templates.py": "errors.stale.templates",
         }
         for relative, key in expected.items():
@@ -255,10 +259,15 @@ class OwnerScenarioTests(_CatalogCase):
 
     @scenario_test
     async def test_owner_edits_finished_controls(self, h: Harness) -> None:
+        """
+        §18 (2.5): экрана завершения нет — владелец правит категории
+        редактора доставленного анонса и подпись выхода в меню.
+        """
         self.write_flat(
             **{
-                "buttons.finished.edit": "✏️ Исправить",
-                "buttons.finished.menu": "🏠 Домой",
+                "buttons.finished.data": "📝 Правка",
+                "buttons.finished.photos": "🖼 Снимки ({count})",
+                "buttons.finished.main_menu": "🏠 Домой",
             }
         )
         report = ui_texts.reload_texts(self.path)
@@ -268,10 +277,13 @@ class OwnerScenarioTests(_CatalogCase):
         class Details:
             draft_id = 5
             revision = 2
+            photos = ()
 
-        markup = announcement_wizard._delivered_keyboard(Details())
+        markup = announcement_wizard._delivered_edit_keyboard(
+            Details(), extras_available=False
+        )
         labels = [button.text for row in markup.inline_keyboard for button in row]
-        self.assertEqual(labels, ["✏️ Исправить", "🏠 Домой"])
+        self.assertEqual(labels, ["📝 Правка", "🖼 Снимки (0)", "🏠 Домой"])
 
     @scenario_test
     async def test_broken_yaml_keeps_bot_alive(self, h: Harness) -> None:

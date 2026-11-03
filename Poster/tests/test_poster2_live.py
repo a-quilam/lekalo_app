@@ -476,7 +476,8 @@ class PhotoStepTests(unittest.TestCase):
         await h.text("Значение")
         await h.callback(_callback(h, "aw_photo_none"))
 
-        self.assertIn("✅ Анонс готов", h.screen_text())
+        # §18 (2.5): итогового экрана нет — автор остаётся в редакторе.
+        self.assertIn("✏️ Изменить анонс", h.screen_text())
         posts = h.posts()
         self.assertEqual(len(posts), 1)
         self.assertIn("Значение", posts[0] or "")

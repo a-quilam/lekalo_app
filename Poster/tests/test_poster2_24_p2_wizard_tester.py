@@ -15,10 +15,10 @@ IV. Экран «🧩 Дополнительные поля» (`aw_extras`) от
     много.
 V.  «Назад» возвращает на ТОТ экран, с которого пришёл (реальный путь), а
     не в главное меню и не «на шаг раньше по индексу». Пример владельца:
-    «✅ Анонс готов» → «Изменить» → «Дополнительные поля» → «Стоимость»;
+    редактор анонса → «Дополнительные поля» → «Стоимость»;
     «Назад» со стоимости → «Дополнительные поля», ещё «Назад» →
-    «Изменить». У экрана «✅ Анонс готов» ровно две кнопки — «✏️ Изменить»
-    и «🏠 В меню», «Назад» в старый конструктор там нет.
+    «Изменить». С 2.5 (§18) экрана «✅ Анонс готов» нет: после доставки
+    открыт редактор анонса, «Назад» в старый конструктор запрещён.
 VI. На экране вопроса — только «◀️ Назад» | «⏭ Пропустить» (плюс спецкнопки
     дат/времени/выбора). «➡️ Далее» и «✏️ Изменить ответ» запрещены.
     «⏭ Пропустить» НЕ ОЧИЩАЕТ значение: пустое остаётся пустым, заполненное
@@ -81,7 +81,8 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 EXTRAS_TITLE = "🧩 Дополнительные поля"
 QUESTION_PREFIX = "🧩 Вопрос"
 PHOTO_STEP = "📷 Фотографии анонса"
-DELIVERED_HEAD = "✅ Анонс готов."
+# §18 (2.5): итогового экрана «✅ Анонс готов» нет — после доставки редактор.
+DELIVERED_HEAD = "✏️ Изменить анонс"
 EDIT_HEAD = "✏️ Изменить анонс"
 TEMPLATE_HEAD = "🧩 Выбран шаблон"
 MANAGER_HEAD = "🧩 Поля анонса"
@@ -95,6 +96,8 @@ LABEL_EDIT_ANSWER = "✏️ Изменить ответ"
 LABEL_ADD_FIELD = "➕ Добавить поле"
 LABEL_MENU = "🏠 В меню"
 LABEL_DELIVERED_EDIT = "✏️ Изменить"
+LABEL_DELIVERED_DATA = "📝 Данные"
+LABEL_DELIVERED_PHOTOS = "🖼 Фото (0)"
 LABEL_DELIVERED_MENU = "🏠 В меню"
 CURRENT_VALUE = "Текущее значение:"
 
@@ -281,7 +284,15 @@ def _specs(*rows: tuple[str, str, str, dict]) -> list[tuple[str, str, str, dict]
 
 
 async def _open_edit(h: Harness) -> None:
-    """Открывает экран правки доставленного анонса (если он ещё не открыт)."""
+    """
+    Открывает экран правки доставленного анонса (если он ещё не открыт).
+
+    2.5 (§18): после доставки категории правки уже на экране, поэтому
+    helper ничего не делает. Устаревшая кнопка «✏️ Изменить» тоже ведёт
+    на этот экран.
+    """
+    if _callbacks(h, "aw_qmanage"):
+        return
     data = _callbacks(h, "aw_edit")
     if data:
         await h.callback(data[0])
@@ -289,7 +300,7 @@ async def _open_edit(h: Harness) -> None:
 
 async def _open_extras(h: Harness) -> None:
     """
-    Путь владельца: «✅ Анонс готов» → «✏️ Изменить» → доп. поля.
+    Путь владельца (2.5, §18): экран редактора → «🧩 Дополнительные поля».
 
     Допускается, что при устаревшей ревизии первый же переход сразу
     показывает актуальный экран доп. полей (так работает восстановление).
@@ -1118,8 +1129,8 @@ class BackNavigationTests(unittest.TestCase):
         self.assertNotIn(MENU_FRAGMENT, h.screen_text())
 
     @scenario_test
-    async def test_s17_delivered_screen_has_exactly_edit_and_menu(self, h):
-        """«✅ Анонс готов»: ровно «✏️ Изменить» | «🏠 В меню», без «Назад»."""
+    async def test_s17_delivered_screen_has_edit_categories_and_menu(self, h):
+        """§18 (2.5): после доставки — категории правки и «🏠 В меню»."""
         await h.text("/start")
         await _deliver(
             h,
@@ -1127,24 +1138,31 @@ class BackNavigationTests(unittest.TestCase):
             content="A [main] B",
             extended=None,
         )
-        self.assertTrue(h.screen_text().startswith(DELIVERED_HEAD))
+        self.assertTrue(h.screen_text().startswith(EDIT_HEAD))
 
         rows = _screen_rows(h)
-        self.assertEqual(len(rows), 1, f"на экране завершения одна строка: {rows}")
         self.assertEqual(
             [label for label, _data in rows[0]],
-            [LABEL_DELIVERED_EDIT, LABEL_DELIVERED_MENU],
+            [LABEL_DELIVERED_DATA, LABEL_DELIVERED_PHOTOS],
+            f"первая строка — категории правки: {rows}",
         )
         self.assertEqual(
-            [data for _label, data in rows[0]][1],
+            [label for label, _data in rows[-1]],
+            [LABEL_DELIVERED_MENU],
+            "последняя строка — «🏠 В меню»",
+        )
+        self.assertEqual(
+            rows[-1][0][1],
             "main_menu",
-            "вторая кнопка — «🏠 В меню»",
+            "последняя кнопка — «🏠 В меню»",
         )
         self.assertEqual(
-            [item for item in rows[0] if _is_back(*item)],
+            [item for item in rows[-1] if _is_back(*item)],
             [],
-            "«Назад» в старый конструктор на экране завершения запрещён",
+            "«Назад» в старый конструктор на экране доставки запрещён",
         )
+        self.assertFalse(_callbacks(h, "aw_edit"), "кнопки «✏️ Изменить» нет")
+        self.assertFalse(_callbacks(h, "aw_apply"), "кнопки применения нет")
 
     @scenario_test
     async def test_s18_restart_has_no_stack_and_back_stays_safe(self, h):

@@ -538,7 +538,8 @@ class PersonalPlaceholderTests(unittest.TestCase):
         # S3 п.6: сначала шаг фото, доставка — по «Без фотографий».
         await h.callback(_cb(h, "aw_photo_none"))
         delivered = h.screen_text()
-        self.assertIn("✅ Анонс готов", delivered)
+        # §18 (2.5): экрана «✅ Анонс готов» нет — после доставки редактор.
+        self.assertIn("✏️ Изменить анонс", delivered)
 
         await _open_preview(h)
         preview = h.screen_text()
@@ -650,8 +651,9 @@ class PersonalNoPlaceAllScreensTests(unittest.TestCase):
         await h.callback(f"pl_pick:{place_id}")
         await _skip_all_questions(h)
         delivered = h.screen_text()
-        # U2b: экран завершения фиксирован; строка места живёт в посте.
-        self.assertIn("✅ Анонс готов", delivered)
+        # §18 (2.5): итогового экрана нет — автор остаётся в редакторе, а
+        # место живёт в самом посте и в обзоре.
+        self.assertIn("✏️ Изменить анонс", delivered)
         self.assertNotIn("Место:", delivered)
         # В самом посте место — часть шаблона площадки, без префикса «Место:».
         self.assertIn("Дом культуры", h.posts()[-1] or "")

@@ -30,6 +30,7 @@ try:
         create_personal_brick,
         list_personal_bricks,
     )
+    from handlers import announcement_wizard as announcement_wizard_handlers
     from handlers.announcement_wizard import (
         AW_EXTRAS,
         AW_PLACE,
@@ -68,6 +69,8 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 
 OTHER_TG = 8_270_002
+# §18 (2.5): вместо экрана «✅ Анонс готов» после доставки открыт редактор.
+EDIT_TITLE = "✏️ Изменить анонс"
 TemplateSpec = tuple[str, str, str, dict[str, object]]
 
 
@@ -266,12 +269,15 @@ async def _no_photos(h) -> None:
 
 async def _open_edit(h) -> None:
     """
-    U2b: открывает компактный экран правки доставленного анонса.
+    U2b/2.5: открывает компактный экран правки доставленного анонса.
 
-    На экране завершения доступны ровно две кнопки («Изменить», «В меню»):
-    категории правки (данные, фото, кирпичики, применить) — на следующем
-    экране. Если экран правки уже открыт, ничего не делает.
+    С C2b-2 (spec §18) экрана «✅ Анонс готов» нет: после доставки автор уже
+    стоит на экране категорий правки, поэтому helper ничего не делает, если
+    `aw_qmanage` на месте. Иначе используется устаревшая кнопка «✏️
+    Изменить» (`aw_edit`) — она по-прежнему ведёт на тот же экран.
     """
+    if _callbacks(h, "aw_qmanage"):
+        return
     data = _callbacks(h, "aw_edit")
     if data:
         await h.callback(data[0])
@@ -282,8 +288,8 @@ async def _reopen_question(h) -> None:
     Возвращает пользователя к заполненному вопросу (U2b).
 
     До доставки удобнее «◀️ Назад» с шага фото — оно ведёт на последний
-    кирпичик. После доставки экран завершения имеет две кнопки, поэтому
-    путь такой: «Изменить» → «Данные» → пункт поля.
+    кирпичик. После доставки (2.5, §18) автор уже на экране категорий
+    правки, поэтому путь такой: «Данные» → пункт поля.
     """
     back = _callbacks(h, "aw_photo_back")
     if back:
@@ -490,7 +496,7 @@ class AnnouncementWizardTemplateTests(unittest.TestCase):
         self.assertTrue(_callbacks(h, "aw_photo_none"))
         self.assertFalse(_callbacks(h, "aw_send"))
         await _no_photos(h)
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn(EDIT_TITLE, h.screen_text())
         delivered = h.posts()[-1] or ""
         self.assertIn("СТАРЫЙ ТЕКСТ", delivered)
         self.assertNotIn("НОВЫЙ ТЕКСТ", delivered)
@@ -592,7 +598,7 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
         self.assertFalse(_callbacks(h, "aw_send"))
         self.assertEqual(h.posts(), [])
         await _no_photos(h)
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn(EDIT_TITLE, h.screen_text())
         posts_after_delivery = h.posts()
         self.assertEqual(len(posts_after_delivery), 1)
         text = posts_after_delivery[0] or ""
@@ -604,9 +610,10 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
         self.assertIn("42", text)
         self.assertIn("Музыка", text)
         self.assertIn("X, Y", text)
-        # U2b: на экране завершения ровно две кнопки — правка через «Изменить».
-        self.assertTrue(_callbacks(h, "aw_edit"))
-        self.assertFalse(_callbacks(h, "aw_qmanage"))
+        # §18 (2.5): экрана завершения нет — категории правки сразу на месте.
+        self.assertTrue(_callbacks(h, "aw_qmanage"))
+        self.assertTrue(_callbacks(h, "aw_photos"))
+        self.assertFalse(_callbacks(h, "aw_edit"))
         # Финальной кнопки «отправить/сформировать» в доставке нет.
         self.assertFalse(_callbacks(h, "aw_send"))
         self.assertFalse(_callbacks(h, "aw_apply"))
@@ -616,7 +623,10 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
         self.assertIn("Всё заполнено. Анонс собирается", h.screen_text())
         await h.callback(_callback(h, "aw_save"))
         self.assertEqual(h.posts(), posts_after_delivery)
-        self.assertIn("Черновик сохранён", h.answer_texts()[-1])
+        # §18 (2.5): доставленный анонс «сохранить» не меняет — короткий
+        # ответ и строка о том, что отправленная версия не тронута.
+        self.assertEqual("Сохранено.", h.answer_texts()[-1])
+        self.assertIn("Отправленный анонс не менялся", h.screen_text())
 
         draft = _latest_draft(h)
         with h.session_factory() as session:
@@ -677,7 +687,7 @@ class AnnouncementWizardExtrasTests(unittest.TestCase):
         self.assertEqual(h.posts(), [])
         await _no_photos(h)
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn(EDIT_TITLE, h.screen_text())
         self.assertEqual(len(h.posts()), 1)
         await _open_edit(h)
         await h.callback(_callback(h, "aw_extras"))
@@ -818,10 +828,7 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         await h.text("Новое")
         # H3: ответ сразу применил изменение — новой версии достаточно,
         # строки «Есть изменения» и кнопки применения больше нет.
-        self.assertEqual(
-            h.screen_text(),
-            "✅ Анонс готов.\n\nСообщение выше можно скопировать или переслать.",
-        )
+        self.assertEqual(h.screen_text(), announcement_wizard_handlers.DELIVERED_EDIT_TEXT)
         self.assertFalse(_callbacks(h, "aw_apply"))
         self.assertIn("Новое", h.posts()[-1] or "")
 
@@ -832,7 +839,10 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         self.assertEqual(h.posts(), posts_after_apply)
 
         await h.callback(_callback(h, "aw_save"))
-        self.assertIn("Черновик сохранён", h.answer_texts()[-1])
+        # §18 (2.5): «сохранить» после доставки только подтверждает, что
+        # отправленная версия не тронута: короткий ответ + строка на экране.
+        self.assertEqual("Сохранено.", h.answer_texts()[-1])
+        self.assertIn("Отправленный анонс не менялся", h.screen_text())
         posts_after_save = h.posts()
         self.assertEqual(posts_after_save, posts_after_apply)
         draft = _latest_draft(h)
@@ -848,10 +858,14 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         self.assertIn("Черновик можно продолжить", h.screen_text())
         self.assertIn("Дом культуры", h.screen_text())
         await h.callback(_callback(h, "aw_open", f":{draft_id}"))
-        self.assertIn("✅ Анонс готов.", h.screen_text())
-        # Повторное открытие не отправляет ещё одну копию.
-        self.assertEqual(h.posts(), posts_after_save)
+        self.assertIn(EDIT_TITLE, h.screen_text())
+        # §29–30 (2.5): повторное открытие публикует НОВЫЙ цельный экземпляр,
+        # прежний остаётся в чате архивным снимком.
+        self.assertEqual(len(h.posts()), len(posts_after_save) + 1)
+        self.assertEqual(h.posts()[:-1], posts_after_save)
+        self.assertEqual(h.posts()[-1], posts_after_save[-1])
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
+        posts_after_reopen = h.posts()
 
         resumed = _draft_by_id(h, draft_id)
         self.assertEqual(resumed.template_snapshot_id, snapshot_id)
@@ -865,7 +879,7 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))
         self.assertIsNotNone(_draft_by_id(h, draft_id))
         # Выход в меню не отправляет и не удаляет доставленный анонс.
-        self.assertEqual(h.posts(), posts_after_save)
+        self.assertEqual(h.posts(), posts_after_reopen)
 
     @scenario_test
     async def test_long_preview_is_truncated_but_sqlite_keeps_full_value(
@@ -885,7 +899,7 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         await h.text(long_value)
         # S3 п.6: сначала шаг фото, доставка — по «Без фотографий».
         await _no_photos(h)
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn(EDIT_TITLE, h.screen_text())
         await _preview(h)
         self.assertIn("Здесь показана часть текста", h.screen_text())
         self.assertIn("Полный текст сохранён в черновике", h.screen_text())
@@ -923,14 +937,12 @@ class AnnouncementWizardSafetyTests(unittest.TestCase):
         revision_after_save = draft.revision
 
         await h.callback(stale_skip)
-        # U2b: экран завершения имеет фиксированный текст, поэтому
-        # предупреждение об устаревшей кнопке уходит ответом на callback,
-        # а не подменяет экран (иначе «Анонс готов» и «Данные изменились»
-        # показывались бы одновременно).
+        # §18 (2.5): предупреждение об устаревшей кнопке уходит ответом на
+        # callback, а экран остаётся рабочим редактором анонса.
         self.assertIn("Данные изменились", h.answer_texts()[-1])
-        self.assertEqual("✅ Анонс готов.", h.screen_text().split("\n\n")[0])
+        self.assertIn(announcement_wizard_handlers.DELIVERED_EDIT_TEXT, h.screen_text())
         self.assertIn(
-            "✏️ Изменить",
+            "📝 Данные",
             [label for label, _data in h.screen_buttons()],
         )
         with h.session_factory() as session:
@@ -1065,7 +1077,7 @@ class AnnouncementWizardStandardTemplateTests(unittest.TestCase):
         self.assertTrue(_callbacks(h, "aw_photo_none"))
         self.assertFalse(_callbacks(h, "aw_send"))
         await _no_photos(h)
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn(EDIT_TITLE, h.screen_text())
         posts = h.posts()
         self.assertEqual(len(posts), 1)
         text = posts[0] or ""

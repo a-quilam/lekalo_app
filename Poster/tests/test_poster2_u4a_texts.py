@@ -504,25 +504,29 @@ class CatalogScreenTests(_TempCatalog):
 
     @scenario_test
     async def test_finished_screen_text_comes_from_catalog(self, h: Harness) -> None:
+        """§18 (2.5): экрана «Анонс готов» нет — каталог задаёт текст редактора."""
         from handlers import announcement_wizard
 
         self.write_catalog(
             **{
-                "wizard.finished.text": "✅ Готово.\n\nПерешлите сообщение выше",
-                "buttons.finished.edit": "✏️ Правка",
+                "wizard.finished.edit_text": "✏️ Правка-каталог\n\nВыберите категорию",
+                "buttons.finished.data": "📝 Данные-каталог",
             }
         )
         ui_texts.reload_texts(self.path)
         self.assertEqual(
-            ui_texts.tr("wizard.finished.text"),
-            "✅ Готово.\n\nПерешлите сообщение выше",
+            ui_texts.tr("wizard.finished.edit_text"),
+            "✏️ Правка-каталог\n\nВыберите категорию",
         )
-        self.assertEqual(ui_texts.tr("buttons.finished.edit"), "✏️ Правка")
+        self.assertEqual(ui_texts.tr("buttons.finished.data"), "📝 Данные-каталог")
         # Константы модуля — те же строки каталога (дефолты при загрузке).
         self.assertEqual(
-            announcement_wizard.DELIVERED_TEXT,
-            ui_texts.DEFAULTS["wizard.finished.text"],
+            announcement_wizard.DELIVERED_EDIT_TEXT,
+            ui_texts.DEFAULTS["wizard.finished.edit_text"],
         )
+        # Ключей удалённого экрана завершения в каталоге больше нет.
+        self.assertNotIn("wizard.finished.text", ui_texts.DEFAULTS)
+        self.assertNotIn("wizard.finished.pending", ui_texts.DEFAULTS)
 
     @scenario_test
     async def test_error_notice_text_comes_from_catalog(self, h: Harness) -> None:
@@ -634,7 +638,7 @@ class DeadKeyScreenTests(_TempCatalog):
         await _choose_personal(h, template_id)
         await h.text("Значение")
         await h.callback(_callback(h, "aw_photo_none"))
-        await h.callback(_callback(h, "aw_edit"))
+        # §18 (2.5): категории правки уже на экране после доставки.
         self.assertIn("МЕНЮ-КАТАЛОГ", [label for label, _ in h.screen_buttons()])
 
         # Экран правки фотографий — тот же ключ заголовка, что шаг фото, и
@@ -671,7 +675,6 @@ class DeadKeyScreenTests(_TempCatalog):
         await _choose_personal(h, template_id)
         await h.text("Значение")
         await h.callback(_callback(h, "aw_photo_none"))
-        await h.callback(_callback(h, "aw_edit"))
         photos = [
             data
             for _label, data in h.screen_buttons()

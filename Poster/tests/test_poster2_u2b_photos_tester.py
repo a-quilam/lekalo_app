@@ -106,7 +106,7 @@ class ForeignPhotoTests(unittest.TestCase):
         self.assertEqual(after.revision, before.revision)
         self.assertIsNone(after.publication_status)
         self.assertEqual(h.posts(), posts_before)
-        self.assertNotIn("✅ Анонс готов.", h.screen_text())
+        self.assertNotIn("✏️ Изменить анонс", h.screen_text())
 
     @scenario_test
     async def test_foreign_skip_does_not_finish_the_draft(self, h) -> None:
@@ -146,7 +146,8 @@ class DoubleCallbackTests(unittest.TestCase):
         after = _details(h, draft_id)
         self.assertEqual(after.delivered_message_ids, version_ids)
         self.assertIn("Данные изменились", h.answer_texts()[-1])
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        # §18 (2.5): итогового экрана нет — на экране рабочий редактор.
+        self.assertIn("✏️ Изменить анонс", h.screen_text())
 
     @scenario_test
     async def test_forged_skip_with_unknown_draft_is_rejected(self, h) -> None:
@@ -217,7 +218,7 @@ class DuplicatePhotoTests(unittest.TestCase):
         version_ids = stored.delivered_message_ids
         posts_before = h.posts()
 
-        await h.callback(_callback(h, "aw_edit"))
+        # §18 (2.5): категории правки уже на экране после доставки.
         await h.callback(_callback(h, "aw_photos"))
         await h.photo("late-1")
         # H3: фото к доставленному анонсу применяется сразу, без «Применить».

@@ -163,11 +163,7 @@ DEFAULTS: dict[str, str] = {
     "wizard.photos.accepted_many": "✅ Добавлено фото: {count}.",
     "wizard.photos.duplicate": "Это фото уже есть в анонсе. Повторно добавлять его не нужно.",
     "wizard.photos.rejected": "Фото не добавлено: {reason}",
-    # --- конструктор: экран завершения и правки -----------------------------
-    "wizard.finished.text": (
-        "✅ Анонс готов.\n\nСообщение выше можно скопировать или переслать."
-    ),
-    "wizard.finished.pending": ("✏️ Изменения пока не отправлены в чат."),
+    # --- конструктор: экран правки доставленного анонса (§26–27) ------------
     "wizard.finished.edit_text": (
         (
             "✏️ Изменить анонс\n\n"
@@ -423,7 +419,6 @@ DEFAULTS: dict[str, str] = {
     "buttons.wizard.skip": "⏭ Пропустить",
     "buttons.wizard.choose_month": "📅 Выбрать месяц",
     "buttons.finished.edit": "✏️ Изменить",
-    "buttons.finished.menu": "🏠 В меню",
     "buttons.finished.data": "📝 Данные",
     "buttons.finished.photos": "🖼 Фото ({count})",
     "buttons.finished.extras_edit": "🧩 Дополнительные поля",

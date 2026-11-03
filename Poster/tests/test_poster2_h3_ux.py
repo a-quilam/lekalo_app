@@ -36,8 +36,12 @@ import unittest
 
 try:
     from announcement_store import get_announcement_draft, save_announcement_value
-    from brick_store import create_personal_brick, get_personal_brick
-    from handlers.announcement_wizard import DELIVERED_PENDING_TEXT
+    from brick_store import (
+        archive_personal_brick,
+        create_personal_brick,
+        get_personal_brick,
+    )
+    from handlers import announcement_wizard as announcement_wizard_handlers
     from template_store import (
         create_personal_template,
         get_template_version,
@@ -238,45 +242,33 @@ class DeliveredEditLayoutTests(unittest.TestCase):
         """
         H3 (дефект ревизора): «сохранить» у доставленного анонса.
 
-        Кнопки «Применить изменения» больше нет, поэтому сообщение о
-        неприменённых изменениях не должно на неё ссылаться: статус уже
-        `sent`, значит применение сорвалось, и честный текст отправляет
-        автора к повторной правке или к экрану повтора отправки.
+        Кнопки «Применить изменения» больше нет (H3), а экрана «✅ Анонс
+        готов» нет с 2.5 (§18): после доставки на экране рабочий редактор.
+        Если пересборка после правки сорвалась, «сохранить» честно
+        показывает APPLY_FAILED_TEXT: он отправляет автора к повторной
+        правке или к экрану повтора отправки, а не к удалённой кнопке.
         """
         await h.text("/start")
-        draft, _bricks = await _delivered(h)
-
-        with h.session_factory() as session:
-            current = get_announcement_draft(
-                session,
-                actor_telegram_user_id=DEFAULT_USER_ID,
-                draft_id=draft.id,
-            )
-            # Значение меняется в обход мастера — так «неприменённое»
-            # изменение реально остаётся: статус `sent`, а отпечаток другой.
-            save_announcement_value(
-                session,
-                actor_telegram_user_id=DEFAULT_USER_ID,
-                draft_id=draft.id,
-                brick_id=current.values[0].brick_id,
-                value="Изменение в обход применения",
-                expected_revision=current.revision,
-            )
+        _draft, bricks = await _delivered(h)
         posts_before = h.posts()
 
-        # Переоткрытие черновика подтягивает новую ревизию: экран завершения
-        # честно показывает строку о неотправленных изменениях.
-        await h.text("/start")
-        await h.callback("my_announcements")
-        await h.callback(f"aw_open:{draft.id}")
-        self.assertIn(DELIVERED_PENDING_TEXT, h.screen_text())
+        # Сборка ломается уже после доставки: кирпичик уходит в архив,
+        # поэтому отпечаток текущего анонса не совпадает с отправленным.
+        with h.session_factory() as session:
+            archive_personal_brick(
+                session,
+                actor_telegram_user_id=DEFAULT_USER_ID,
+                brick_id=bricks["main"],
+                expected_revision=1,
+            )
 
         ui = h.user_data()["announcement_ui"]
         await h.callback(f"aw_save:{ui['draft_id']}:{ui['revision']}")
 
-        notice = h.answer_texts()[-1]
-        self.assertNotIn("Применить изменения", notice, notice)
-        self.assertIn("Повторить отправку", notice, notice)
+        # Экран — редактор с честной строкой вместо обещания удалённой кнопки.
+        self.assertIn(announcement_wizard_handlers.APPLY_FAILED_TEXT, h.screen_text())
+        self.assertNotIn("Применить изменения", h.screen_text())
+        self.assertNotIn("Применить изменения", h.answer_texts()[-1])
         # «Сохранить» у доставленного анонса ничего не отправляет.
         self.assertEqual(h.posts(), posts_before)
         self.assertFalse(_callbacks(h, "aw_apply"))

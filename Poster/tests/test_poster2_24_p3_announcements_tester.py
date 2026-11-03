@@ -86,7 +86,8 @@ MENU_ROWS = [
 LIST_HEAD = "📂 Мои анонсы"
 DRAFT_STATUS = "черновик"
 SENT_STATUS = "готовый анонс отправлен"
-DELIVERED_HEAD = "✅ Анонс готов."
+# §18 (2.5): экрана «✅ Анонс готов» нет — после доставки открыт редактор.
+DELIVERED_HEAD = "✏️ Изменить анонс"
 QUESTION_HEAD = "🧩 Вопрос"
 INTERNAL_FRAGMENT = "Что-то пошло не так"
 GONE_FRAGMENTS = ("больше не хранится", "не найден", "больше недоступ", "больше нет")
@@ -472,7 +473,7 @@ class MyAnnouncementsTests(unittest.TestCase):
         B.3: у черновика и у готового — пара «открытие» + «🗑» в одной строке.
 
         Открытие черновика ведёт в конструктор (экран вопроса), открытие
-        готового — на его экран «✅ Анонс готов» (P3: ожидаемая реализация).
+        готового — переиздаёт экземпляр (§29–30, 2.5) и открывает редактор.
         """
         await h.text("/start")
         draft_template = _unique_template(h, "Черновик Б3")
@@ -522,7 +523,7 @@ class MyAnnouncementsTests(unittest.TestCase):
             f"фактически: {h.screen_text()[:300]!r}",
         )
 
-        # Открытие готового → его экран.
+        # Открытие готового → новый экземпляр и рабочий экран редактора.
         await _open_list(h)
         sent_open = _entry_pair(h, sent_ids[0])[0][0][1]
         await h.callback(sent_open)
@@ -530,7 +531,8 @@ class MyAnnouncementsTests(unittest.TestCase):
         self.assertIn(
             DELIVERED_HEAD,
             h.screen_text(),
-            "открытие готового анонса должно вести на его экран, фактически: "
+            "открытие готового анонса должно вести в редактор анонса, "
+            "фактически: "
             f"{h.screen_text()[:300]!r}",
         )
 

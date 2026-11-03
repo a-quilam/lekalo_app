@@ -615,7 +615,8 @@ class PersonalPlaceLineTests(unittest.TestCase):
 
         await h.callback(_callback(h, "aw_photo_none"))
         delivered = h.screen_text()
-        self.assertIn("✅ Анонс готов", delivered)
+        # §18 (2.5): экрана «✅ Анонс готов» нет — после доставки редактор.
+        self.assertIn("✏️ Изменить анонс", delivered)
         self._assert_no_empty_place(self, "доставлено", delivered)
 
         await _open_preview(h)
@@ -697,7 +698,8 @@ class PersonalPlaceLineTests(unittest.TestCase):
         self.assertIn("Фотографии анонса", h.screen_text())
         await h.callback(_callback(h, "aw_photo_none"))
         delivered = h.screen_text()
-        self.assertIn("✅ Анонс готов", delivered)
+        # §18 (2.5): экрана «✅ Анонс готов» нет — после доставки редактор.
+        self.assertIn("✏️ Изменить анонс", delivered)
         # U2b: экран завершения фиксирован и не повторяет пост. Строка
         # «Место: …» остаётся там, где живёт сам анонс — в посте и обзоре.
         # В самом посте место — часть шаблона площадки, без префикса «Место:».

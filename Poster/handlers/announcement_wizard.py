@@ -300,7 +300,6 @@ NAV_EXTRAS = "extras"
 NAV_EXTRA_VALUE = "extra_value"
 NAV_PHOTOS = "photos"
 NAV_PREVIEW = "preview"
-NAV_DELIVERED = "delivered"
 NAV_DELIVERED_EDIT = "delivered_edit"
 
 
@@ -494,8 +493,6 @@ async def _nav_render(
         )
     if screen_name == NAV_DELIVERED_EDIT:
         return await _render_delivered_edit(update, context, details)
-    if screen_name == NAV_DELIVERED:
-        return await _render_delivered(update, context, details)
     if screen_name == NAV_PREVIEW:
         return await _render_preview(update, context, details)
     if screen_name == NAV_HOME:
@@ -1770,7 +1767,68 @@ async def _open_draft(
     if active_brick_id is not None:
         ui["active_brick_id"] = active_brick_id
     ctx.data(context)["announcement_ui"] = ui
+    if details.publication_sent and not _edit_blocked(details):
+        # §29–30: готовый анонс из «Мои анонсы» открывается НОВЫМ цельным
+        # экземпляром. Прежний остаётся в чате архивным снимком без кнопок
+        # (`register_instance` в цепочке доставки), данные не пересобираются
+        # в новый логический анонс.
+        return await _republish_delivered(update, context, details, notice=notice)
     return await _render_draft_stage(update, context, details, notice=notice)
+
+
+async def _republish_delivered(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    *,
+    notice: str | None = None,
+) -> int:
+    """
+    Переиздаёт готовый анонс новым экземпляром (spec §29–30).
+
+    Повторное открытие из «Мои анонсы» — не редактор и не повторное
+    использование прежнего сообщения: автор всегда получает свежий цельный
+    анонс с управлением. Идентичный текст тоже уходит заново — именно это
+    и просят владельцы, поэтому обход проверки «ничего не изменилось» здесь
+    намеренный (`_finish_and_deliver` такой вызов отверг бы).
+
+    Прежний экземпляр архивируется в той же транзакции регистрации нового
+    (§30 п.3), его кнопки снимаются, панель медиагруппы убирается — всё это
+    уже делает `_ensure_delivered_instance`. Если отправка не удалась,
+    управление прежнего экземпляра НЕ трогается (§30, последний абзац):
+    регистрация происходит только после подтверждённой доставки.
+    """
+    user_id = _user_id(update)
+    if not _is_private_chat(update):
+        await _answer(update, PRIVATE_CHAT_ONLY, alert=True)
+        return await _render_private_chat_refusal(update, context, details)
+    try:
+        with SessionLocal() as session:
+            publication = begin_announcement_publication(
+                session,
+                actor_telegram_user_id=user_id,
+                draft_id=details.draft_id,
+                expected_revision=details.revision,
+                today=app_today(),
+            )
+    except (
+        AnnouncementError,
+        TemplateError,
+        TemplateCompileError,
+        BrickError,
+    ) as exc:
+        # Причину видно на экране проблемы: короткий ответ не добавляем,
+        # чтобы не вводить нового текста в каталог.
+        return await _render_preview_error(update, context, details, str(exc))
+    _set_details(_ui(context), publication.draft)
+    # `previous_ids` прошлой версии вторым аргументом не передаются: по
+    # §30–31 прежний экземпляр остаётся в чате архивным снимком.
+    return await _run_announcement_publication(
+        update,
+        context,
+        publication,
+        stale_live_ids=(),
+    )
 
 
 async def _render_draft_stage(
@@ -2388,16 +2446,10 @@ async def _after_questions(
         await _answer(update, str(exc), alert=True)
         return await _resume_current(update, context, notice=str(exc))
     if updated.publication_sent:
-        # Анонс уже доставлен. Правка через «Изменить данные» может состоять
-        # из нескольких шагов: новую версию отправляет явное «Применить
-        # изменения», иначе каждая правка создавала бы отдельное сообщение.
-        return await _render_delivered(
-            update,
-            context,
-            updated,
-            notice=notice,
-            pending=_has_pending_changes(update, updated),
-        )
+        # Анонс уже доставлен. Экран «✅ Анонс готов» удалён (spec §18):
+        # автор возвращается к управлению готовым анонсом, а правка
+        # применяется сразу, без промежуточной кнопки.
+        return await _render_delivered_edit(update, context, updated, notice=notice)
     return await wizard_photos.render_photo_step(
         update,
         context,
@@ -3980,9 +4032,10 @@ async def _render_preview(
                 if pending
                 else tr("wizard.render_preview.chernovik_sohranen_otpravlennyy")
             )
-        return await _render_delivered(
-            update, context, details, notice=notice, pending=pending
-        )
+        # §18: промежуточного экрана «✅ Анонс готов» нет — управление
+        # живёт у самого анонса (кнопки `anp_`), а служебный экран при
+        # необходимости показывает компактный редактор.
+        return await _render_delivered_edit(update, context, details, notice=notice)
     updated = details
     _nav_enter(ui, NAV_PREVIEW)
     try:
@@ -4605,7 +4658,7 @@ async def _render_publish_status(
 ) -> int:
     """Экран начатой/частичной/неудачной отправки без права правки."""
     if details.publication_status == PUBLICATION_STATUS_SENT:
-        return await _render_delivered(update, context, details, notice=notice)
+        return await _render_delivered_edit(update, context, details, notice=notice)
     if details.publication_status is None:
         return await _render_preview(update, context, details, notice=notice)
     ui = _ui(context)
@@ -4866,7 +4919,7 @@ async def _finish_and_deliver(
             and preview.draft.delivered_message_ids
         ):
             # Ничего не изменилось: дубль не отправляем.
-            return await _render_delivered(
+            return await _close_publication_without_screen(
                 update,
                 context,
                 details,
@@ -4901,7 +4954,9 @@ async def _finish_and_deliver(
             photos=tuple(preview.draft.photos),
         )
         if promoted is not None:
-            return await _render_delivered(
+            # §18: итогового экрана нет — результат уходит ответом на
+            # callback, а диалог остаётся на рабочем экране редактора.
+            return await _close_publication_without_screen(
                 update,
                 context,
                 promoted,
@@ -5045,13 +5100,6 @@ async def _promote_live_post(
     return promoted
 
 
-# U2b: экран завершения — ровно два действия. Текст фиксированный: никаких
-# служебных сводок, длин и списков. Единственное допустимое дополнение —
-# предупреждение о неприменённых изменениях. Сами строки — в каталоге
-# config/ui_texts.yaml: владелец правит их без Python-кода.
-DELIVERED_TEXT = tr("wizard.finished.text")
-DELIVERED_PENDING_TEXT = tr("wizard.finished.pending")
-
 # H3: кнопка «Применить изменения» удалена, правка доставленного анонса
 # применяется сразу. Если после сохранения содержимое всё ещё отличается от
 # доставленного (статус `sent` и pending), немедленное применение сорвалось:
@@ -5062,25 +5110,6 @@ APPLY_FAILED_TEXT = tr("wizard.module.chernovik_sohranen_no_izmeneniya")
 
 # U2b: компактный экран редактирования готового анонса — только категории.
 DELIVERED_EDIT_TEXT = tr("wizard.finished.edit_text")
-
-
-def _delivered_keyboard(details) -> InlineKeyboardMarkup:
-    """Ровно две кнопки в одной строке: «Изменить» и «В меню»."""
-    draft_id = details.draft_id
-    revision = details.revision
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    tr("buttons.finished.edit"),
-                    callback_data=f"aw_edit:{draft_id}:{revision}",
-                ),
-                InlineKeyboardButton(
-                    tr("buttons.finished.menu"), callback_data="main_menu"
-                ),
-            ]
-        ]
-    )
 
 
 def _delivered_edit_keyboard(
@@ -5168,49 +5197,6 @@ async def _ensure_service_screen_below(
         return
     user_data.pop("screen", None)
     screen.save_screen_ref(_user_id(update), user_data, chat_id)
-
-
-async def _render_delivered(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    details,
-    *,
-    notice: str | None = None,
-    pending: bool = False,
-) -> int:
-    """
-    Экран завершения: готовый анонс уже отдельным сообщением выше.
-
-    Владелец требует короткий экран и ровно две кнопки — «Изменить» и
-    «В меню». Служебные сводки (место, число фото, время, планы замены)
-    убраны: они дублировали пост и растягивали экран. `notice` намеренно
-    не выводится — результат действия сообщается ответом на callback, а
-    текст экрана остаётся предсказуемым.
-    """
-    ui = _ui(context)
-    _set_details(ui, details)
-    _clear_active(ui)
-    _nav_enter(ui, NAV_DELIVERED)
-    # U2b: обязательный инвариант «пост выше экрана». При замене версии
-    # сообщение поста отправляется уже после служебного экрана, поэтому
-    # экран пересоздаётся ниже — до отрисовки нового экрана.
-    await _ensure_service_screen_below(update, context, details.delivered_message_ids)
-    # Строки читаются из каталога в момент отрисовки: правка YAML + перезапуск
-    # службы меняет экран без правки кода (константы выше — те же дефолты).
-    lines = [tr("wizard.finished.text")]
-    if pending:
-        lines.extend(["", tr("wizard.finished.pending")])
-    # `notice` не попадает в текст экрана (он фиксирован требованием U2b):
-    # результат действия сообщается коротким ответом на callback.
-    if notice:
-        await _answer(update, notice[:200])
-    await _render(
-        update,
-        context,
-        "\n".join(lines),
-        _delivered_keyboard(details),
-    )
-    return AW_PREVIEW
 
 
 async def _render_delivered_edit(
@@ -5507,17 +5493,25 @@ async def _close_publication_without_screen(
     notice: str | None = None,
 ) -> int:
     """
-    Точка перехода к экрану без «✅ Анонс готов» (spec §18, задача C2b-2).
+    Финал публикации БЕЗ экрана «✅ Анонс готов» (spec §18, задача C2b-2).
 
-    Пока управление готовым анонсом раздаёт только экран завершения
-    (`aw_edit`/`aw_panel`), а обработчика панели `anp_*` ещё нет (C3),
-    убрать экран значило бы оставить автора без возможности править
-    доставленный анонс, а на месте экрана — устаревший шаг конструктора.
-    Поэтому финал публикации по-прежнему рисует итоговый экран; сам вызов
-    из финала убирается в C2b-2 вместе с демонтажом
-    `_render_delivered`/`_delivered_keyboard`.
+    Готовый анонс уже стоит в чате цельным сообщением (или альбомом с
+    панелью), а его управление привязано к экземпляру (`anp_`). Итоговый
+    служебный экран удалён: автору незачем читать «Анонс готов» поверх
+    собственного поста.
+
+    Диалог при этом не обрывается: конструктор возвращается в известное
+    рабочее состояние — компактный экран редактора (§26–27) с полями,
+    фотографиями, доп. полями и выходом в меню. Это тот же служебный
+    экран, который открывает `aw_edit`, поэтому правка доставленного
+    анонса остаётся доступной до появления обработчиков `anp_` (C3).
+
+    `notice` не попадает в текст экрана: результат доставки сообщается
+    коротким ответом на callback, а служебный экран остаётся предсказуемым.
     """
-    return await _render_delivered(update, context, details, notice=notice)
+    if notice:
+        await _answer(update, notice[:200])
+    return await _render_delivered_edit(update, context, details)
 
 
 async def _run_announcement_publication(
@@ -6895,7 +6889,7 @@ async def handle_preview_callback(
             # трогая отправленную версию. Этап и снимок не меняются.
             await _answer(update, tr("alerts.wizard.sohraneno"))
             pending = _has_pending_changes(update, details)
-            return await _render_delivered(
+            return await _render_delivered_edit(
                 update,
                 context,
                 details,
@@ -6907,7 +6901,6 @@ async def handle_preview_callback(
                     if pending
                     else tr("wizard.render_preview.chernovik_sohranen_otpravlennyy")
                 ),
-                pending=pending,
             )
         try:
             updated = _ensure_stage(update, context, details, WizardStage.PREVIEW)
@@ -6962,17 +6955,15 @@ async def handle_preview_callback(
         await _answer(update)
         return await _render_delivered_edit(update, context, details)
     if action == "aw_panel" and len(parts) == 3:
+        # callback прежних версий («◀️ Назад» на удалённый экран «Анонс
+        # готов»): устаревшая кнопка не открывает ничего нового, а ведёт в
+        # тот же рабочий экран редактора — по §18 итогового экрана нет.
         guarded = _guided()
         if guarded is None:
             return await _stale(update, context)
         _ui_data, details = guarded
         await _answer(update)
-        return await _render_delivered(
-            update,
-            context,
-            details,
-            pending=_has_pending_changes(update, details),
-        )
+        return await _render_delivered_edit(update, context, details)
     if action == "aw_qmanage" and len(parts) == 3:
         guarded = _guided()
         if guarded is None:

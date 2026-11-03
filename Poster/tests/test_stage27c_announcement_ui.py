@@ -50,6 +50,10 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
     INTEGRATION_IMPORT_ERROR = str(exc)
 
 
+# §18 (2.5): экрана «✅ Анонс готов» нет — после доставки открыт редактор.
+DELIVERED_EDIT_TITLE = "✏️ Изменить анонс"
+
+
 async def _personal_delivered(
     h,
     *,
@@ -71,7 +75,7 @@ async def _personal_delivered(
     # Poster 2.0 S3 п.6: последний кирпичик ведёт на шаг фото; доставка —
     # по «Без фотографий» (доставка как функция не менялась).
     await _no_photos(h)
-    if "✅ Анонс готов." not in h.screen_text():
+    if DELIVERED_EDIT_TITLE not in h.screen_text():
         raise AssertionError(f"Анонс не доставлен: {h.screen_text()}")
     draft = _latest_draft(h)
     return draft, bricks
@@ -92,7 +96,7 @@ async def _standard_delivered(h):
             break
         await h.callback(skips[0])
     await _no_photos(h)
-    if "✅ Анонс готов." not in h.screen_text():
+    if DELIVERED_EDIT_TITLE not in h.screen_text():
         raise AssertionError(f"Анонс не доставлен: {h.screen_text()}")
     return _latest_draft(h)
 
@@ -166,7 +170,7 @@ class AnnouncementAutoDeliveryStandardTests(unittest.TestCase):
         self.assertTrue(stored.delivery_fingerprint)
 
         # Кнопки управления — в отдельном сообщении, а не в тексте анонса.
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
         from tests.integration_harness import is_screen_record
 
         # U5: анонс без фото доставляется промоушеном живого блока — сообщение
@@ -239,7 +243,7 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("aw_start")
         await h.callback(_callback(h, "aw_open", f":{draft.id}"))
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
         # H3: применённое изменение не оставляет «неприменённых» — экран
         # завершения показывает ровно свой фиксированный текст.
         self.assertNotIn("Есть изменения", h.screen_text())
@@ -485,7 +489,7 @@ class AnnouncementAutoDeliveryFailureTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_send"))
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
         self.assertEqual(len(h.post_records()), 1)
 
     @scenario_test
@@ -517,7 +521,7 @@ class AnnouncementAutoDeliveryFailureTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_pub_resume"))
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
 
     @scenario_test
     async def test_foreign_callback_cannot_deliver(self, h) -> None:
@@ -694,7 +698,7 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         # Неудача удаления не откатывает успешную доставку: новая версия есть,
         # статус остаётся sent, а прежний экземпляр не удаляется вовсе — он
         # уходит в архив с прежним содержимым и снятой клавиатурой (§30–31).
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
         self.assertIn("Новая версия", h.posts()[-1] or "")
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")

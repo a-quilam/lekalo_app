@@ -108,8 +108,10 @@ class OwnerScenarioTests(_Case):
                     ),
                     "wizard.photos.title": "📷 СНИМКИ-ПРИЁМКА",
                     "wizard.photos.hint": "Пришлите до {limit} картинок.",
-                    "wizard.finished.text": "✅ ГОТОВО-ПРИЁМКА",
-                    "buttons.finished.edit": "✏️ ПРАВКА-ПРИЁМКА",
+                    # C2b-2: экрана «Анонс готов» нет — после доставки
+                    # открывается компактный редактор (§26–27).
+                    "wizard.finished.edit_text": "✏️ ПРАВКА-ПРИЁМКА",
+                    "buttons.finished.data": "📝 ДАННЫЕ-ПРИЁМКА",
                     "bricks.hub.title_html": "🧩 <b>КИРПИЧИ-ПРИЁМКА</b>",
                     "places.all.empty": "📚 ПУСТО-ПРИЁМКА",
                     "places.hub.title": "📍 МЕСТА-ПРИЁМКА",
@@ -166,14 +168,18 @@ class OwnerScenarioTests(_Case):
         self.assertIn(("◀️ НАЗАД-ПРИЁМКА", "aw_photo_back:1:5"), h.screen_buttons())
 
         await h.callback(_callback(h, "aw_photo_none"))
-        self.assertEqual(h.screen_text(), "✅ ГОТОВО-ПРИЁМКА")
-        # Ревизия черновика зависит от числа шагов: сверяем префикс callback.
-        edit_callbacks = [
-            data
-            for label, data in h.screen_buttons()
-            if label == "✏️ ПРАВКА-ПРИЁМКА" and data and data.startswith("aw_edit:")
-        ]
-        self.assertTrue(edit_callbacks, h.screen_buttons())
+        # §18: итогового экрана нет — открывается редактор доставленного
+        # анонса, а результат доставки уходит ответом на callback.
+        self.assertTrue(
+            h.screen_text().startswith("✏️ ПРАВКА-ПРИЁМКА"), h.screen_text()
+        )
+        self.assertTrue(
+            any(
+                label == "📝 ДАННЫЕ-ПРИЁМКА" and data and data.startswith("aw_qmanage:")
+                for label, data in h.screen_buttons()
+            ),
+            h.screen_buttons(),
+        )
 
     def test_fresh_process_reads_catalog_without_python_change(self) -> None:
         """
@@ -552,8 +558,9 @@ class CompletenessTests(_Case):
         await _choose_personal(h, template_id)
         await h.text("Значение")
         await h.callback(_callback(h, "aw_photo_none"))
-        await h.callback(_callback(h, "aw_edit"))
 
+        # §18: экран «Анонс готов» удалён — редактор доставленного анонса
+        # открывается сразу после финального шага, отдельного `aw_edit` нет.
         edit_labels = [label for label, _data in h.screen_buttons()]
         self.assertIn("МЕНЮ-КАТАЛОГ", edit_labels)
 

@@ -599,8 +599,11 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("aw_start")
         await h.callback(_callback(h, "aw_open", f":{draft.id}"))
-        self.assertEqual(len(h.posts()), posts_before, "рестарт не отправил дубль")
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        # §29–30 (2.5): открытие готового анонса публикует РОВНО ОДИН новый
+        # цельный экземпляр; прежний остаётся в чате архивным, дублей нет.
+        self.assertEqual(len(h.posts()), posts_before + 1, "один новый экземпляр")
+        self.assertEqual(h.posts()[0], h.posts()[-1], "текст экземпляра тот же")
+        self.assertIn("✏️ Изменить анонс", h.screen_text())
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
 
     @scenario_test
@@ -641,7 +644,7 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
 
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn("✏️ Изменить анонс", h.screen_text())
         # Удаление не удалось — анонс всё равно доставлен, а старый блок
         # остался в чате: это известное ограничение, а не сбой доставки.
         self.assertEqual(sent.publication_photos, ("kept-photo",))
@@ -798,11 +801,23 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         draft = await _to_photo_step(h)
         await _no_photos(h)
         first = self._assert_single_copy(h, draft.id)
-        calls_before = len(h.calls)
 
+        # §29–30 (2.5): повторное открытие готового анонса публикует РОВНО
+        # ОДИН новый цельный экземпляр, прежний остаётся архивным снимком.
         await h.callback("main_menu")
         await h.callback("aw_start")
         await h.callback(_callback(h, "aw_open", f":{draft.id}"))
+        stored = _stored(h, draft.id)
+        self.assertEqual(len(h.posts()), 2, "переиздание дало ровно один пост")
+        self.assertEqual(tuple(stored.previous_message_ids), (first,))
+        second = tuple(stored.delivered_message_ids)[0]
+        self.assertNotEqual(second, first)
+        screen_id = h.screen_message_id()
+        self.assertIsNotNone(screen_id)
+        assert screen_id is not None
+        self.assertLess(second, screen_id, "новый анонс выше служебного экрана")
+        calls_before = len(h.calls)
+
         # Кнопки «Отправить» у уже доставленного анонса нет: повторный
         # callback отклоняется как устаревший и ничего не отправляет.
         self.assertFalse(
@@ -815,8 +830,8 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         )
         await h.callback(f"aw_send:{draft.id}:{draft.revision}")
 
-        self.assertEqual(self._assert_single_copy(h, draft.id), first)
-        self.assertEqual(set(_stored(h, draft.id).delivered_message_ids), {first})
+        self.assertEqual(h.posts(), [stored.publication_text] * 2)
+        self.assertEqual(tuple(_stored(h, draft.id).delivered_message_ids), (second,))
         # Новые сообщения не появились — только правки экрана.
         self.assertEqual(
             [c["type"] for c in h.calls[calls_before:] if c["type"] == "message"],
@@ -971,7 +986,7 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
 
         stored = _stored(h, draft.id)
         self.assertEqual(stored.publication_status, "sent")
-        self.assertIn("✅ Анонс готов.", h.screen_text())
+        self.assertIn("✏️ Изменить анонс", h.screen_text())
         self.assertTrue(stored.delivered_message_ids)
         self.assertEqual(len(h.posts()), 1)
 

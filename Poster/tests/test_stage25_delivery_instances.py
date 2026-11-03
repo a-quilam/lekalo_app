@@ -57,7 +57,10 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 
 PHOTO_STEP_TITLE = "📷 Фотографии анонса"
-DELIVERED_TITLE = "✅ Анонс готов."
+# §18 (2.5): экрана «✅ Анонс готов.» больше нет. После доставки автор
+# остаётся на рабочем экране редактора анонса (§26–27), а управление живёт
+# у самого анонса.
+DELIVERED_TITLE = "✏️ Изменить анонс"
 ANNOUNCEMENT_TEXT = "Значение"
 
 
@@ -485,11 +488,8 @@ class InstanceArchiveTests(unittest.TestCase):
 )
 class ReopenFromMyAnnouncementsTests(unittest.TestCase):
     @scenario_test
-    @unittest.skip(
-        "C2b-2/C3: aw_open ещё рендерит экран «Анонс готов» и не отправляет "
-        "новый полноценный экземпляр (§29)."
-    )
     async def test_reopen_sends_new_instance(self, h) -> None:
+        """§29–30: повторное открытие отправляет новый экземпляр, прежний — архив."""
         await h.text("/start")
         draft = await _delivered_without_photos(h)
         first = _only_active(h, draft.id)
@@ -506,6 +506,16 @@ class ReopenFromMyAnnouncementsTests(unittest.TestCase):
             "archived",
         )
         self.assertIsNone(_final_markup(h, first.message_ids[0]))
+        self.assertEqual(
+            h.posts(),
+            [ANNOUNCEMENT_TEXT, ANNOUNCEMENT_TEXT],
+            "новый полноценный экземпляр отправлен, прежний остался в чате",
+        )
+        self.assertNotIn(
+            first.message_ids[0],
+            h.deleted_ids(),
+            "архивный экземпляр не удаляется",
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover
