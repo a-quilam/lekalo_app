@@ -45,7 +45,13 @@ from telegram.ext import (
     filters,
 )
 
+import announcement_controls
 import delivery
+from announcement_instances import (
+    get_active_instance,
+    register_instance,
+    set_panel_message,
+)
 from announcement_store import (
     FIELD_STATUS_KNOWN,
     FIELD_STATUS_MISSING,
@@ -4957,7 +4963,6 @@ async def _promote_live_post(
     Возвращает обновлённый черновик, если блок стал `sent`, иначе None —
     тогда вызывающий собирает и отправляет новую версию обычным путём.
     """
-    previous_ids = tuple(details.previous_message_ids)
     user_data = ctx.data(context)
     try:
         await _sync_live(update, context, details, text=text)
@@ -4992,8 +4997,6 @@ async def _promote_live_post(
         "ids": list(ids),
         "total": total,
     }
-    if previous_ids:
-        progress["previous_ids"] = list(previous_ids)
     try:
         with SessionLocal() as session:
             # Существующий путь: заморозка payload → подтверждённый прогресс →
@@ -5026,13 +5029,19 @@ async def _promote_live_post(
             exc,
         )
         return None
-    replaced = [mid for mid in previous_ids if mid not in ids]
-    if replaced:
-        # Заменённую прошлую версию убираем только после подтверждённого
-        # перехода в `sent`: до этого она оставалась единственной копией.
-        await screen.cleanup_messages(context.bot, ctx.chat(update).id, replaced)
     _set_details(_ui(context), promoted)
     wizard_live.forget_live_state(user_data)
+    # §24/§30: подтверждённый пост становится активным экземпляром, прежний
+    # активный архивируется. Для 2+ фото досылается одна панель управления.
+    # Заменённые версии НЕ удаляются: они остаются архивными в истории.
+    await _ensure_delivered_instance(
+        context.bot,
+        ctx.chat(update).id,
+        details.draft_id,
+        ids,
+        photos,
+        fingerprint=current,
+    )
     return promoted
 
 
@@ -5309,6 +5318,208 @@ async def _render_publish_status_safely(
         return AW_PREVIEW
 
 
+async def _send_control_panel_safely(
+    bot,
+    chat_id: int,
+    instance_id: int,
+    photos_count: int,
+) -> int | None:
+    """
+    Отправляет единственную панель управления медиагруппой (spec §22).
+
+    `RetryAfter` — не сбой доставки: один повтор через `delivery.call_telegram`.
+    Любая другая ошибка Telegram логируется и возвращает None: контент уже
+    доставлен, поэтому сбой панели не имеет права «отменить» анонс (§24).
+    """
+    try:
+        return await delivery.call_telegram(
+            lambda: announcement_controls.send_panel(
+                bot,
+                chat_id,
+                instance_id,
+                photos_count=photos_count,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — панель не валит доставку контента
+        logger.warning(
+            "Панель управления анонса (экземпляр #%s) не отправлена: %s",
+            instance_id,
+            exc,
+        )
+        return None
+
+
+async def _attach_instance_keyboard(
+    bot,
+    chat_id: int,
+    instance_id: int,
+    message_ids: Sequence[int],
+    photos_count: int,
+) -> None:
+    """
+    Прикрепляет клавиатуру управления к самому сообщению анонса (§20–21).
+
+    `callback_data` кнопок содержит id экземпляра (§32), а экземпляр можно
+    зарегистрировать только после подтверждённой отправки контента: до этого
+    адресов сообщений ещё нет, а идентичность экземпляра в схеме неизменяема.
+    Поэтому кнопки приходят к уже доставленному сообщению отдельным
+    `editMessageReplyMarkup` — в чате остаётся ОДНО сообщение с текстом и
+    кнопками, второй служебной копии нет. Ошибка прикрепления логируется:
+    анонс уже в чате, и это не сбой доставки.
+    """
+    message_id = delivery.caption_message_id(message_ids)
+    if message_id is None:
+        return
+    try:
+        await delivery.call_telegram(
+            lambda: bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=announcement_controls.panel_keyboard(
+                    instance_id, photos_count=photos_count
+                ),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — кнопки досылаются повтором/редактором
+        logger.warning(
+            "Клавиатура управления анонса (экземпляр #%s) не прикреплена: %s",
+            instance_id,
+            exc,
+        )
+
+
+async def _archive_instance_controls(bot, chat_id: int, instance) -> None:
+    """
+    Снимает управление с прежнего активного экземпляра (spec §30 п.4–5).
+
+    Архивный снимок остаётся в чате с текстом и фото (§31), но его кнопки
+    обязаны перестать работать, а отдельная панель медиагруппы — исчезнуть.
+    Обе операции best-effort: Telegram не удаляет старые сообщения и не
+    всегда даёт править клавиатуру, а доставка новой версии уже состоялась.
+    """
+    panel_id = getattr(instance, "panel_message_id", None)
+    if panel_id:
+        try:
+            await delivery.call_telegram(
+                lambda: bot.delete_message(chat_id=chat_id, message_id=panel_id)
+            )
+        except Exception as exc:  # noqa: BLE001 — панель лишь UI архивного снимка
+            logger.info(
+                "Панель архивного экземпляра #%s не удалена: %s", instance.id, exc
+            )
+    message_id = delivery.caption_message_id(instance.message_ids)
+    if message_id is None:
+        return
+    try:
+        await delivery.call_telegram(
+            lambda: bot.edit_message_reply_markup(
+                chat_id=chat_id, message_id=message_id, reply_markup=None
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — кнопки архивного снимка не критичны
+        logger.info(
+            "Клавиатура архивного экземпляра #%s не снята: %s", instance.id, exc
+        )
+
+
+async def _ensure_delivered_instance(
+    bot,
+    chat_id: int,
+    draft_id: int,
+    sent_ids: Sequence[int],
+    photos: Sequence[str],
+    *,
+    fingerprint: str | None = None,
+) -> object | None:
+    """
+    Регистрирует активный экземпляр доставленного анонса и его управление.
+
+    Экземпляр создаётся ПОСЛЕ подтверждённой доставки контента (§24): только
+    тогда известны `message_id`, а `register_instance` сам архивирует прежний
+    активный экземпляр (§30). Цепочка идемпотентна для ретрая: если активный
+    экземпляр уже описывает ровно эти сообщения, второй не создаётся, а
+    панель досылается ТОЛЬКО когда её ещё нет. Сбой учёта не отменяет уже
+    доставленный анонс — он лишь лишает управление привязки к экземпляру.
+    """
+    checked_ids = [int(item) for item in sent_ids]
+    instance = None
+    fresh = False
+    previous = None
+    try:
+        with SessionLocal() as session:
+            current = get_active_instance(session, draft_id)
+            if current is None or tuple(current.message_ids) != tuple(checked_ids):
+                instance = register_instance(
+                    session,
+                    draft_id,
+                    chat_id,
+                    checked_ids,
+                    fingerprint=fingerprint,
+                )
+                fresh = True
+                previous = current
+            else:
+                instance = current
+    except Exception as exc:  # noqa: BLE001 — доставка уже состоялась
+        logger.exception(
+            "Экземпляр доставленного анонса #%s не зарегистрирован: %s",
+            draft_id,
+            exc,
+        )
+        return None
+    if instance is None:
+        return None
+    if previous is not None:
+        # §30 п.4–5: прежний экземпляр уже архивный в БД, теперь у него
+        # снимается управление, а панель медиагруппы убирается из чата.
+        await _archive_instance_controls(bot, chat_id, previous)
+    photos_count = len(photos)
+    if delivery.needs_control_panel(photos_count):
+        # Панель — отдельная операция строго после контента (§22). Уже
+        # отправленную панель повтор не дублирует.
+        if instance.has_panel:
+            return instance
+        panel_id = await _send_control_panel_safely(
+            bot, chat_id, instance.id, photos_count
+        )
+        if panel_id is None:
+            return instance
+        try:
+            with SessionLocal() as session:
+                set_panel_message(session, instance.id, panel_id)
+        except Exception as exc:  # noqa: BLE001 — экземпляр и контент уже есть
+            logger.warning(
+                "Адрес панели экземпляра #%s не сохранён: %s", instance.id, exc
+            )
+        return instance
+    if fresh:
+        await _attach_instance_keyboard(
+            bot, chat_id, instance.id, instance.message_ids, photos_count
+        )
+    return instance
+
+
+async def _close_publication_without_screen(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    *,
+    notice: str | None = None,
+) -> int:
+    """
+    Точка перехода к экрану без «✅ Анонс готов» (spec §18, задача C2b-2).
+
+    Пока управление готовым анонсом раздаёт только экран завершения
+    (`aw_edit`/`aw_panel`), а обработчика панели `anp_*` ещё нет (C3),
+    убрать экран значило бы оставить автора без возможности править
+    доставленный анонс, а на месте экрана — устаревший шаг конструктора.
+    Поэтому финал публикации по-прежнему рисует итоговый экран; сам вызов
+    из финала убирается в C2b-2 вместе с демонтажом
+    `_render_delivered`/`_delivered_keyboard`.
+    """
+    return await _render_delivered(update, context, details, notice=notice)
+
+
 async def _run_announcement_publication(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -5358,10 +5569,10 @@ async def _run_announcement_publication(
                 "Не удалось сохранить прогресс анонса #%s: %s", draft_id, exc
             )
 
-    # Адреса ПРОШЛОЙ доставленной версии. Их нельзя путать с id текущей
-    # отправки: удалять можно только прошлую копию и только после того, как
-    # новая версия подтверждена целиком.
-    previous_ids = tuple(publication.draft.previous_message_ids)
+    # Адреса прошлой доставленной версии больше НЕ удаляются: по §30–31
+    # прежний экземпляр остаётся в чате архивным снимком (его управление
+    # снимает/архивирует `register_instance`). Поэтому `previous_ids` здесь
+    # не читаются вовсе — иначе новая версия уничтожала бы историю.
     try:
         sent_ids = await delivery.send_announcement_post(
             context.bot,
@@ -5440,24 +5651,34 @@ async def _run_announcement_publication(
             notice=(tr("wizard.run_announcement.telegram_podtverdil_otpravku_no")),
         )
     await screen.cleanup_preview(context, chat_id, ctx.data(context))
-    # Прошлую доставленную версию удаляем только после успешной новой
-    # отправки: до этого она — единственная полная копия анонса. Telegram
-    # не удаляет сообщения старше 48 часов, поэтому ошибка удаления не
-    # считается ошибкой доставки: анонс уже доступен в этом чате.
-    if previous_ids:
-        replaced = [
-            message_id for message_id in previous_ids if message_id not in sent_ids
-        ]
-        if replaced:
-            await screen.cleanup_messages(context.bot, chat_id, replaced)
+    # Экземпляр и его управление регистрируются после подтверждённой
+    # доставки (§24): 2+ фото получают отдельную панель (§22), 0/1 — кнопки
+    # на самом сообщении. Сбой учёта не отменяет уже доставленный анонс.
+    await _ensure_delivered_instance(
+        context.bot,
+        chat_id,
+        draft_id,
+        sent_ids,
+        publication.photos,
+        fingerprint=_delivery_fingerprint(publication.text, publication.photos),
+    )
     # U5: живой блок, который не удалось признать доставленным (нет
     # доказанной синхронизации, отказ правки/пересборки), остался в чате
     # второй копией текста. Это временный интерфейсный мусор конструктора,
     # и убирается он только сейчас — после подтверждённой доставки.
+    #
+    # §30–31: адреса ПРОШЛОГО доставленного экземпляра — не мусор. После
+    # промоушена живого блока `live_message_ids` продолжает указывать на
+    # сообщение, которое уже стало доставленной версией; при повторной
+    # отправке после сбоя оно попадает и в `previous_ids`. Удалять его
+    # нельзя: прежний экземпляр остаётся в чате архивным снимком.
+    previous_ids = {
+        int(message_id) for message_id in publication.draft.previous_message_ids
+    }
     stale = [
         int(message_id)
         for message_id in stale_live_ids
-        if int(message_id) not in sent_ids
+        if int(message_id) not in sent_ids and int(message_id) not in previous_ids
     ]
     if stale:
         await screen.cleanup_messages(context.bot, chat_id, stale)
@@ -5471,7 +5692,8 @@ async def _run_announcement_publication(
                 )
         except Exception as exc:  # noqa: BLE001 — адреса лишь UI-состояние
             logger.info("Адреса живого блока #%s не очищены: %s", draft_id, exc)
-    return await _render_delivered(
+    _set_details(_ui(context), details)
+    return await _close_publication_without_screen(
         update,
         context,
         details,

@@ -99,6 +99,16 @@ def _copies(h, text: str) -> list[int]:
     )
 
 
+def _final_markup(h, message_id: int):
+    """Итоговая клавиатура сообщения (None — кнопок нет)."""
+    calls = [
+        call
+        for call in h.calls
+        if call["type"] == "edit_markup" and call.get("message_id") == message_id
+    ]
+    return calls[-1].get("reply_markup") if calls else None
+
+
 def _assert_single_copy(
     test: unittest.TestCase, h, draft_id: int, text: str = TEXT
 ) -> int:
@@ -217,8 +227,13 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
         self.assertNotEqual(updated, first, "новая версия не отличает��я от старой")
         self.assertEqual(tuple(stored.delivered_message_ids), (updated,))
         self.assertEqual(tuple(stored.previous_message_ids), (first,))
-        self.assertIn(first, h.deleted_ids(), "старая копия не удалена")
-        self.assertEqual(_copies(h, TEXT), [], "осталась старая версия текста")
+        # §30–31: прежняя копия не удаляется — она остаётся архивным снимком
+        # без кнопок, текст прежней версии виден в чате.
+        self.assertNotIn(first, h.deleted_ids(), "прежний экземпляр не удаляется")
+        self.assertEqual(_copies(h, TEXT), [first], "старая копия осталась без кнопок")
+        self.assertIsNone(
+            _final_markup(h, first), "с прежнего экземпляра снята клавиатура"
+        )
         self.assertEqual(len(h.posts()), 2, "ожидаем ровно две доставленные версии")
 
     @scenario_test
@@ -331,8 +346,8 @@ class PhotoAndRestartSingleCopyTests(unittest.TestCase):
         )
         self.assertEqual(
             [getattr(item, "caption", None) for item in media],
-            [None, stored.publication_text],
-            "подпись альбома не совпадает с текстом анонса",
+            [stored.publication_text, None],
+            "spec 2.5 §22: подпись альбома — у ПЕРВОГО элемента",
         )
         self.assertEqual(_copies(h, TEXT), [], "текст ушёл отдельной копией")
         self.assertEqual(len(h.posts()), 1)

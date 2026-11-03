@@ -1,0 +1,152 @@
+# announcement_controls.py
+"""
+Poster 2.5, §18–22/§27: управление готовым анонсом.
+
+У готового анонса НЕТ промежуточного экрана «✅ Анонс готов». Управление
+живёт там же, где сам анонс:
+
+- без фото и с одним фото — inline-клавиатура прямо на сообщении анонса
+  (`sendMessage`/`sendPhoto` умеют нести `reply_markup`);
+- с 2+ фото — одна отдельная панель управления: `sendMediaGroup` общей
+  клавиатуры не принимает, а второе сообщение с полным текстом запрещено
+  (§22). Панель — служебный экран (§5.1), переиспользуется редакторами
+  (§27) и не дублирует текст анонса.
+
+Кнопки всегда привязаны к КОНКРЕТНОМУ экземпляру (`announcement_instances`),
+а не к черновику: после повторного открытия прежний экземпляр архивный, его
+кнопки обязаны отвечать «устарело», а не открывать чужой редактор (§30–32).
+Поэтому протокол callback — `anp_{action}:{instance_id}`, и он одинаков для
+клавиатуры на сообщении, и для отдельной панели.
+"""
+
+from __future__ import annotations
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+
+from utils.ui_texts import tr
+
+# Маркер записи панели в журнале FakeBot/тестах: как у экрана и живого блока,
+# это отдельный экземпляр `LinkPreviewOptions`. Панель — служебное сообщение
+# (§5.1), а не пост: `h.posts()` не должен считать её анонсом.
+PANEL_LINK_PREVIEW = LinkPreviewOptions(is_disabled=True)
+
+# Префикс всех кнопок управления готовым анонсом. Отделён от `aw_`
+# (конструктор): по нему обработчик отличает управление экземпляром от
+# шагов мастера, даже если сообщение осталось в чате после рестарта.
+PANEL_CALLBACK_PREFIX = "anp_"
+
+# Действия панели. Полный редактор (§18): поля, доп. поля, фотографии,
+# выход в меню. Имена короткие — callback_data ограничен 64 байтами.
+ACTION_DATA = "data"
+ACTION_PHOTOS = "photos"
+ACTION_EXTRAS = "extras"
+ACTION_MENU = "menu"
+PANEL_ACTIONS = (ACTION_DATA, ACTION_PHOTOS, ACTION_EXTRAS, ACTION_MENU)
+
+
+def panel_callback(action: str, instance_id: int) -> str:
+    """
+    `callback_data` кнопки управления (протокол §32, подготовка C3).
+
+    В данных только действие и id экземпляра: черновик, чат и поколение
+    восстанавливаются по экземпляру, поэтому устаревшая кнопка физически
+    не может открыть чужой анонс.
+    """
+    if action not in PANEL_ACTIONS:
+        raise ValueError(f"Неизвестное действие панели анонса: {action!r}")
+    return f"{PANEL_CALLBACK_PREFIX}{action}:{int(instance_id)}"
+
+
+def parse_panel_callback(data: str | None) -> tuple[str, int] | None:
+    """
+    Разбирает `anp_{action}:{instance_id}`; None — данные не нашего формата.
+
+    Строгий разбор нужен обработчику: подделанный или обрезанный callback
+    должен получить короткий ответ, а не доменную ошибку.
+    """
+    raw = (data or "").strip()
+    if not raw.startswith(PANEL_CALLBACK_PREFIX):
+        return None
+    parts = raw.split(":")
+    if len(parts) != 2:
+        return None
+    action = parts[0][len(PANEL_CALLBACK_PREFIX) :]
+    if action not in PANEL_ACTIONS or not parts[1].isdigit():
+        return None
+    instance_id = int(parts[1])
+    if instance_id <= 0:
+        return None
+    return action, instance_id
+
+
+def panel_keyboard(instance_id: int, *, photos_count: int = 0) -> InlineKeyboardMarkup:
+    """
+    Клавиатура управления экземпляром: ровно действия редактора (§18/§27).
+
+    «Изменить» и «В меню» отдельными кнопками не дублируются: категории
+    правки и есть управление, а выход в меню завершает работу с анонсом.
+    Порядок повторяет экран правки, к которому привык автор: данные и фото
+    в одной строке, дополнительные поля — ниже.
+    """
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    tr("buttons.finished.data"),
+                    callback_data=panel_callback(ACTION_DATA, instance_id),
+                ),
+                InlineKeyboardButton(
+                    tr("buttons.finished.photos", count=photos_count),
+                    callback_data=panel_callback(ACTION_PHOTOS, instance_id),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    tr("buttons.finished.extras_edit"),
+                    callback_data=panel_callback(ACTION_EXTRAS, instance_id),
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    tr("buttons.finished.main_menu"),
+                    callback_data=panel_callback(ACTION_MENU, instance_id),
+                )
+            ],
+        ]
+    )
+
+
+def panel_text() -> str:
+    """
+    Текст отдельной панели управления (только для 2+ фото).
+
+    Это служебная строка, а НЕ «✅ Анонс готов» и не копия анонса: панель
+    лишь объясняет, к чему относятся кнопки ниже (§22).
+    """
+    return tr("wizard.panel.text")
+
+
+async def send_panel(
+    bot,
+    chat_id: int,
+    instance_id: int,
+    *,
+    photos_count: int = 0,
+) -> int | None:
+    """
+    Отправляет ОДНУ панель управления для медиагруппы; возвращает её id.
+
+    Панель — отдельная операция ПОСЛЕ доставки контента (§22): текст альбома
+    уже ушёл caption'ом первого элемента, поэтому здесь только служебная
+    строка и кнопки. `None` — Telegram не вернул сообщение; вызывающий слой
+    не считает это сбоем доставки анонса.
+    """
+    message = await bot.send_message(
+        chat_id=chat_id,
+        text=panel_text(),
+        parse_mode="HTML",
+        reply_markup=panel_keyboard(instance_id, photos_count=photos_count),
+        link_preview_options=PANEL_LINK_PREVIEW,
+    )
+    message_id = getattr(message, "message_id", None)
+    return int(message_id) if message_id is not None else None

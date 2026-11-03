@@ -9,8 +9,8 @@ FakeBot и временная SQLite. Реальная `post_bot.db`, `.env` и 
 
 Покрытие:
 
-- альбом из 3 фото: одна медиагруппа, подпись только у последнего сегмента,
-  автофинал, `published_at`, экран ниже блока, ввод удалён;
+- альбом из 3 фото: одна медиагруппа, подпись только у ПЕРВОГО элемента
+  (spec §22), автофинал, `published_at`, экран ниже блока, ввод удалён;
 - рестарт посреди альбома: фото сохранены и не дублируются, следующий снимок
   завершает анонс одной медиагруппой;
 - `RetryAfter` в середине медиагруппы: после паузы досылается только
@@ -274,8 +274,8 @@ class AlbumAndRestartTests(unittest.TestCase):
         self.assertEqual(_group_media(groups[0]), ["alb-0", "alb-1", "alb-2"])
         self.assertEqual(
             _group_captions(groups[0]),
-            [None, None, "Значение"],
-            "текст — подписью только последнего сегмента",
+            ["Значение", None, None],
+            "spec §19/§22: текст — подписью ПЕРВОГО элемента альбома",
         )
         self.assertEqual(_photos_sent(h), [], "хвоста из одного фото здесь нет")
 
@@ -334,7 +334,7 @@ class AlbumAndRestartTests(unittest.TestCase):
         groups = _media_groups(h)
         self.assertEqual(len(groups), 1, "прежние фото не отправлены повторно")
         self.assertEqual(_group_media(groups[0]), ["mid-0", "mid-1", "mid-2"])
-        self.assertIn("Значение", _group_captions(groups[0])[-1] or "")
+        self.assertIn("Значение", _group_captions(groups[0])[0] or "")
 
 
 @unittest.skipIf(
@@ -384,7 +384,7 @@ class RetryAfterMidGroupTests(unittest.TestCase):
         groups = _media_groups(h)
         self.assertEqual(len(groups), 1, "после паузы отправлена ровно одна группа")
         self.assertEqual(_group_media(groups[0]), ["ra-0", "ra-1"])
-        self.assertEqual(_group_captions(groups[0]), [None, "Значение"])
+        self.assertEqual(_group_captions(groups[0]), ["Значение", None])
         self.assertEqual(
             len([c for c in h.post_records() if c["type"] in ("photo", "media_group")]),
             1,

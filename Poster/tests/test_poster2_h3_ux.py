@@ -87,6 +87,16 @@ def _rows(h) -> list[list[tuple[str, str | None]]]:
     ]
 
 
+def _final_markup(h, message_id: int):
+    """Итоговая клавиатура сообщения (None — кнопок нет)."""
+    calls = [
+        call
+        for call in h.calls
+        if call["type"] == "edit_markup" and call.get("message_id") == message_id
+    ]
+    return calls[-1].get("reply_markup") if calls else None
+
+
 async def _delivered(
     h,
     *,
@@ -183,8 +193,12 @@ class DeliveredEditLayoutTests(unittest.TestCase):
         self.assertEqual(len(h.posts()), 2, "новая версия не отправлена сразу")
         self.assertEqual(h.posts()[-1], "Новое значение")
         self.assertNotEqual(tuple(stored.delivered_message_ids), first_ids)
-        # Прошлая версия заменена, а не оставлена второй копией.
-        self.assertIn(first_ids[0], h.deleted_ids())
+        # §30–31: прошлая версия остаётся в чате архивным снимком без кнопок,
+        # а не удаляется: история доставок сохраняется.
+        self.assertNotIn(first_ids[0], h.deleted_ids(), "прежний экземпляр не удалён")
+        self.assertIsNone(
+            _final_markup(h, first_ids[0]), "с прежнего экземпляра снята клавиатура"
+        )
         self.assertNotIn(
             "Применить изменения",
             [label for label, _data in h.screen_buttons()],

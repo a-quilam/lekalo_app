@@ -402,6 +402,35 @@ def replace_instance(
     return created
 
 
+def set_panel_message(
+    session: Session, instance_id: int, panel_message_id: int | None
+) -> int:
+    """
+    Записывает адрес отдельной панели управления после её отправки.
+
+    Панель отправляется ОТДЕЛЬНОЙ операцией после доставки контента (§22),
+    поэтому её id не может прийти вместе с `message_ids`: экземпляр уже
+    зарегистрирован, и остаётся только дописать адрес. Возвращает число
+    изменённых строк (0 — экземпляра нет).
+    """
+    checked = _validated_id(instance_id, field_name="instance_id")
+    checked_panel = _validated_optional_id(
+        panel_message_id, field_name="panel_message_id"
+    )
+    try:
+        result = session.execute(
+            update(announcement_instances)
+            .where(announcement_instances.c.id == checked)
+            .values(panel_message_id=checked_panel)
+        )
+        rowcount = int(getattr(result, "rowcount", 0) or 0)
+        _commit(session)
+    except Exception:
+        session.rollback()
+        raise
+    return rowcount
+
+
 def strip_panel(session: Session, instance_id: int) -> int:
     """
     Снимает отдельную панель управления (кнопки переехали на сообщение).

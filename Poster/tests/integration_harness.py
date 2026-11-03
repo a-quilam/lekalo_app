@@ -43,6 +43,7 @@ try:
     from telegram.ext import ConversationHandler
 
     import admin_state as admin_state_module
+    import announcement_controls as announcement_controls_module
     import bot as bot_module
     import brick_state as brick_state_module
     import delivery as delivery_module
@@ -512,6 +513,21 @@ def is_live_record(record: dict) -> bool:
     return record.get("link_preview_options") is delivery_module.LIVE_LINK_PREVIEW
 
 
+def is_panel_record(record: dict) -> bool:
+    """
+    Панель управления альбомом (`announcement_controls.send_panel`).
+
+    Это служебное сообщение (§22), а не пост: у него свой экземпляр
+    `LinkPreviewOptions`, поэтому `h.posts()`/`post_records()` его не видят.
+    """
+    if record["type"] not in ("message", "edit_message"):
+        return False
+    return (
+        record.get("link_preview_options")
+        is announcement_controls_module.PANEL_LINK_PREVIEW
+    )
+
+
 def is_post_message(record: dict) -> bool:
     """Сообщение готового поста (не живой блок), а не ответ на сообщение юзера."""
     return (
@@ -522,6 +538,7 @@ def is_post_message(record: dict) -> bool:
         and record.get("link_preview_options") is not screen_module.SCREEN_LINK_PREVIEW
         and record.get("link_preview_options")
         is not admin_module.NOTIFICATION_LINK_PREVIEW
+        and not is_panel_record(record)
     )
 
 

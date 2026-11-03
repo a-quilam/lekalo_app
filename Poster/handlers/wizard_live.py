@@ -11,7 +11,7 @@ Telegram, когда у анонса есть фотографии:
 - отправить его ДО нижнего вопроса (S3 п.2), в том числе техническую `.`,
   если видимый текст пуст и фотографий нет;
 - с фото — отправить фотографии партиями 2–10 и текст ровно один раз
-  подписью ПОСЛЕДНЕГО сегмента (фото над текстом, S4 §5.3);
+  подписью ПЕРВОГО элемента (2.5, §19/§22; фото над текстом больше нет);
 - после каждого ответа отредактировать существующий блок
   (`editMessageText` / `editMessageCaption`), а не создавать новый;
 - если блок изменился по составу (появились/исчезли фото) — отправить
@@ -43,6 +43,7 @@ from announcement_store import (
 from database import SessionLocal
 from delivery import (
     LIVE_LINK_PREVIEW,
+    caption_message_id,
     delivery_fingerprint,
     media_batches,
     send_announcement_post,
@@ -254,8 +255,18 @@ async def _edit_text_block(
     return True
 
 
-async def _edit_caption(bot: "Bot", chat_id: int, message_id: int, text: str) -> bool:
-    """Правит подпись последнего сегмента медиаблока; True — уже актуальна."""
+async def _edit_caption(
+    bot: "Bot", chat_id: int, message_id: int | None, text: str
+) -> bool:
+    """
+    Правит подпись сообщения-носителя текста (spec §19–22).
+
+    С 2.5 текст живёт в caption ПЕРВОГО элемента альбома, поэтому `message_id`
+    приходит из `delivery.caption_message_id`; None — править нечего, блок
+    пересобирается новой отправкой.
+    """
+    if message_id is None:
+        return False
     try:
         await bot.edit_message_caption(
             chat_id=chat_id,
@@ -307,7 +318,7 @@ async def sync_live_block(
     Правила замены:
 
     - текст без фото: `editMessageText` (неизменённый текст — успех);
-    - медиаблок: `editMessageCaption` последнего сегмента, но ТОЛЬКО когда
+    - медиаблок: `editMessageCaption` ПЕРВОГО элемента, но ТОЛЬКО когда
       фактический состав показанных фото совпадает с текущим payload.
       Счётчика сообщений недостаточно: подпись правится у того же сообщения,
       поэтому при том же числе сообщений набор `file_id` мог измениться
@@ -357,7 +368,7 @@ async def sync_live_block(
                     photo_count=0,
                     file_ids=(),
                 )
-        elif await _edit_caption(bot, chat_id, ids[-1], text):
+        elif await _edit_caption(bot, chat_id, caption_message_id(ids), text):
             # Подпись правится и пустой: у сообщения с фото это «уже
             # актуально», а у ТЕКСТОВОГО блока Telegram отвечает «there is no
             # caption in the message». Так блок без фото заменяется

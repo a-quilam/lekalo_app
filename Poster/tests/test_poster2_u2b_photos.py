@@ -297,7 +297,7 @@ class PhotoBatchFinalizeTests(unittest.TestCase):
         groups = self._media_groups(h)
         self.assertEqual(len(groups), 1, "ровно одна медиагруппа на альбом")
         captions = [getattr(item, "caption", None) for item in groups[0]["media"]]
-        self.assertEqual(captions, [None, "Значение"])
+        self.assertEqual(captions, ["Значение", None])
         self.assertIn("✅ Анонс готов.", h.screen_text())
 
     @scenario_test
@@ -357,7 +357,7 @@ class PhotoBatchFinalizeTests(unittest.TestCase):
         self.assertEqual(stored.publication_text, "Текст анонса")
         groups = self._media_groups(h)
         captions = [getattr(item, "caption", None) for item in groups[0]["media"]]
-        self.assertEqual(captions, [None, "Текст анонса"])
+        self.assertEqual(captions, ["Текст анонса", None])
 
 
 @unittest.skipIf(

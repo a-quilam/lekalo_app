@@ -115,6 +115,16 @@ def _post_types(h, types: set[str]) -> list[dict]:
     return [call for call in h.calls if call["type"] in types]
 
 
+def _final_markup(h, message_id: int):
+    """Итоговая клавиатура сообщения (None — кнопок нет)."""
+    calls = [
+        call
+        for call in h.calls
+        if call["type"] == "edit_markup" and call.get("message_id") == message_id
+    ]
+    return calls[-1].get("reply_markup") if calls else None
+
+
 def _stored(h, draft_id: int):
     with h.session_factory() as session:
         return get_announcement_draft(
@@ -272,8 +282,16 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
         self.assertFalse(new_ids & first_delivery_ids)
         self.assertTrue(set(sent.previous_message_ids))
         self.assertFalse(set(sent.previous_message_ids) & new_ids)
-        # Первая версия удалена после первой успешной замены.
-        self.assertTrue(first_delivery_ids <= set(h.deleted_ids()))
+        # §30–31: первая версия остаётся в чате архивным снимком без кнопок.
+        self.assertFalse(
+            first_delivery_ids & set(h.deleted_ids()),
+            "прежний экземпляр не удаляется",
+        )
+        for message_id in first_delivery_ids:
+            self.assertIsNone(
+                _final_markup(h, message_id),
+                "с прежнего экземпляра снята клавиатура",
+            )
 
         # Возврат в меню с экрана коллекции не отправляет копию и не
         # откатывает применённую версию.
@@ -333,8 +351,17 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
         # Фото отправлено ровно один раз: подтверждённых операций не было.
         self.assertEqual(len(_post_types(h, {"photo"})), photos_before + 1)
         self.assertIn("Значение", h.posts()[-1] or "")
-        # Прошлая версия удалена только после успеха новой.
-        self.assertTrue(old_ids <= set(h.deleted_ids()))
+        # §30–31: прежний экземпляр остаётся в чате архивным снимком без
+        # кнопок, а не удаляется как «мусор» живого блока.
+        self.assertFalse(
+            old_ids & set(h.deleted_ids()),
+            "прежний экземпляр не удаляется",
+        )
+        for message_id in old_ids:
+            self.assertIsNone(
+                _final_markup(h, message_id),
+                "с прежнего экземпляра снята клавиатура",
+            )
 
     @scenario_test
     async def test_eleven_photos_are_capped_and_delivered_as_one_group(self, h) -> None:
@@ -374,19 +401,26 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
             [f"group-photo-{index}" for index in range(10)],
         )
         self.assertEqual(
-            [getattr(item, "caption", None) for item in groups[-1]["media"]][:-1],
+            [getattr(item, "caption", None) for item in groups[-1]["media"]][1:],
             [None] * 9,
-            "подпись разрешена только у последнего фотосегмента",
+            "spec §22: подпись только у ПЕРВОГО элемента альбома",
         )
-        # В чате ровно одна актуальная версия: прошлые удалены.
+        # §30–31: прошлые версии остаются в чате архивными снимками; у них
+        # снимается клавиатура, а панель медиагруппы удаляется.
         self.assertTrue(set(sent.previous_message_ids))
         self.assertFalse(
             set(sent.previous_message_ids) & set(sent.delivered_message_ids)
         )
-        self.assertTrue(
-            set(sent.previous_message_ids) <= set(h.deleted_ids()),
-            "прошлые версии не удалены",
+        self.assertFalse(
+            set(sent.previous_message_ids) & set(h.deleted_ids()),
+            "прошлые версии не удаляются",
         )
+        previous_ids = list(sent.previous_message_ids)
+        if previous_ids:
+            self.assertIsNone(
+                _final_markup(h, previous_ids[0]),
+                "с прежнего экземпляра снята клавиатура",
+            )
 
 
 @unittest.skipIf(
@@ -612,8 +646,17 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         # Прошлые адреса сохранены отдельно и не выдаются за текущие.
         self.assertEqual(tuple(second.previous_message_ids), first_ids)
         self.assertNotEqual(second.delivery_fingerprint, first_fingerprint)
-        # Удаление прошлой версии произошло только после успеха новой.
-        self.assertTrue(set(first_ids) <= set(h.deleted_ids()))
+        # §30–31: прежний экземпляр остаётся в чате архивным снимком, его
+        # клавиатура снята, а текст и фото не тронуты.
+        self.assertFalse(
+            set(first_ids) & set(h.deleted_ids()),
+            "прежний экземпляр не удаляется",
+        )
+        for message_id in first_ids:
+            self.assertIsNone(
+                _final_markup(h, message_id),
+                "с прежнего экземпляра снята клавиатура",
+            )
 
         # Ещё одна правка заменяет уже вторую версию, а не первую.
         await _open_edit(h)
@@ -649,7 +692,8 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         await h.text("Новая версия")
 
         # Неудача удаления не откатывает успешную доставку: новая версия есть,
-        # статус остаётся sent, прошлая копия просто осталась в чате.
+        # статус остаётся sent, а прежний экземпляр не удаляется вовсе — он
+        # уходит в архив с прежним содержимым и снятой клавиатурой (§30–31).
         self.assertIn("✅ Анонс готов.", h.screen_text())
         self.assertIn("Новая версия", h.posts()[-1] or "")
         sent = _stored(h, draft.id)
@@ -701,7 +745,15 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         self.assertIn("Дополнительно", h.posts()[-1] or "")
         sent = _stored(h, draft.id)
         self.assertEqual(tuple(sent.previous_message_ids), first_ids)
-        self.assertTrue(set(first_ids) <= set(h.deleted_ids()))
+        self.assertFalse(
+            set(first_ids) & set(h.deleted_ids()),
+            "прежний экземпляр не удаляется",
+        )
+        for message_id in first_ids:
+            self.assertIsNone(
+                _final_markup(h, message_id),
+                "с прежнего экземпляра снята клавиатура",
+            )
 
         # Удаление доп. кирпичика тоже приводит к новой версии. H3: после
         # сохранения значения остаёшься в списке дополнительных полей.

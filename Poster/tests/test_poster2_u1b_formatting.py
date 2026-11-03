@@ -11,7 +11,7 @@ SQLite — реальная `post_bot.db`, `.env` и сеть Telegram не ис
    форматированием (его видно и можно скопировать);
 3. рестарт процесса не теряет разметку;
 4. завершение анонса (без фото и с фото) отдаёт её в тексте/подписи;
-5. альбом: разметка в подписи последнего сегмента медиагруппы;
+5. альбом: разметка в подписи ПЕРВОГО элемента медиагруппы (spec 2.5 §22);
 6. редактирование значения показывает прежнее форматирование и сохраняет
    новое;
 7. спецсимволы `a < b & c` не экранируются дважды;
@@ -369,7 +369,7 @@ class FormattingPersistenceTests(unittest.TestCase):
         groups = [r for r in h.post_records() if r["type"] == "media_group"]
         self.assertEqual(len(groups), 1)
         captions = [getattr(item, "caption", None) for item in groups[0]["media"]]
-        self.assertEqual(captions, [None, "Анонс: <u>Тур</u>"])
+        self.assertEqual(captions, ["Анонс: <u>Тур</u>", None])
 
 
 @unittest.skipIf(

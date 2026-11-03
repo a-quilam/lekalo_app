@@ -99,6 +99,16 @@ def _present_post_ids(h) -> list[int]:
     return out
 
 
+def _final_markup(h, message_id: int):
+    """Итоговая клавиатура сообщения (None — кнопок нет)."""
+    calls = [
+        call
+        for call in h.calls
+        if call["type"] == "edit_markup" and call.get("message_id") == message_id
+    ]
+    return calls[-1].get("reply_markup") if calls else None
+
+
 def _screen_sends(h) -> list[dict]:
     """Созданные (не отредактированные) сообщения-экраны."""
     return [c for c in h.screens() if c["type"] == "message"]
@@ -458,8 +468,17 @@ class MessageOrderInvariantTests(unittest.TestCase):
         self.assertEqual(stored.publication_status, "sent")
         self.assertEqual(tuple(stored.previous_message_ids), first_ids)
         self.assertIn("Обновлено", h.posts()[-1] or "")
-        # Прошлая версия удалена только после подтверждённой новой.
-        self.assertTrue(set(first_ids) <= set(h.deleted_ids()))
+        # §30–31: прежняя версия остаётся в чате архивным снимком без кнопок,
+        # а не удаляется: история доставок сохраняется.
+        self.assertFalse(
+            set(first_ids) & set(h.deleted_ids()),
+            "прежний экземпляр не удаляется",
+        )
+        for message_id in first_ids:
+            self.assertIsNone(
+                _final_markup(h, message_id),
+                "с прежнего экземпляра снята клавиатура",
+            )
         self._assert_order(h)
 
         # Возврат в меню и повторное открытие не ломают порядок и не плодят

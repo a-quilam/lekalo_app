@@ -1,13 +1,21 @@
 # delivery.py
 """
-Poster 2.0 S4: единая Telegram-доставка готового анонса.
+Poster 2.5: единая Telegram-доставка цельного готового анонса.
 
-Один логический пост:
+Один логический пост (spec §19–22):
 
-- без фото — одно сообщение с текстом;
-- 1..10 фото — медиа-группы по 2–10 снимков (остаток из одного фото
-  отправляется отдельным `sendPhoto`), текст ровно один раз — подписью
-  ПОСЛЕДНЕГО фотосегмента, то есть под фото, а не над ними;
+- без фото — одно `sendMessage` с текстом и (если передана) клавиатурой;
+- 1 фото — одно `sendPhoto`: текст подписью и клавиатура сразу в нём;
+- 2–10 фото — ОДИН `sendMediaGroup`: текст ровно один раз, caption ПЕРВОГО
+  элемента, остальные элементы без подписи; >10 фото — группы по 10 и
+  возможный хвост из одного фото отдельным `sendPhoto` (подпись уже ушла с
+  первой группой, хвост — без текста);
+- `sendMediaGroup` не принимает общую inline-клавиатуру, поэтому для 2+ фото
+  клавиатура в контент НЕ передаётся: вызывающий код отправляет одну
+  отдельную панель управления после доставки контента и хранит её id в
+  `announcement_instances.panel_message_id`. Тело доставки о панели не знает
+  и её id не возвращает (`needs_control_panel`/`content_carries_keyboard` —
+  точка правды для вызывающего);
 - текст не режется на части: лимиты (4096 без фото, 1024 с фото после
   разбора entities) проверяются ДО вызова доставки, а не «лечатся»
   автосокращением.
@@ -21,6 +29,25 @@ Poster 2.0 S4: единая Telegram-доставка готового анон�
 через `ids`; при сбое в прогресс ничего не добавляется — падение не
 считается успехом. Продолжение (`progress["step"]`) досылает только
 недостающее.
+
+Контракт для вызывающего (C2b):
+
+- `send_announcement_post(bot, chat_id, text, photos, *, reply_markup=None,
+  progress=None, on_progress=None, live=False) -> list[int]` возвращает id
+  ТОЛЬКО контента (по id на каждое вложение альбома). Панель управления в
+  этот список не входит; `publication_progress["ids"]` описывает только
+  контент, а `mark_announcement_publication_sent` получает ровно их;
+- `progress["total"] == len(media_batches(len(photos))) or 1` — число
+  API-вызовов контента, а не сообщений: 11 фото → два вызова (группа 10 +
+  хвост), 3 фото → один;
+- `caption_message_id(ids)` — id сообщения, несущего текст: единственное
+  сообщение или ПЕРВЫЙ элемент альбома. По нему адресуются правки подписи
+  (`editMessageCaption`) в живом блоке и редакторе;
+- после успешной отправки контента вызывающий код при
+  `needs_control_panel(len(photos))` (2+ фото) отправляет ОДНУ панель
+  управления и записывает её id в `announcement_instances.panel_message_id`.
+  При ретрае частичной публикации панель досылается, только если её ещё
+  нет: завершённые партии контента повторно не отправляются.
 """
 
 from __future__ import annotations
@@ -105,6 +132,11 @@ def media_batches(photo_count: int) -> list[int]:
     Возвращает размеры партий по порядку. Хвост из одного фото НЕЛЬЗЯ
     отправить `sendMediaGroup`, поэтому партия размера 1 уходит отдельным
     `sendPhoto` (см. `send_announcement_post`).
+
+    Число партий — это и есть число операций прогресса (`progress["total"]`),
+    поэтому caption-first не меняет контракт: 11 фото по-прежнему дают две
+    операции (группа 10 + хвост), просто текст теперь у ПЕРВОГО элемента
+    первой группы, а не у последнего сегмента.
     """
     if photo_count <= 0:
         return []
@@ -115,6 +147,41 @@ def media_batches(photo_count: int) -> list[int]:
         sizes.append(size)
         remaining -= size
     return sizes
+
+
+def content_carries_keyboard(photo_count: int) -> bool:
+    """
+    Может ли контент анонса сам нести inline-клавиатуру (spec §20–22).
+
+    Без фото (`sendMessage`) и с одним (`sendPhoto`) — да: текст и кнопки в
+    одном сообщении. С 2+ фото — нет: `sendMediaGroup` общей клавиатуры не
+    принимает, а отдельное сообщение с полным текстом запрещено. Панель
+    управления в этом случае отправляет вызывающий код.
+    """
+    return photo_count <= 1
+
+
+def needs_control_panel(photo_count: int) -> bool:
+    """
+    Нужна ли отдельная панель управления после доставки контента (§22).
+
+    Только для 2+ фото: у медиагруппы нет общей клавиатуры. Для 0/1 фото
+    кнопки живут на самом сообщении анонса, отдельная панель запрещена.
+    """
+    return photo_count > 1
+
+
+def caption_message_id(message_ids: Sequence[int]) -> int | None:
+    """
+    `message_id` сообщения, которое несёт текст анонса (spec §19–22).
+
+    Без фото/с одним — единственное сообщение; в альбоме — ПЕРВЫЙ элемент,
+    потому что `delivery` кладёт текст в caption первого фото. Правки
+    подписи (живой блок, редактор) обязаны адресоваться этому id, а не
+    последнему сообщению группы (до 2.5 было наоборот).
+    """
+    ids = [int(item) for item in message_ids or () if item]
+    return ids[0] if ids else None
 
 
 def _progress_ids(progress: dict[str, Any]) -> list[int]:
@@ -184,16 +251,32 @@ async def send_announcement_post(
     text: str,
     photos: Sequence[str],
     *,
+    reply_markup=None,
     progress: dict | None = None,
     on_progress: Callable[[dict], None] | None = None,
     live: bool = False,
 ) -> list[int]:
     """
-    Отправляет анонс одним логическим постом и возвращает message_id.
+    Отправляет анонс одним логическим постом и возвращает message_id контента.
+
+    Возвращаются ТОЛЬКО id сообщений контента (0/1 фото — одно сообщение,
+    альбом — по id на каждое вложение), в порядке отправки. Панель управления
+    медиагруппы сюда НЕ входит: её отправляет вызывающий код после доставки
+    контента и пишет id в `announcement_instances.panel_message_id`. Поэтому
+    `mark_announcement_publication_sent` получает ровно эти id, а
+    `publication_progress["ids"]` описывает только контент.
+
+    `reply_markup` передаётся ТОЛЬКО когда Telegram способен нести клавиатуру
+    вместе с текстом: без фото (`sendMessage`) и с одним фото (`sendPhoto`).
+    Для 2+ фото клавиатура игнорируется (`content_carries_keyboard` → False):
+    `sendMediaGroup` общей клавиатуры не имеет, а отдельное сообщение с
+    полным текстом запрещено §22. Клавиатуру медиагруппы отправляет
+    вызывающий код как панель управления (см. `needs_control_panel`).
 
     `progress` — контейнер продолжения: `fingerprint`, `step`, `ids`,
     `total`. Изменение текста/фото сбрасывает прогресс по отпечатку, иначе
-    продолжение досылает только недостающие операции. `on_progress`
+    продолжение досылает только недостающие операции (`total` = число
+    партий `media_batches`, т.е. число API-вызовов контента). `on_progress`
     вызывается после каждой подтверждённой Telegram операции, поэтому
     запись в БД не опережает реальную отправку.
 
@@ -204,6 +287,7 @@ async def send_announcement_post(
     выключено в обоих случаях (U1b).
     """
     file_ids = [str(item) for item in photos if item]
+    keyboard = reply_markup if content_carries_keyboard(len(file_ids)) else None
     batches = media_batches(len(file_ids))
     operations = len(batches) if batches else 1
     tracking = progress if progress is not None else ({} if on_progress else None)
@@ -277,6 +361,7 @@ async def send_announcement_post(
     _notify()
 
     if not file_ids:
+        # Без фото текст и клавиатура — в одном sendMessage (spec §20).
         await _run(
             lambda: bot.send_message(
                 chat_id=chat_id,
@@ -285,6 +370,7 @@ async def send_announcement_post(
                 link_preview_options=(
                     LIVE_LINK_PREVIEW if live else FINAL_LINK_PREVIEW
                 ),
+                reply_markup=keyboard,
             )
         )
         return sent
@@ -293,28 +379,42 @@ async def send_announcement_post(
     batch_index = 0
     for size in batches:
         batch = file_ids[offset : offset + size]
-        is_last_batch = batch_index == len(batches) - 1
+        is_first_batch = batch_index == 0
         offset += size
         batch_index += 1
         if size == 1:
-
-            async def photo_runner(batch=batch, is_last_batch=is_last_batch):
+            # Хвост альбома (>10 фото) идёт без подписи: текст уже доставлен
+            # первым элементом первой группы. Одиночное фото (первая и
+            # единственная партия) несёт и подпись, и клавиатуру (spec §21).
+            async def photo_runner(
+                batch=batch,
+                is_first_batch=is_first_batch,
+            ):
+                has_caption = is_first_batch and bool(text)
                 return await bot.send_photo(
                     chat_id=chat_id,
                     photo=batch[0],
-                    caption=text if is_last_batch and text else None,
-                    parse_mode="HTML" if is_last_batch and text else None,
+                    caption=text if has_caption else None,
+                    parse_mode="HTML" if has_caption else None,
+                    reply_markup=keyboard if is_first_batch else None,
                 )
 
             await _run(photo_runner)
             continue
 
-        def group_runner(batch=batch, is_last_batch=is_last_batch):
-            media = [InputMediaPhoto(media=file_id) for file_id in batch]
-            if is_last_batch and text:
-                media[-1] = InputMediaPhoto(
-                    media=batch[-1], caption=text, parse_mode="HTML"
-                )
+        def group_runner(batch=batch, is_first_batch=is_first_batch):
+            # Caption-first (spec §19, §22): весь текст — подписью ПЕРВОГО
+            # элемента, остальные фото его не дублируют. У sendMediaGroup нет
+            # общей inline-клавиатуры, поэтому reply_markup здесь не
+            # передаётся вообще (панель управления отправляет вызывающий код).
+            media: list[InputMediaPhoto] = []
+            for index, file_id in enumerate(batch):
+                if is_first_batch and index == 0 and text:
+                    media.append(
+                        InputMediaPhoto(media=file_id, caption=text, parse_mode="HTML")
+                    )
+                else:
+                    media.append(InputMediaPhoto(media=file_id))
             return bot.send_media_group(chat_id=chat_id, media=media)
 
         await _run(group_runner)

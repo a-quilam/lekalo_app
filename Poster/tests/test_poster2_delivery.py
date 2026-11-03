@@ -2,17 +2,18 @@
 """
 Poster 2.0 S4 §5.3–§5.6: единая доставка и финализация анонса.
 
-Первая часть — `delivery.py` на минимальной заглушке бота: одна подпись у
-последнего фотосегмента, `.` без фото и пустая подпись с фото, прогресс
+Первая часть — `delivery.py` на минимальной заглушке бота: caption ПЕРВОГО
+элемента альбома (spec §19/§22), клавиатура в sendMessage/sendPhoto и её
+отсутствие у медиагруппы, `.` без фото и пустая подпись с фото, прогресс
 только после подтверждённого ответа Telegram, досылка недостающего,
 `RetryAfter` (один повтор), `Forbidden`, падение между успехом API и
 записью прогресса.
 
 Вторая часть — сквозные сценарии через настоящее приложение, FakeBot и
 временную SQLite: живой медиаблок становится готовым постом без второй
-отправки, рестарт не дублирует, прошлая версия удаляется только после
-успеха, проблемный экран лимита сохраняет данные и возвращает 4096 по
-«Без фотографий», неудачное удаление не ломает поток.
+отправки, рестарт не дублирует, прежняя версия остаётся архивным снимком
+без кнопок (§30–31), проблемный экран лимита сохраняет данные и возвращает
+4096 по «Без фотографий», неудачное удаление не ломает поток.
 """
 
 from __future__ import annotations
@@ -25,11 +26,14 @@ from telegram.error import BadRequest, Forbidden, RetryAfter
 
 from delivery import (
     EMPTY_CAPTION_TEXT,
+    caption_message_id,
+    content_carries_keyboard,
     delivery_fingerprint,
     is_forbidden,
     is_not_found,
     is_not_modified,
     is_retry_after,
+    needs_control_panel,
     send_announcement_post,
 )
 
@@ -103,13 +107,26 @@ class DeliveryUnitsTests(unittest.TestCase):
         self.assertEqual(progress["total"], 1)
         self.assertEqual(progress["ids"], ids)
 
-    def test_single_photo_gets_the_caption(self) -> None:
+    def test_single_photo_gets_the_caption_and_keyboard(self) -> None:
+        """spec §21: фото + текст + клавиатура — в одном sendPhoto."""
         bot = StubBot()
-        _run(send_announcement_post(bot, 777, "Анонс", ["p1"]))
+        markup = object()
+        _run(send_announcement_post(bot, 777, "Анонс", ["p1"], reply_markup=markup))
         self.assertEqual([c["type"] for c in bot.calls], ["photo"])
         self.assertEqual(bot.calls[0]["caption"], "Анонс")
+        self.assertEqual(bot.calls[0]["parse_mode"], "HTML")
+        self.assertIs(bot.calls[0]["reply_markup"], markup)
 
-    def test_only_the_last_photo_segment_has_the_caption(self) -> None:
+    def test_text_message_carries_reply_markup(self) -> None:
+        """spec §20: без фото клавиатура передаётся в sendMessage."""
+        bot = StubBot()
+        markup = object()
+        _run(send_announcement_post(bot, 777, "Анонс", [], reply_markup=markup))
+        self.assertEqual(bot.calls[0]["type"], "message")
+        self.assertIs(bot.calls[0]["reply_markup"], markup)
+
+    def test_first_photo_segment_has_the_caption(self) -> None:
+        """spec §19/§22: весь текст — caption ПЕРВОГО элемента группы."""
         bot = StubBot()
         photos = [f"p{index}" for index in range(10)]
         _run(send_announcement_post(bot, 777, "Анонс", photos))
@@ -121,9 +138,12 @@ class DeliveryUnitsTests(unittest.TestCase):
         )
         self.assertEqual(
             _captions(group),
-            [None] * 9 + ["Анонс"],
-            "подпись разрешена только у последнего фотосегмента",
+            ["Анонс"] + [None] * 9,
+            "подпись разрешена только у первого элемента альбома",
         )
+        self.assertEqual(group["media"][0].parse_mode, "HTML")
+        # У медиагруппы нет общей клавиатуры: даже переданная, она не уходит.
+        self.assertNotIn("reply_markup", group)
 
     def test_media_group_keeps_message_id_of_every_photo(self) -> None:
         """Настоящий Bot API отвечает по сообщению на каждое фото группы."""
@@ -155,18 +175,41 @@ class DeliveryUnitsTests(unittest.TestCase):
         self.assertEqual(again, ids)
         self.assertEqual(bot.calls, [])
 
-    def test_tail_of_one_photo_goes_as_send_photo_with_caption(self) -> None:
+    def test_eleven_photos_are_group_with_caption_then_photo_tail(self) -> None:
+        """11 фото: группа 10 (caption у ПЕРВОГО) + хвост sendPhoto без текста."""
         bot = StubBot()
         photos = [f"p{index}" for index in range(11)]
-        _run(send_announcement_post(bot, 777, "Анонс", photos))
+        markup = object()
+        _run(send_announcement_post(bot, 777, "Анонс", photos, reply_markup=markup))
         self.assertEqual(
             [c["type"] for c in bot.calls],
             ["media_group", "photo"],
             "sendMediaGroup не принимает группу из одного элемента",
         )
-        self.assertEqual(_captions(bot.calls[0]), [None] * 10)
-        self.assertEqual(bot.calls[1]["caption"], "Анонс")
+        self.assertEqual(_captions(bot.calls[0]), ["Анонс"] + [None] * 9)
         self.assertEqual(bot.calls[1]["photo"], "p10")
+        self.assertIsNone(
+            bot.calls[1]["caption"], "текст уже доставлен первым элементом группы"
+        )
+        self.assertIsNone(
+            bot.calls[1]["reply_markup"], "клавиатуру несёт панель, а не хвост"
+        )
+
+    def test_three_photos_one_group_caption_first(self) -> None:
+        """3 фото → ОДИН sendMediaGroup, caption только у первого."""
+        bot = StubBot()
+        markup = object()
+        _run(
+            send_announcement_post(
+                bot, 777, "Анонс", ["a", "b", "c"], reply_markup=markup
+            )
+        )
+        (group,) = bot.calls
+        self.assertEqual(group["type"], "media_group")
+        self.assertEqual([item.media for item in group["media"]], ["a", "b", "c"])
+        self.assertEqual(_captions(group), ["Анонс", None, None])
+        self.assertEqual(group["media"][0].parse_mode, "HTML")
+        self.assertNotIn("reply_markup", group)
 
     def test_empty_text_with_photos_has_no_caption(self) -> None:
         bot = StubBot()
@@ -250,7 +293,8 @@ class DeliveryUnitsTests(unittest.TestCase):
                 )
             )
         # Первая группа подтверждена и уже в памяти прогресса, несмотря на сбой
-        # записи; текст ушёл подписью хвоста — повтору остаётся только он.
+        # записи; текст ушёл подписью ПЕРВОГО элемента группы — повтору
+        # остаётся только хвост из одного фото.
         self.assertEqual(progress["step"], 1)
         self.assertEqual(len(progress["ids"]), 1)
 
@@ -258,6 +302,83 @@ class DeliveryUnitsTests(unittest.TestCase):
         ids = _run(send_announcement_post(bot, 777, "Анонс", photos, progress=progress))
         self.assertEqual(len(ids), 2)
         self.assertEqual([c["type"] for c in bot.calls], ["photo"])
+        self.assertIsNone(
+            bot.calls[0]["caption"], "повтор не дублирует уже доставленный текст"
+        )
+
+    def test_failure_mid_way_does_not_duplicate_delivered_content(self) -> None:
+        """Сбой на хвосте: повтор не переотправляет группу и её текст."""
+
+        class GroupBot(StubBot):
+            async def send_media_group(self, **kwargs: Any) -> list[FakeMessage]:
+                self.calls.append({"type": "media_group", **kwargs})
+                count = len(kwargs.get("media") or ())
+                self._next_id += count
+                return [
+                    FakeMessage(self._next_id - count + index + 1)
+                    for index in range(count)
+                ]
+
+        photos = [f"p{index}" for index in range(11)]
+        progress: dict = {}
+        bot = GroupBot(errors={"photo": [Forbidden("Forbidden: bot was blocked")]})
+        with self.assertRaises(Forbidden):
+            _run(send_announcement_post(bot, 777, "Анонс", photos, progress=progress))
+        self.assertEqual(progress["step"], 1, "падение не увеличено в прогресс")
+        self.assertEqual(len(progress["ids"]), 10, "id каждого фото группы")
+        self.assertEqual(progress["total"], 2)
+
+        bot.errors.clear()
+        bot.calls.clear()
+        ids = _run(send_announcement_post(bot, 777, "Анонс", photos, progress=progress))
+        self.assertEqual(len(ids), 11)
+        self.assertEqual(
+            [c["type"] for c in bot.calls],
+            ["photo"],
+            "подтверждённая группа не отправлена повторно",
+        )
+        self.assertEqual(bot.calls[0]["photo"], "p10")
+        self.assertIsNone(bot.calls[0]["caption"])
+
+    def test_progress_total_matches_number_of_calls(self) -> None:
+        """`total` = число партий: caption-first не меняет контракт прогресса."""
+        for count, expected in ((0, 1), (1, 1), (3, 1), (10, 1), (11, 2)):
+            bot = StubBot()
+            progress: dict = {}
+            ids = _run(
+                send_announcement_post(
+                    bot,
+                    777,
+                    "Анонс",
+                    [f"p{index}" for index in range(count)],
+                    progress=progress,
+                )
+            )
+            self.assertEqual(progress["total"], expected, f"{count} фото")
+            self.assertEqual(progress["step"], expected, f"{count} фото")
+            self.assertEqual(progress["ids"], ids)
+            self.assertEqual(len(bot.calls), expected)
+            self.assertTrue(ids)
+
+    def test_keyboard_contract_for_media(self) -> None:
+        """Панель нужна только медиагруппе; клавиатура контента — 0/1 фото."""
+        self.assertTrue(content_carries_keyboard(0))
+        self.assertTrue(content_carries_keyboard(1))
+        self.assertFalse(content_carries_keyboard(2))
+        self.assertFalse(needs_control_panel(0))
+        self.assertFalse(needs_control_panel(1))
+        self.assertTrue(needs_control_panel(2))
+        self.assertTrue(needs_control_panel(10))
+
+    def test_caption_message_is_the_first_one(self) -> None:
+        """Текст альбома живёт в первом сообщении: правки адресуются ему."""
+        self.assertIsNone(caption_message_id([]))
+        self.assertEqual(caption_message_id([7]), 7)
+        self.assertEqual(caption_message_id([7, 8, 9]), 7)
+        # id альбома в том порядке, в котором их вернул Telegram.
+        bot = StubBot()
+        ids = _run(send_announcement_post(bot, 777, "Анонс", ["a", "b", "c"]))
+        self.assertEqual(caption_message_id(ids), ids[0])
 
     def test_changed_content_restarts_delivery(self) -> None:
         bot = StubBot()
@@ -336,6 +457,21 @@ def _copies(h, text: str | None) -> list[int]:
     return [
         message_id for message_id, shown in _chat_texts(h).items() if shown == str(text)
     ]
+
+
+def _final_markup(h, message_id: int):
+    """
+    Итоговая клавиатура сообщения (None — кнопок нет).
+
+    §30–31: у архивного экземпляра клавиатура снимается отдельным
+    `editMessageReplyMarkup(None)`, само сообщение остаётся в чате.
+    """
+    calls = [
+        call
+        for call in h.calls
+        if call["type"] == "edit_markup" and call.get("message_id") == message_id
+    ]
+    return calls[-1].get("reply_markup") if calls else None
 
 
 async def _to_photo_step(
@@ -693,9 +829,11 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         self, h
     ) -> None:
         """
-        H3: сохранение значения — обычная замена: контент другой, промоушен
-        запрещён, прошлая копия удаляется после новой доставки. Отдельной
-        кнопки «Применить изменения» больше нет.
+        H3 + §30–31: сохранение значения — обычная замена без промоушена.
+
+        Контент другой, промоушен запрещён; прежний экземпляр остаётся в чате
+        архивным снимком (без кнопок), а не удаляется: история доставленных
+        версий сохраняется. Отдельной кнопки «Применить изменения» нет.
         """
         from tests.test_stage27b_announcement_ui import (
             _callback,
@@ -720,9 +858,16 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         self.assertNotEqual(updated, first)
         self.assertEqual(tuple(stored.delivered_message_ids), (updated,))
         self.assertEqual(tuple(stored.previous_message_ids), (first,))
-        # Прошлая копия удалена только после подтверждённой новой версии.
-        self.assertIn(first, h.deleted_ids())
-        self.assertEqual(_copies(h, "Значение"), [])
+        # §30–31: прежняя версия НЕ удаляется — остаётся архивным снимком.
+        self.assertNotIn(first, h.deleted_ids(), "прежний экземпляр не удаляется")
+        self.assertEqual(
+            _copies(h, "Значение"), [first], "старая копия осталась в чате"
+        )
+        self.assertIsNone(
+            _final_markup(h, first), "у прежнего экземпляра клавиатура снята"
+        )
+        # Новая версия получила управление.
+        self.assertIsNotNone(_final_markup(h, updated))
 
     @scenario_test
     async def test_failed_promotion_cleans_the_stale_live_block(self, h) -> None:
