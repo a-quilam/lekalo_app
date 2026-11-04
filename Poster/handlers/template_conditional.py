@@ -1,22 +1,39 @@
 # handlers/template_conditional.py
 """
-Условные части шаблонов: Telegram-интерфейс (Poster 2.5, spec §39–45).
+Условные части шаблонов: Telegram-интерфейс (Poster 2.5.2 §6–7).
 
-Путь автора: карточка шаблона → «🧩 Условные части» → выбор кирпичика →
-выбор скрываемого фрагмента → предпросмотр → сохранение. Отдельный экран
-списка правил позволяет открыть, изменить и удалить правило, а также
-показывает правила, требующие перенастройки после правки текста.
+Путь автора: карточка РАСШИРЕННОГО шаблона → «🧩 Условные части» → компактный
+список правил → «➕ Новая условная часть» → кирпичик → способ скрытия →
+сохранение. Список показывает не больше пяти правил на страницу, у каждого
+есть правка и удаление. Детали и примеры живут в «Помощи», а не на экране.
+
+Семантика (Poster 2.5.2 §6), которую держит этот модуль:
+
+- условные части есть ТОЛЬКО у шаблона с расширенной версией: у простого нет
+  ни кнопки в карточке, ни маршрута — проверка одна
+  (`tp.conditional_parts_available`);
+- один движок для личных шаблонов и стандарта места: никаких проверок по
+  признаку `origin`, только факт расширенной версии и права редактора;
+- повторяющийся кирпичик в тексте — ОДНО правило автора: выбранный способ
+  скрытия применяется ко всем его вхождениям (в БД это по-прежнему строки
+  на каждое вхождение — так рендер и замороженные снимки работают с
+  точными фрагментами);
+- в интерфейсе нет номеров вхождений, технических диапазонов и сырого
+  текста фрагментов: только название поля, секция (если кирпичик есть в
+  обоих текстах) и понятный способ скрытия;
+- литеральный статический текст не вычищается: скрывается ровно то, что
+  выбрал автор (§41).
 
 Модуль намеренно не меняет доменный слой: правила читает и пишет
 `conditional_parts`, шаблон и версии — `template_store`. Здесь только
-экраны, состояние навигации и проверки, которые нужны ДО сохранения.
+экраны, состояние навигации и вычисление фрагментов для трёх режимов.
 
 Состояние маршрута живёт в `context.user_data["cond_parts"]` (это
 интерфейсная навигация, а не доменные данные), фаза шаблонной сессии
 остаётся `card`: редактор текста и правила не должны мешать друг другу.
-Признак «ждём текст собственного фрагмента» дублируется в шаблонной сессии
-(`cond_input`), потому что фильтр текстового обработчика видит только
-состояние из БД — `user_data` в `check_update` недоступен.
+Признак «ждём свой фрагмент» дублируется в шаблонной сессии (`cond_input`),
+потому что фильтр текстового обработчика видит только состояние из БД —
+`user_data` в `check_update` недоступен.
 
 Callback-префикс `tp_cond*` регистрируется в `templates_handlers()` ДО
 общего fallback `^tp_`.
@@ -41,31 +58,44 @@ from conditional_parts import (
     SECTION_CONTENT,
     SECTION_EXTENDED_CONTENT,
     STATUS_STALE,
-    create_conditional_part,
-    delete_conditional_part,
     list_conditional_parts,
-    update_conditional_part,
+    replace_conditional_rules,
 )
 from handlers import templates as tp
-from template_compiler import ConditionalRule, apply_conditional_parts
 from template_state import load_template_session
+from utils import pagination
 from utils.ui_texts import tr
 
 logger = logging.getLogger(__name__)
 
-# Ключ состояния маршрута (§40). Живёт только в user_data.
+# Ключ состояния маршрута. Живёт только в user_data.
 COND_KEY = "cond_parts"
 # Признак текстового ввода в шаблонной сессии (виден фильтру обработчика).
 INPUT_FLAG = "cond_input"
 
-STEP_BRICKS = "bricks"
-STEP_FRAGMENT = "fragment"
-STEP_CUSTOM = "custom"
-STEP_PROPOSAL = "proposal"
-STEP_PREVIEW = "preview"
 STEP_LIST = "list"
-STEP_RULE = "rule"
+STEP_BRICKS = "bricks"
+STEP_MODE = "mode"
+STEP_CUSTOM = "custom"
 STEP_DELETE = "delete"
+
+# Способы скрытия (§7): вся строка, строка с разделителем, свой фрагмент.
+MODE_LINE = "line"
+MODE_SEPARATOR = "sep"
+MODE_FRAGMENT = "custom"
+MODES = (MODE_LINE, MODE_SEPARATOR, MODE_FRAGMENT)
+# Короткие человеческие названия способов (для списка и экрана выбора).
+MODE_TITLE_KEYS = {
+    MODE_LINE: "templates.cond.mode_line_short",
+    MODE_SEPARATOR: "templates.cond.mode_sep_short",
+    MODE_FRAGMENT: "templates.cond.mode_custom_short",
+}
+
+# Секции текста шаблона. Короткий флаг `c`/`e` — часть callback-протокола:
+# правило принадлежит конкретной секции, иначе кирпичик, встречающийся в
+# обоих текстах, нельзя было бы отличить.
+SECTION_FLAGS = {SECTION_CONTENT: "c", SECTION_EXTENDED_CONTENT: "e"}
+FLAG_SECTIONS = {flag: section for section, flag in SECTION_FLAGS.items()}
 
 # Символы, которые автор считает «разделителем» вокруг кирпичика (§38/§42).
 # Квадратные скобки сюда не входят: иначе фрагмент «съел» бы соседний токен.
@@ -73,27 +103,55 @@ SEPARATOR_CHARS = frozenset(" \t\u00a0–—-‐‑.,;:!?…()«»\"'·•—")
 # Справа в фрагмент берутся только закрывающие знаки: пробел и тире справа
 # чаще относятся к следующему смыслу («[конец] (снова)»), а не к кирпичику.
 CLOSING_CHARS = frozenset(")]».,;:!?…")
-CONTEXT_RADIUS = 30
-BACK_TARGETS = frozenset(
-    {"card", "bricks", "fragment", "proposal", "preview", "list", "rule"}
-)
+BACK_TARGETS = frozenset({"card", STEP_LIST, STEP_BRICKS, STEP_MODE})
 
 
 @dataclass(frozen=True)
-class BrickEntry:
-    """Одно вхождение кирпичика в текст конкретной секции."""
+class RuleGroup:
+    """
+    Одно правило автора: один кирпичик одной секции.
+
+    Несколько строк БД (по строке на вхождение) показываются как одно
+    правило: номера вхождений и фрагменты — технические детали (§7).
+    """
 
     section: str
     brick_id: int
     code: str
     title: str
-    occurrence: int
-    start: int
-    context: str
+    status: str
+    mode: str
+    part_ids: tuple[int, ...]
+    first_position: int
 
     @property
-    def is_extended(self) -> bool:
-        return self.section == SECTION_EXTENDED_CONTENT
+    def is_stale(self) -> bool:
+        return self.status == STATUS_STALE
+
+    @property
+    def flag(self) -> str:
+        return SECTION_FLAGS.get(self.section, "e")
+
+    def mode_title(self) -> str:
+        """Понятный способ скрытия без технических подробностей."""
+        if self.is_stale:
+            return tr("templates.cond.status_stale")
+        return tr(MODE_TITLE_KEYS.get(self.mode, MODE_TITLE_KEYS[MODE_FRAGMENT]))
+
+
+@dataclass(frozen=True)
+class BrickEntry:
+    """Один кирпичик из текста шаблона (без номера вхождения в UI)."""
+
+    section: str
+    brick_id: int
+    code: str
+    title: str
+    occurrences: tuple[int, ...]
+
+    @property
+    def flag(self) -> str:
+        return SECTION_FLAGS.get(self.section, "e")
 
 
 # --- Состояние маршрута ------------------------------------------------------
@@ -115,14 +173,12 @@ def _forget(context: ContextTypes.DEFAULT_TYPE) -> None:
 def _new_state(template_id: int) -> dict:
     return {
         "template_id": template_id,
-        "step": STEP_BRICKS,
-        "section": SECTION_CONTENT,
+        "step": STEP_LIST,
+        "page": 0,
+        "section": SECTION_EXTENDED_CONTENT,
         "brick_id": None,
-        "code": None,
-        "occurrence": 1,
-        "fragment": None,
-        "part_id": None,
         "error": None,
+        "notice": None,
     }
 
 
@@ -136,7 +192,7 @@ def _section_text(template: tp.TemplateDetails, section: str) -> str:
     return version.content
 
 
-def _token_occurrences(text: str, code: str) -> list[int]:
+def _token_positions(text: str, code: str) -> list[int]:
     token = f"[{code}]"
     positions: list[int] = []
     start = text.find(token)
@@ -144,62 +200,6 @@ def _token_occurrences(text: str, code: str) -> list[int]:
         positions.append(start)
         start = text.find(token, start + 1)
     return positions
-
-
-def _context(text: str, start: int, end: int) -> str:
-    """Окружающий текст вокруг вхождения: ±30 символов, переводы строк видны."""
-    left = text[max(0, start - CONTEXT_RADIUS) : start]
-    right = text[end : end + CONTEXT_RADIUS]
-    return (left + text[start:end] + right).replace("\n", " ⏎ ")
-
-
-def _entries_for_template(template: tp.TemplateDetails) -> list[BrickEntry]:
-    """Кирпичики, реально встречающиеся в тексте (§40, шаг 1)."""
-    entries: list[BrickEntry] = []
-    for section in (SECTION_CONTENT, SECTION_EXTENDED_CONTENT):
-        text = _section_text(template, section)
-        if not text:
-            continue
-        for binding in template.current_version.bindings:
-            if not binding.code:
-                continue
-            for number, start in enumerate(
-                _token_occurrences(text, binding.code), start=1
-            ):
-                end = start + len(binding.code) + 2
-                entries.append(
-                    BrickEntry(
-                        section=section,
-                        brick_id=binding.brick_id,
-                        code=binding.code,
-                        title=binding.title,
-                        occurrence=number,
-                        start=start,
-                        context=_context(text, start, end),
-                    )
-                )
-    return entries
-
-
-def _find_entry(
-    template: tp.TemplateDetails, section: str, brick_id: int, occurrence: int
-) -> BrickEntry | None:
-    for entry in _entries_for_template(template):
-        if (
-            entry.section == section
-            and entry.brick_id == brick_id
-            and entry.occurrence == occurrence
-        ):
-            return entry
-    return None
-
-
-def _token_span(entry: BrickEntry) -> tuple[int, int]:
-    start = entry.start
-    return start, start + len(entry.code) + 2
-
-
-# --- Предложенные фрагменты -------------------------------------------------
 
 
 def _occurrence_of_span(text: str, fragment: str, token_start: int) -> int | None:
@@ -217,11 +217,11 @@ def _occurrence_of_span(text: str, fragment: str, token_start: int) -> int | Non
 
 def _expand(text: str, start: int, end: int, *, limit: int = 3) -> tuple[int, int]:
     """
-    Расширяет токен на примыкающую пунктуацию (§40, шаг 2).
+    Расширяет токен на примыкающую пунктуацию (§40).
 
-    Слева берутся пробелы и любые разделители (`–[конец]` в §42-А), справа —
-    только пробелы и закрывающие знаки: иначе «[конец] (снова)» дало бы
-    фрагмент «[конец] (» и скрыло бы чужую скобку.
+    Слева берутся пробелы и любые разделители (`–[конец]`), справа — только
+    пробелы и закрывающие знаки: иначе «[конец] (снова)» дало бы фрагмент
+    «[конец] (» и скрыло бы чужую скобку.
     """
     new_start, new_end = start, end
     steps = 0
@@ -235,53 +235,265 @@ def _expand(text: str, start: int, end: int, *, limit: int = 3) -> tuple[int, in
     return new_start, new_end
 
 
-def _separator_fragment(entry: BrickEntry, text: str) -> tuple[str, int] | None:
-    start, end = _token_span(entry)
-    new_start, new_end = _expand(text, start, end)
-    if (new_start, new_end) == (start, end):
-        return None
-    fragment = text[new_start:new_end]
-    occurrence = _occurrence_of_span(text, fragment, start)
-    if occurrence is None:
-        return None
-    return fragment, occurrence
-
-
-def _line_fragment(entry: BrickEntry, text: str) -> tuple[str, int] | None:
-    start, end = _token_span(entry)
+def _line_span(text: str, start: int, end: int) -> tuple[int, int]:
     line_start = text.rfind("\n", 0, start) + 1
     line_end = text.find("\n", end)
     if line_end < 0:
         line_end = len(text)
-    fragment = text[line_start:line_end]
-    if not fragment.strip() or fragment.strip() == text[start:end]:
-        return None
-    occurrence = _occurrence_of_span(text, fragment, start)
-    if occurrence is None:
-        return None
-    return fragment, occurrence
+    return line_start, line_end
 
 
-def _proposal(entry: BrickEntry, text: str, kind: str) -> tuple[str, int] | None:
-    if kind == "sep":
-        return _separator_fragment(entry, text)
-    if kind == "line":
-        return _line_fragment(entry, text)
+def _section_texts(template: tp.TemplateDetails) -> dict[str, str]:
+    """
+    Непустые тексты шаблона по секциям.
+
+    Если расширенная версия дословно повторяет основной текст (так бывает у
+    шаблонов, где расширение добавляется позже), показывать один и тот же
+    кирпичик дважды бессмысленно: остаётся расширенная секция.
+    """
+    texts: dict[str, str] = {}
+    for section in (SECTION_CONTENT, SECTION_EXTENDED_CONTENT):
+        text = _section_text(template, section)
+        if text:
+            texts[section] = text
+    if texts.get(SECTION_CONTENT) == texts.get(SECTION_EXTENDED_CONTENT):
+        texts.pop(SECTION_CONTENT, None)
+    return texts
+
+
+def _entries(template: tp.TemplateDetails) -> list[BrickEntry]:
+    """
+    Кирпичики, реально встречающиеся в текстах шаблона (шаг 1).
+
+    Записи идут по секциям: правило принадлежит тексту, где живёт фрагмент.
+    """
+    texts = _section_texts(template)
+    titles = {
+        binding.brick_id: binding.title for binding in template.current_version.bindings
+    }
+    codes = {
+        binding.brick_id: binding.code for binding in template.current_version.bindings
+    }
+    entries: list[BrickEntry] = []
+    for section in (SECTION_CONTENT, SECTION_EXTENDED_CONTENT):
+        text = texts.get(section)
+        if not text:
+            continue
+        for brick_id, code in codes.items():
+            if not code:
+                continue
+            positions = _token_positions(text, code)
+            if not positions:
+                continue
+            entries.append(
+                BrickEntry(
+                    section=section,
+                    brick_id=brick_id,
+                    code=code,
+                    title=titles.get(brick_id) or code,
+                    occurrences=tuple(range(1, len(positions) + 1)),
+                )
+            )
+    return entries
+
+
+def _entry(
+    template: tp.TemplateDetails, section: str, brick_id: int
+) -> BrickEntry | None:
+    for entry in _entries(template):
+        if entry.section == section and entry.brick_id == brick_id:
+            return entry
     return None
 
 
-def _custom_fragment(
-    entry: BrickEntry, text: str, fragment: str
-) -> tuple[str, int] | str:
-    """Проверяет собственный фрагмент до предпросмотра (§40, шаг 3)."""
-    if not fragment.strip():
-        return tr("templates.cond.custom_error_empty")
-    if f"[{entry.code}]" not in fragment:
-        return tr("templates.cond.custom_error_no_brick", code=entry.code)
-    occurrence = _occurrence_of_span(text, fragment, entry.start)
-    if occurrence is None:
-        return tr("templates.cond.custom_error_not_found", occurrence=entry.occurrence)
-    return fragment, occurrence
+def _entry_label(entry: BrickEntry, *, show_section: bool) -> str:
+    """
+    Название поля для человека.
+
+    Секция подписывается только тогда, когда тот же кирпичик встречается в
+    обоих текстах: иначе автор не понял бы, какое из двух правил правит.
+    """
+    if not show_section:
+        return entry.title
+    return tr(
+        "templates.cond.entry_section",
+        title=entry.title,
+        section=_section_title(entry.section),
+    )
+
+
+def _section_title(section: str) -> str:
+    key = (
+        "templates.cond.section_extended"
+        if section == SECTION_EXTENDED_CONTENT
+        else "templates.cond.section_content"
+    )
+    return tr(key)
+
+
+# --- Фрагменты трёх режимов -------------------------------------------------
+
+
+def _mode_fragments(
+    text: str, code: str, mode: str, custom: str | None = None
+) -> list[tuple[str, int]] | None:
+    """
+    Пары `(фрагмент, вхождение)` для ВСЕХ вхождений кирпичика (или `None`).
+
+    Автор выбирает способ один раз, а применяется он ко всем вхождениям
+    кирпичика (§6): повторяющийся кирпичик — одно правило.
+    """
+    positions = _token_positions(text, code)
+    if not positions:
+        return None
+    found: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for start in positions:
+        end = start + len(code) + 2
+        fragment: str | None
+        if mode == MODE_LINE:
+            line_start, line_end = _line_span(text, start, end)
+            fragment = text[line_start:line_end]
+            # Строка из одного кирпичика уже скрывается самим рендером.
+            if not fragment.strip() or fragment.strip() == text[start:end]:
+                continue
+        elif mode == MODE_SEPARATOR:
+            new_start, new_end = _expand(text, start, end)
+            if (new_start, new_end) == (start, end):
+                continue
+            fragment = text[new_start:new_end]
+        else:
+            if not custom:
+                return None
+            fragment = _custom_around(text, custom, start)
+        if fragment is None:
+            return None
+        occurrence = _occurrence_of_span(text, fragment, start)
+        if occurrence is None:
+            return None
+        key = (fragment, occurrence)
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(key)
+    return found or None
+
+
+def _custom_around(text: str, custom: str, token_start: int) -> str | None:
+    """
+    Фрагмент автора, привязанный именно к этому вхождению кирпичика.
+
+    Свой текст может повторяться в шаблоне, поэтому совпадение ищется по
+    позиции кирпичика внутри фрагмента, а не по порядковому номеру.
+    """
+    if not custom.strip():
+        return None
+    anchors: list[int] = []
+    offset = custom.find("[")
+    while offset >= 0:
+        if offset + 1 < len(custom) and custom[offset + 1] != "[":
+            anchors.append(offset)
+        offset = custom.find("[", offset + 1)
+    if not anchors:
+        return None
+    position = -1
+    while True:
+        position = text.find(custom, position + 1)
+        if position < 0:
+            return None
+        for anchor in anchors:
+            if position + anchor == token_start:
+                return custom
+
+
+def _stored_mode(text: str, code: str, fragments: set[tuple[str, int]]) -> str:
+    """Понятный способ скрытия по сохранённым фрагментам (для списка)."""
+    for mode in (MODE_LINE, MODE_SEPARATOR):
+        candidate = _mode_fragments(text, code, mode)
+        if candidate and set(candidate) == fragments:
+            return mode
+    return MODE_FRAGMENT
+
+
+# --- Группировка правил ------------------------------------------------------
+
+SECTION_ORDER = {SECTION_CONTENT: 0, SECTION_EXTENDED_CONTENT: 1}
+
+
+def _group_rules(
+    session,
+    telegram_user_id: int,
+    template: tp.TemplateDetails,
+) -> list[RuleGroup]:
+    """
+    Правила шаблона как список правил автора (один кирпичик — одно правило).
+
+    `stale`-правила не теряются: они тоже входят в список со своим статусом
+    (§44), иначе автор не увидел бы проблему.
+    """
+    parts = _load_parts(session, telegram_user_id, template.template_id)
+    current_version = template.current_version.version_id
+    grouped: dict[tuple[str, int], list] = {}
+    for part in parts:
+        grouped.setdefault((part.section, part.brick_id), []).append(part)
+    result: list[RuleGroup] = []
+    for (section, brick_id), rows in grouped.items():
+        text = _section_text(template, section)
+        code = next((row.code for row in rows if row.code), "")
+        title = code
+        entry = _entry(template, section, brick_id)
+        if entry is not None:
+            title = entry.title
+        active = [row for row in rows if row.status != STATUS_STALE]
+        fragments = {(row.fragment, row.occurrence) for row in active}
+        stale = any(
+            row.status == STATUS_STALE or row.version_id != current_version
+            for row in rows
+        )
+        first_position = min(
+            (_first_span_position(text, row.fragment, row.occurrence) for row in rows),
+            default=0,
+        )
+        result.append(
+            RuleGroup(
+                section=section,
+                brick_id=brick_id,
+                code=code,
+                title=title,
+                status=STATUS_STALE if stale else rows[0].status,
+                mode=_stored_mode(text, code, fragments) if code else MODE_FRAGMENT,
+                part_ids=tuple(row.id for row in rows),
+                first_position=first_position,
+            )
+        )
+    result.sort(
+        key=lambda group: (
+            SECTION_ORDER.get(group.section, 1),
+            group.first_position,
+            group.title,
+        )
+    )
+    return result
+
+
+def _first_span_position(text: str, fragment: str, occurrence: int) -> int:
+    start = -1
+    for _ in range(max(1, occurrence)):
+        start = text.find(fragment, start + 1)
+        if start < 0:
+            return 1 << 30
+    return start
+
+
+def _needs_section(brick_id: int, entries: list[BrickEntry]) -> bool:
+    """
+    Нужна ли подпись секции для этого кирпичика.
+
+    Только если кирпичик реально есть в обоих текстах: иначе секция —
+    техническая подробность, которой в интерфейсе быть не должно (§7).
+    """
+    sections = {entry.section for entry in entries if entry.brick_id == brick_id}
+    return len(sections) > 1
 
 
 # --- Экраны -----------------------------------------------------------------
@@ -291,359 +503,217 @@ def _back(callback: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(tr("buttons.nav.back"), callback_data=callback)
 
 
-def _bricks_text(entries: list[BrickEntry]) -> str:
-    lines = [
-        tr("templates.cond.title"),
-        "",
-        tr("templates.cond.choose_brick"),
-    ]
-    sections = {entry.section for entry in entries}
-    for section in (SECTION_CONTENT, SECTION_EXTENDED_CONTENT):
-        if section not in sections:
-            continue
-        if len(sections) > 1:
-            lines.append("")
-            lines.append(
-                tr("templates.cond.section_extended")
-                if section == SECTION_EXTENDED_CONTENT
-                else tr("templates.cond.section_content")
-            )
-        for entry in entries:
-            if entry.section != section:
-                continue
+def _nav_row(
+    page: int, total: int, template_id: int
+) -> list[InlineKeyboardButton] | None:
+    """
+    Строка `◀️ | 1 / 3 | ▶️`; при одной странице навигации нет (§7).
+
+    Средняя кнопка инертна: её callback — глобальный `noop:<page>:<total>`,
+    который отвечает коротким `answer()` и ничего не меняет. Стрелки несут
+    смещение страницы (`tp_condp:<id>:<offset>`), как в остальных списках.
+    """
+    if total <= 1:
+        return None
+    row = pagination.nav_buttons(page, total, f"tp_condp:{template_id}")
+    if row is None:  # pragma: no cover — total > 1 гарантирует строку
+        return None
+    buttons: list[InlineKeyboardButton] = []
+    for label, data in row:
+        # Кнопка в PTB неизменяемая, поэтому подпись индикатора
+        # подставляется при создании: «1 / 3» вместо служебного «1/3».
+        if data.startswith(f"{pagination.NOOP_PREFIX}:"):
+            label = f"{page + 1} / {total}"
+        buttons.append(InlineKeyboardButton(label, callback_data=data))
+    return buttons
+
+
+def _rule_title(group: RuleGroup, entries: list[BrickEntry]) -> str:
+    """Название правила в списке: поле и, при необходимости, секция."""
+    entry = BrickEntry(
+        section=group.section,
+        brick_id=group.brick_id,
+        code=group.code,
+        title=group.title,
+        occurrences=(),
+    )
+    return _entry_label(entry, show_section=_needs_section(group.brick_id, entries))
+
+
+def _list_content(
+    groups: list[RuleGroup], entries: list[BrickEntry], template_id: int, page: int
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Компактный главный экран: до пяти правил, у каждого правка и удаление."""
+    page_slice = pagination.page_items(groups, page)
+    lines = [tr("templates.cond.list_title"), ""]
+    if not groups:
+        lines.append(tr("templates.cond.list_empty"))
+    else:
+        lines.append(tr("templates.cond.list_hint"))
+        for number, group in enumerate(page_slice.items, start=1):
             lines.append(
                 tr(
-                    "templates.cond.entry",
-                    code=entry.code,
-                    occurrence=entry.occurrence,
-                    context=entry.context,
+                    "templates.cond.list_item",
+                    index=page_slice.offset + number,
+                    title=_rule_title(group, entries),
+                    mode=group.mode_title(),
                 )
             )
-    return "\n".join(lines)
-
-
-def _bricks_content(
-    entries: list[BrickEntry], template_id: int, *, has_parts: bool = False
-) -> tuple[str, InlineKeyboardMarkup]:
     rows: list[list[InlineKeyboardButton]] = []
-    for entry in entries:
-        flag = "e" if entry.is_extended else "c"
-        label = (
-            tr(
-                "templates.cond.entry_button_extended",
-                code=entry.code,
-                occurrence=entry.occurrence,
-            )
-            if entry.is_extended
-            else tr(
-                "templates.cond.entry_button",
-                code=entry.code,
-                occurrence=entry.occurrence,
-            )
-        )
+    for group in page_slice.items:
+        base = f"{group.flag}:{group.brick_id}"
         rows.append(
             [
                 InlineKeyboardButton(
-                    tp._short(label),
-                    callback_data=(
-                        f"tp_condb:{template_id}:{flag}:"
-                        f"{entry.brick_id}:{entry.occurrence}"
-                    ),
-                )
-            ]
-        )
-    if has_parts:
-        rows.append(
-            [
+                    tp._short(tr("templates.cond.edit_item", title=group.title)),
+                    callback_data=f"tp_conde:{template_id}:{base}",
+                ),
                 InlineKeyboardButton(
-                    tr("templates.cond.list_button"),
-                    callback_data=f"tp_condl:{template_id}",
-                )
-            ]
-        )
-    rows.append([_back(f"tp_condback:{template_id}:card")])
-    return _bricks_text(entries), InlineKeyboardMarkup(rows)
-
-
-def _no_bricks_content(
-    template_id: int, *, has_parts: bool = False
-) -> tuple[str, InlineKeyboardMarkup]:
-    text = "\n".join([tr("templates.cond.title"), "", tr("templates.cond.no_bricks")])
-    rows: list[list[InlineKeyboardButton]] = []
-    if has_parts:
-        # Правила остаются доступными даже когда в новом тексте нет
-        # кирпичиков: их можно посмотреть, исправить или удалить вручную.
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("templates.cond.list_button"),
-                    callback_data=f"tp_condl:{template_id}",
-                )
-            ]
-        )
-    rows.append([_back(f"tp_condback:{template_id}:card")])
-    return text, InlineKeyboardMarkup(rows)
-
-
-def _entry_header(cond: dict) -> str:
-    return tr(
-        "templates.cond.fragment_line",
-        code=cond.get("code") or "",
-        occurrence=cond.get("occurrence") or 1,
-        fragment=cond.get("fragment") or "",
-    )
-
-
-def _fragment_content(
-    cond: dict,
-    text: str,
-    entry: BrickEntry,
-) -> tuple[str, InlineKeyboardMarkup]:
-    template_id = int(cond["template_id"])
-    lines = [
-        tr("templates.cond.title"),
-        tr(
-            "templates.cond.entry_line",
-            code=entry.code,
-            occurrence=entry.occurrence,
-        ),
-        "",
-        tr("templates.cond.choose_fragment"),
-    ]
-    rows: list[list[InlineKeyboardButton]] = []
-    separator = _separator_fragment(entry, text)
-    if separator is not None:
-        lines.append(tr("templates.cond.separator_sample", fragment=separator[0]))
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("templates.cond.option_separator"),
-                    callback_data=f"tp_condf:{template_id}:sep",
-                )
-            ]
-        )
-    line = _line_fragment(entry, text)
-    if line is not None:
-        lines.append(tr("templates.cond.line_sample", fragment=line[0]))
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("templates.cond.option_line"),
-                    callback_data=f"tp_condf:{template_id}:line",
-                )
+                    tr("templates.cond.delete_item"),
+                    callback_data=f"tp_condd:{template_id}:{base}",
+                ),
             ]
         )
     rows.append(
         [
             InlineKeyboardButton(
-                tr("templates.cond.option_custom"),
-                callback_data=f"tp_condf:{template_id}:custom",
+                tr("templates.cond.add"),
+                callback_data=f"tp_condadd:{template_id}",
             )
         ]
     )
-    rows.append([_back(f"tp_condback:{template_id}:bricks")])
-    return "\n".join(lines), InlineKeyboardMarkup(rows)
-
-
-def _proposal_content(cond: dict) -> tuple[str, InlineKeyboardMarkup]:
-    template_id = int(cond["template_id"])
-    text = "\n".join(
-        [
-            tr("templates.cond.title"),
-            "",
-            tr("templates.cond.fragment_proposal", fragment=cond.get("fragment") or ""),
-            "",
-            tr("templates.cond.no_autosave"),
-        ]
-    )
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    tr("templates.cond.use"),
-                    callback_data=f"tp_conduse:{template_id}",
-                )
-            ],
-            [_back(f"tp_condback:{template_id}:fragment")],
-        ]
-    )
-    return text, keyboard
-
-
-def _custom_content(cond: dict) -> tuple[str, InlineKeyboardMarkup]:
-    template_id = int(cond["template_id"])
-    text = "\n".join(
-        [
-            tr("templates.cond.title"),
-            "",
-            tr("templates.cond.custom_prompt", code=cond.get("code") or ""),
-        ]
-    )
-    keyboard = InlineKeyboardMarkup([[_back(f"tp_condback:{template_id}:fragment")]])
-    return text, keyboard
-
-
-def _preview_content(cond: dict, text: str) -> tuple[str, InlineKeyboardMarkup]:
-    """Предпросмотр на реальном тексте секции (§40, шаг 4)."""
-    template_id = int(cond["template_id"])
-    brick_id = int(cond["brick_id"])
-    rule = ConditionalRule(
-        brick_id=brick_id,
-        fragment=str(cond.get("fragment") or ""),
-        occurrence=int(cond.get("occurrence") or 1),
-    )
-    empty_text = apply_conditional_parts(
-        text, [rule], is_empty=lambda value: value == brick_id
-    )
-    lines = [
-        tr("templates.cond.preview_title"),
-        _entry_header(cond),
-        "",
-        tr("templates.cond.preview_filled", text=text),
-        "",
-        tr("templates.cond.preview_empty", text=empty_text),
-    ]
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    tr("templates.cond.save"),
-                    callback_data=f"tp_conds:{template_id}",
-                )
-            ],
-            [_back(f"tp_condback:{template_id}:proposal")],
-        ]
-    )
-    return "\n".join(lines), keyboard
-
-
-def _with_error(
-    content: tuple[str, InlineKeyboardMarkup], cond: dict
-) -> tuple[str, InlineKeyboardMarkup]:
-    """
-    Добавляет понятное сообщение об ошибке к экрану шага.
-
-    Ошибка остаётся на этом же экране: автор исправляет фрагмент, не
-    возвращаясь к началу маршрута (§40, шаг 3).
-    """
-    error = cond.get("error")
-    if not error:
-        return content
-    text, keyboard = content
-    return f"{error}\n\n{text}", keyboard
-
-
-def _book(
-    cond: dict, session, telegram_user_id: int
-) -> tuple["tp.TemplateDetails | None", "list"]:
-    """Шаблон и правила, если автор всё ещё может их менять."""
-    template = _editable(
-        session, cond, telegram_user_id, int(cond.get("template_id") or 0)
-    )
-    if template is None:
-        return None, []
-    return template, _load_parts(session, telegram_user_id, template.template_id)
-
-
-def _status_title(part) -> str:
-    return (
-        tr("templates.cond.status_stale")
-        if part.status == STATUS_STALE
-        else tr("templates.cond.status_active")
-    )
-
-
-def _rule_content(part) -> tuple[str, InlineKeyboardMarkup]:
-    template_id = part.template_id
-    text = "\n".join(
-        [
-            tr("templates.cond.rule_title"),
-            "",
-            tr(
-                "templates.cond.rule_line",
-                code=part.code,
-                status=_status_title(part),
-                fragment=part.fragment,
-            ),
-        ]
-    )
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    tr("templates.cond.edit"),
-                    callback_data=f"tp_conde:{template_id}:{part.id}",
-                ),
-                InlineKeyboardButton(
-                    tr("buttons.templates.udalit"),
-                    callback_data=f"tp_condd:{template_id}:{part.id}",
-                ),
-            ],
-            [
-                InlineKeyboardButton(
-                    tr("templates.cond.list_button"),
-                    callback_data=f"tp_condl:{template_id}",
-                )
-            ],
-            [_back(f"tp_condback:{template_id}:card")],
-        ]
-    )
-    return text, keyboard
-
-
-def _list_content(parts: list, template_id: int) -> tuple[str, InlineKeyboardMarkup]:
-    stale = sum(1 for part in parts if part.status == STATUS_STALE)
-    lines = [tr("templates.cond.list_title"), ""]
-    if stale:
-        lines.append(tr("templates.cond.list_stale_warning", count=stale))
-        lines.append("")
-    if not parts:
-        lines.append(tr("templates.cond.list_empty"))
-    rows: list[list[InlineKeyboardButton]] = []
-    for index, part in enumerate(parts, start=1):
-        lines.append(
-            tr(
-                "templates.cond.list_item",
-                index=index,
-                code=part.code,
-                fragment=part.fragment,
-                status=_status_title(part),
-            )
-        )
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tp._short(
-                        tr(
-                            "templates.cond.list_button_item",
-                            index=index,
-                            code=part.code,
-                        )
-                    ),
-                    callback_data=f"tp_condo:{template_id}:{part.id}",
-                )
-            ]
-        )
+    nav = _nav_row(page_slice.page, page_slice.total_pages, template_id)
+    if nav is not None:
+        rows.append(nav)
     rows.append([_back(f"tp_condback:{template_id}:card")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-def _delete_content(part) -> tuple[str, InlineKeyboardMarkup]:
-    template_id = part.template_id
+def _bricks_content(
+    entries: list[BrickEntry],
+    groups: list[RuleGroup],
+    template_id: int,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Шаг 1: выбор кирпичика (без номеров вхождений и без текста фрагментов)."""
+    used = {(group.section, group.brick_id) for group in groups}
+    lines = [tr("templates.cond.list_title"), "", tr("templates.cond.choose_brick")]
+    rows: list[list[InlineKeyboardButton]] = []
+    for entry in entries:
+        title = _entry_label(
+            entry, show_section=_needs_section(entry.brick_id, entries)
+        )
+        lines.append(tr("templates.cond.entry", title=title))
+        label_key = (
+            "templates.cond.entry_button_edit"
+            if (entry.section, entry.brick_id) in used
+            else "templates.cond.entry_button"
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tp._short(tr(label_key, title=title)),
+                    callback_data=(
+                        f"tp_condb:{template_id}:{entry.flag}:{entry.brick_id}"
+                    ),
+                )
+            ]
+        )
+    if not entries:
+        lines = [
+            tr("templates.cond.list_title"),
+            "",
+            tr("templates.cond.no_bricks"),
+        ]
+    rows.append([_back(f"tp_condback:{template_id}:list")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def _mode_content(
+    template_id: int,
+    entry: BrickEntry,
+    current: str | None,
+    *,
+    show_section: bool,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Шаг 2: три способа скрытия с короткими человеческими примерами."""
+    lines = [
+        tr(
+            "templates.cond.mode_title",
+            title=_entry_label(entry, show_section=show_section),
+        ),
+        "",
+        tr("templates.cond.mode_line_example"),
+        tr("templates.cond.mode_sep_example"),
+        tr("templates.cond.mode_custom_example"),
+        "",
+        tr("templates.cond.mode_hint"),
+    ]
+    if current in MODES:
+        # Действующий способ виден в тексте, а не только подписью кнопки:
+        # автор сразу понимает, что произойдёт при повторном выборе.
+        lines.append(
+            tr(
+                "templates.cond.mode_current",
+                label=tr(MODE_TITLE_KEYS[current]),
+            )
+        )
+    rows: list[list[InlineKeyboardButton]] = []
+    for mode, key in (
+        (MODE_LINE, "templates.cond.mode_line_button"),
+        (MODE_SEPARATOR, "templates.cond.mode_sep_button"),
+        (MODE_FRAGMENT, "templates.cond.mode_custom_button"),
+    ):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tp._short(tr(key)),
+                    callback_data=f"tp_condf:{template_id}:{mode}",
+                )
+            ]
+        )
+    rows.append([_back(f"tp_condback:{template_id}:bricks")])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+def _custom_content(
+    template_id: int, entry: BrickEntry, *, show_section: bool
+) -> tuple[str, InlineKeyboardMarkup]:
+    text = "\n".join(
+        [
+            tr(
+                "templates.cond.label",
+                title=_entry_label(entry, show_section=show_section),
+            ),
+            "",
+            tr("templates.cond.custom_example"),
+            "",
+            tr("templates.cond.custom_prompt"),
+        ]
+    )
+    keyboard = InlineKeyboardMarkup([[_back(f"tp_condback:{template_id}:mode")]])
+    return text, keyboard
+
+
+def _delete_content(
+    group: RuleGroup, template_id: int, *, entries: list[BrickEntry]
+) -> tuple[str, InlineKeyboardMarkup]:
+    title = _rule_title(group, entries)
     text = tr(
         "templates.cond.delete_confirm",
-        code=part.code,
-        fragment=part.fragment,
+        title=title,
+        mode=group.mode_title(),
     )
     keyboard = InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
                     tr("templates.cond.delete_yes"),
-                    callback_data=f"tp_conddy:{template_id}:{part.id}",
+                    callback_data=(
+                        f"tp_conddy:{template_id}:{group.flag}:{group.brick_id}"
+                    ),
                 )
             ],
-            [_back(f"tp_condback:{template_id}:rule")],
+            [_back(f"tp_condback:{template_id}:list")],
         ]
     )
     return text, keyboard
@@ -687,9 +757,8 @@ def _editable(session, state: dict, telegram_user_id: int, template_id: int):
     Шаблон, который автор всё ещё может менять.
 
     Права проверяет `tp._load_editable` (для стандарта — действующий админ
-    места или суперадмин), поэтому маршрут правил не дублирует проверку по
-    признаку `origin`: состояние может быть восстановлено после перезапуска
-    без этого поля, а права от этого не меняются.
+    места или суперадмин). Признак `origin` здесь не используется: движок
+    правил один для личных шаблонов и стандарта места (Poster 2.5.2 §6).
     """
     return tp._load_editable(session, telegram_user_id, template_id)
 
@@ -697,7 +766,7 @@ def _editable(session, state: dict, telegram_user_id: int, template_id: int):
 def _guard(
     update: Update, context: ContextTypes.DEFAULT_TYPE, template_id: int
 ) -> dict | None:
-    """Общая проверка: экран правила открыт из актуальной карточки."""
+    """Общая проверка: экран правил открыт из актуальной карточки."""
     cond = _state(ctx.data(context))
     if cond.get("template_id") != template_id or cond.get("step") is None:
         return None
@@ -705,7 +774,23 @@ def _guard(
 
 
 async def _stale(update: Update) -> None:
-    await ctx.query(update).answer(tp.STALE_TEXT, show_alert=True)
+    await _answer(update, tp.STALE_TEXT, show_alert=True)
+
+
+async def _answer(
+    update: Update, text: str | None = None, *, show_alert: bool = False
+) -> None:
+    """
+    Короткий ответ на действие автора.
+
+    Свой фрагмент приходит текстовым сообщением (события callback нет),
+    поэтому ответ отправляется только тогда, когда он вообще возможен:
+    иначе всплывающая подсказка уронила бы обработчик.
+    """
+    query = update.callback_query
+    if query is None:
+        return
+    await query.answer(text, show_alert=show_alert)
 
 
 def _ids(data: str, prefix: str, count: int) -> list[int] | None:
@@ -720,13 +805,21 @@ def _ids(data: str, prefix: str, count: int) -> list[int] | None:
         return None
 
 
-def _fragment_span(text: str, fragment: str, occurrence: int) -> tuple[int, int] | None:
-    start = -1
-    for _ in range(max(1, occurrence)):
-        start = text.find(fragment, start + 1)
-        if start < 0:
-            return None
-    return start, start + len(fragment)
+def _section_brick(data: str, prefix: str) -> tuple[int, str, int] | None:
+    """Разбирает `prefix:<template>:<c|e>:<brick>`; иначе `None`."""
+    if not data.startswith(prefix):
+        return None
+    raw = data[len(prefix) :].split(":")
+    if len(raw) != 3:
+        return None
+    try:
+        template_id, brick_id = int(raw[0]), int(raw[2])
+    except ValueError:
+        return None
+    section = FLAG_SECTIONS.get(raw[1])
+    if section is None:
+        return None
+    return template_id, section, brick_id
 
 
 def _cond_input_on(
@@ -769,12 +862,12 @@ def _load_parts(session, telegram_user_id: int, template_id: int) -> list:
         return []
 
 
-def _find_part(parts: list, part_id: object):
-    if not isinstance(part_id, int):
-        return None
-    for part in parts:
-        if part.id == part_id:
-            return part
+def _find_group(
+    groups: list[RuleGroup], section: str, brick_id: int
+) -> RuleGroup | None:
+    for group in groups:
+        if group.section == section and group.brick_id == brick_id:
+            return group
     return None
 
 
@@ -787,50 +880,46 @@ def _content_for(
     """
     Содержимое текущего шага; чистая функция от домена и состояния.
 
-    `None` — выбранное вхождение кирпичика исчезло (текст изменился в
-    другом окне). Вызывающий возвращает автора к выбору кирпичика, а не
-    рисует экран с пустым фрагментом.
+    `None` — выбранный кирпичик исчез из текста (правка в другом окне).
+    Вызывающий возвращает автора к выбору кирпичика, а не рисует экран с
+    пустым правилом.
     """
     template_id = template.template_id
     step = cond.get("step")
-    section = str(cond.get("section") or SECTION_CONTENT)
-    section_text = _section_text(template, section)
-    if step in {STEP_FRAGMENT, STEP_CUSTOM, STEP_PROPOSAL, STEP_PREVIEW}:
-        entry = _find_entry(
-            template,
-            section,
-            int(cond.get("brick_id") or 0),
-            int(cond.get("occurrence") or 1),
+    groups = _group_rules(session, telegram_user_id, template)
+    entries = _entries(template)
+    if step == STEP_LIST:
+        return _list_content(groups, entries, template_id, int(cond.get("page") or 0))
+    section = str(cond.get("section") or SECTION_EXTENDED_CONTENT)
+    brick_id = int(cond.get("brick_id") or 0)
+    entry = _entry(template, section, brick_id)
+    if step == STEP_BRICKS:
+        return _bricks_content(entries, groups, template_id)
+    if step == STEP_DELETE:
+        group = _find_group(groups, section, brick_id)
+        if group is None:
+            cond["step"] = STEP_LIST
+            return _list_content(
+                groups, entries, template_id, int(cond.get("page") or 0)
+            )
+        return _delete_content(group, template_id, entries=entries)
+    if entry is None:
+        return None
+    if step == STEP_MODE:
+        group = _find_group(groups, section, brick_id)
+        return _mode_content(
+            template_id,
+            entry,
+            group.mode if group else None,
+            show_section=_needs_section(entry.brick_id, entries),
         )
-        if entry is None:
-            return None
-        if step == STEP_FRAGMENT:
-            result = _fragment_content(cond, section_text, entry)
-        elif step == STEP_CUSTOM:
-            result = _custom_content(cond)
-        elif step == STEP_PROPOSAL:
-            result = _proposal_content(cond)
-        else:
-            result = _preview_content(cond, section_text)
-        return _with_error(result, cond)
-    if step in {STEP_LIST, STEP_RULE, STEP_DELETE}:
-        parts = _load_parts(session, telegram_user_id, template_id)
-        part = _find_part(parts, cond.get("part_id"))
-        if step == STEP_LIST or part is None:
-            if part is None and step != STEP_LIST:
-                # Правило удалено в другом окне: показываем список, а не
-                # экран с пустым фрагментом.
-                cond["step"] = STEP_LIST
-                cond["part_id"] = None
-            return _list_content(parts, template_id)
-        if step == STEP_RULE:
-            return _rule_content(part)
-        return _delete_content(part)
-    entries = _entries_for_template(template)
-    has_parts = bool(_load_parts(session, telegram_user_id, template_id))
-    if entries:
-        return _bricks_content(entries, template_id, has_parts=has_parts)
-    return _no_bricks_content(template_id, has_parts=has_parts)
+    if step == STEP_CUSTOM:
+        return _custom_content(
+            template_id,
+            entry,
+            show_section=_needs_section(entry.brick_id, entries),
+        )
+    return None
 
 
 # --- Отрисовка экрана правила -----------------------------------------------
@@ -866,8 +955,9 @@ async def _render_cond(
     Рисует текущий шаг раздела правил в том же служебном экране.
 
     Доменные данные здесь не меняются: функция читает шаблон и правила.
-    Если шаблон исчез или пропали права, автор возвращается в карточку с
-    понятным сообщением (`tp._render_phase` сам восстановит хаб).
+    Если шаблон исчез, пропали права или исчезла расширенная версия, автор
+    возвращается в карточку с понятным сообщением (`tp._render_phase` сам
+    восстановит хаб).
     """
     template_id = cond.get("template_id")
     if not isinstance(template_id, int) or template_id <= 0:
@@ -890,7 +980,7 @@ async def _render_cond(
     session = tp.SessionLocal()
     try:
         template = _editable(session, state, telegram_user_id, template_id)
-        if template is None:
+        if template is None or not tp.conditional_parts_available(template):
             _forget(context)
             _cond_input_on(context, cond, flag=False)
             await tp._render_phase(
@@ -902,17 +992,16 @@ async def _render_cond(
             return False
         content = _content_for(session, template, cond, telegram_user_id)
         if content is None:
-            # Вхождение кирпичика исчезло после правки текста в другом окне.
+            # Кирпичик исчез после правки текста в другом окне.
             cond["step"] = STEP_BRICKS
             cond["error"] = None
             cond["notice"] = tr("templates.cond.entry_gone")
             content = _content_for(session, template, cond, telegram_user_id)
             if content is None:
-                # Правила могли остаться от прежней версии: кнопка списка
-                # должна быть и в ветке «вхождений больше нет» (§44).
-                content = _no_bricks_content(
+                content = _bricks_content(
+                    _entries(template),
+                    _group_rules(session, telegram_user_id, template),
                     template.template_id,
-                    has_parts=bool(_load_parts(session, telegram_user_id, template_id)),
                 )
         text, keyboard = content
         page = state.get("page")
@@ -930,9 +1019,14 @@ async def _render_cond(
     finally:
         session.close()
     _remember(context, cond)
-    shown = f"{cond['notice']}\n\n{text}" if cond.get("notice") else text
+    prefixes = [prefix for prefix in (notice, cond.get("notice")) if prefix]
     cond.pop("notice", None)
-    body = f"{notice}\n\n{shown}" if notice else shown
+    if cond.get("error"):
+        # Ошибка шага живёт до следующего действия: автор должен увидеть,
+        # почему фрагмент не принят, и остаться на том же экране.
+        prefixes.append(str(cond["error"]))
+    shown = "\n\n".join([*prefixes, text]) if prefixes else text
+    body = shown
     return await tp._show(update, context, state, body, keyboard, drop_input=drop_input)
 
 
@@ -940,9 +1034,11 @@ async def _render_cond(
 
 
 async def handle_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Карточка шаблона → «🧩 Условные части» (spec §40, шаг 1)."""
+    """Карточка расширенного шаблона → «🧩 Условные части»."""
     query = ctx.query(update)
     template_id = tp._callback_id(query.data or "", "tp_cond:")
+    if template_id is None:
+        template_id = tp._callback_id(query.data or "", "tp_condl:")
     cond_state = load_template_session(ctx.user(update).id)
     if template_id is None:
         await _stale(update)
@@ -957,7 +1053,8 @@ async def handle_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     session = tp.SessionLocal()
     try:
         template = _editable(session, cond_state, telegram_user_id, template_id)
-        if template is None:
+        if template is None or not tp.conditional_parts_available(template):
+            # Простой шаблон правила не показывает и не заводит (§6).
             await query.answer(tp.DENIED_TEXT, show_alert=True)
             return
         await query.answer()
@@ -968,59 +1065,126 @@ async def handle_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     await _render_cond(update, context, cond)
 
 
-async def handle_bricks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Шаг 1: выбран конкретный кирпичик (с номером вхождения)."""
+async def handle_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Навигация `◀️ | 1 / 3 | ▶️` по списку правил."""
     query = ctx.query(update)
-    raw = (query.data or "")[len("tp_condb:") :].split(":")
-    if len(raw) != 4:
+    ids = _ids(query.data or "", "tp_condp:", 2)
+    if ids is None:
         await _stale(update)
         return
-    try:
-        template_id = int(raw[0])
-        brick_id = int(raw[2])
-        occurrence = int(raw[3])
-    except ValueError:
-        await _stale(update)
-        return
+    template_id, offset = ids
     cond = _guard(update, context, template_id)
     if cond is None:
         await _stale(update)
         return
-    section = SECTION_EXTENDED_CONTENT if raw[1] == "e" else SECTION_CONTENT
+    await query.answer()
+    cond["step"] = STEP_LIST
+    cond["page"] = max(offset, 0) // pagination.PAGE_SIZE
+    await _render_cond(update, context, cond)
+
+
+async def handle_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """«➕ Новая условная часть» → выбор кирпичика."""
+    query = ctx.query(update)
+    template_id = tp._callback_id(query.data or "", "tp_condadd:")
+    cond = _guard(update, context, template_id) if template_id is not None else None
+    if cond is None:
+        await _stale(update)
+        return
+    await query.answer()
+    _cond_input_on(context, cond, flag=False)
+    cond.update({"step": STEP_BRICKS, "brick_id": None, "error": None})
+    await _render_cond(update, context, cond)
+
+
+def _bricks_target(data: str) -> tuple[int, str, int] | None:
+    """
+    Разбирает выбор кирпичика.
+
+    Действующий протокол — `tp_condb:<template>:<c|e>:<brick>`. Прежние
+    варианты (`tp_condb:<template>:<brick>` и `…:<c|e>:<brick>:<вхождение>`)
+    принимаются ради старых кнопок: номер вхождения в интерфейсе больше не
+    показывается, но нажатие не должно ломаться.
+    """
+    data = data or ""
+    target = _section_brick(data, "tp_condb:")
+    if target is not None:
+        return target
+    if not data.startswith("tp_condb:"):
+        return None
+    raw = data[len("tp_condb:") :].split(":")
+    if len(raw) == 2:
+        try:
+            return int(raw[0]), SECTION_EXTENDED_CONTENT, int(raw[1])
+        except ValueError:
+            return None
+    if len(raw) == 3 and raw[1] in FLAG_SECTIONS:
+        try:
+            return int(raw[0]), FLAG_SECTIONS[raw[1]], int(raw[2])
+        except ValueError:
+            return None
+    if len(raw) == 4 and raw[1] in FLAG_SECTIONS:
+        try:
+            return int(raw[0]), FLAG_SECTIONS[raw[1]], int(raw[2])
+        except ValueError:
+            return None
+    return None
+
+
+async def handle_bricks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Выбран кирпичик: автор выбирает способ скрытия."""
+    query = ctx.query(update)
+    target = _bricks_target(query.data or "")
+    if target is None:
+        await _stale(update)
+        return
+    template_id, section, brick_id = target
+    cond = _guard(update, context, template_id)
+    if cond is None:
+        await _stale(update)
+        return
     telegram_user_id = ctx.user(update).id
     session = tp.SessionLocal()
     try:
         template = _editable(session, cond, telegram_user_id, template_id)
-        entry = (
-            _find_entry(template, section, brick_id, occurrence)
+        entry = _entry(template, section, brick_id) if template is not None else None
+        groups = (
+            _group_rules(session, telegram_user_id, template)
             if template is not None
-            else None
+            else []
         )
     finally:
         session.close()
     if entry is None:
-        await query.answer(tr("templates.cond.entry_gone"), show_alert=True)
-        cond["step"] = STEP_BRICKS
-        await _render_cond(update, context, cond)
-        return
+        # Кирпичик есть в старом правиле, но не в тексте: правило всё равно
+        # должно остаться доступным (§44).
+        group = _find_group(groups, section, brick_id)
+        if group is None:
+            await query.answer(tr("templates.cond.entry_gone"), show_alert=True)
+            cond["step"] = STEP_BRICKS
+            await _render_cond(update, context, cond)
+            return
+        entry = BrickEntry(
+            section=group.section,
+            brick_id=group.brick_id,
+            code=group.code,
+            title=group.title,
+            occurrences=(),
+        )
     await query.answer()
     cond.update(
         {
-            "step": STEP_FRAGMENT,
-            "section": section,
+            "step": STEP_MODE,
+            "section": entry.section,
             "brick_id": brick_id,
-            "code": entry.code,
-            "occurrence": occurrence,
-            "fragment": None,
-            "part_id": None,
             "error": None,
         }
     )
     await _render_cond(update, context, cond)
 
 
-async def handle_fragment(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Шаг 2: выбран способ скрытия — разделитель, строка или свой фрагмент."""
+async def handle_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Выбран способ скрытия: сразу сохраняем одно правило на все вхождения."""
     query = ctx.query(update)
     data = query.data or ""
     parts = data[len("tp_condf:") :].split(":") if data.startswith("tp_condf:") else []
@@ -1032,32 +1196,37 @@ async def handle_fragment(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except ValueError:
         await _stale(update)
         return
+    mode = parts[1]
+    if mode not in MODES:
+        await _stale(update)
+        return
     cond = _guard(update, context, template_id)
     if cond is None:
         await _stale(update)
         return
-    kind = parts[1]
-    await query.answer()
-    if kind == "custom":
+    if mode == MODE_FRAGMENT:
+        await query.answer()
         cond["step"] = STEP_CUSTOM
         cond["error"] = None
         _cond_input_on(context, cond, flag=True)
         await _render_cond(update, context, cond)
         return
-    await _apply_proposal(update, context, cond, kind)
+    await query.answer()
+    await _apply_mode(update, context, cond, mode)
 
 
-async def _apply_proposal(
+async def _apply_mode(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     cond: dict,
-    kind: str,
+    mode: str,
+    custom: str | None = None,
 ) -> None:
     """
-    Готовит предложенный фрагмент к предпросмотру (§40, шаг 2).
+    Сохраняет правило выбранного способа.
 
-    Предложенный вариант не сохраняется автоматически: он показывается на
-    экране подтверждения, откуда можно вернуться и выбрать другой.
+    Один кирпичик — одно правило: строки прежнего правила этого кирпичика
+    заменяются целиком, поэтому повторное применение не создаёт дублей.
     """
     template_id = int(cond["template_id"])
     telegram_user_id = ctx.user(update).id
@@ -1068,262 +1237,229 @@ async def _apply_proposal(
             _forget(context)
             await _stale(update)
             return
-        entry = _find_entry(
-            template,
-            str(cond.get("section")),
-            int(cond.get("brick_id") or 0),
-            int(cond.get("occurrence") or 1),
-        )
+        section = str(cond.get("section") or SECTION_EXTENDED_CONTENT)
+        brick_id = int(cond.get("brick_id") or 0)
+        entry = _entry(template, section, brick_id)
         if entry is None:
             cond["step"] = STEP_BRICKS
             cond["error"] = tr("templates.cond.entry_gone")
             await _render_cond(update, context, cond)
             return
-        text = _section_text(template, entry.section)
-        proposal = _proposal(entry, text, kind)
+        text = _section_text(template, section)
+        fragments = _mode_fragments(text, entry.code, mode, custom)
+        if not fragments:
+            cond["error"] = tr(
+                "templates.cond.custom_not_all"
+                if custom
+                else "templates.cond.proposal_unavailable"
+            )
+            cond["step"] = STEP_CUSTOM if custom else STEP_MODE
+            await _render_cond(update, context, cond)
+            return
+        result = replace_conditional_rules(
+            session,
+            actor_telegram_user_id=telegram_user_id,
+            template_id=template_id,
+            expected_revision=template.revision,
+            section=section,
+            brick_id=brick_id,
+            fragments=fragments,
+        )
+    except Exception as exc:  # noqa: BLE001 — автор не должен видеть traceback
+        logger.exception("Не удалось сохранить условную часть: %s", exc)
+        await _answer(update, tr("templates.cond.save_failed"), show_alert=True)
+        return
     finally:
         session.close()
-    if proposal is None:
-        cond["error"] = tr("templates.cond.proposal_unavailable")
+    if result.status == "stale":
+        await _answer(update, tr("templates.cond.template_changed"), show_alert=True)
+        cond.update({"step": STEP_LIST, "brick_id": None})
+        _cond_input_on(context, cond, flag=False)
         await _render_cond(update, context, cond)
         return
-    fragment, occurrence = proposal
+    if not result.ok:
+        await _answer(update)
+        cond["error"] = result.message or tr("templates.cond.save_failed")
+        cond["step"] = STEP_CUSTOM if custom else STEP_MODE
+        await _render_cond(update, context, cond)
+        return
+    # Ответ на callback — подсказка; при вводе текста его нет, и это норма.
+    await _answer(update, tr("templates.cond.saved_toast"))
+    _cond_input_on(context, cond, flag=False)
     cond.update(
         {
-            "step": STEP_PROPOSAL,
-            "fragment": fragment,
-            "occurrence": occurrence,
+            "step": STEP_LIST,
+            "brick_id": None,
             "error": None,
         }
     )
-    _cond_input_on(context, cond, flag=False)
     await _render_cond(update, context, cond)
 
 
-async def handle_use(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Шаг 3: автор подтвердил фрагмент — предпросмотр «заполнен/пуст»."""
-    query = ctx.query(update)
-    data = query.data or ""
-    try:
-        template_id = int(data[len("tp_conduse:") :])
-    except ValueError:
-        await _stale(update)
-        return
-    cond = _guard(update, context, template_id)
-    if cond is None or not cond.get("fragment"):
-        await _stale(update)
-        return
-    await query.answer()
-    cond["step"] = STEP_PREVIEW
-    cond["error"] = None
-    await _render_cond(update, context, cond)
+def _resolve_edit_target(
+    session,
+    telegram_user_id: int,
+    template_id: int,
+    data: str,
+) -> tuple[str, int] | None:
+    """
+    Кирпичик для правки: действующий протокол или прежний `:<id правила>`.
+
+    Старый протокол передавал id правила; он принимается, чтобы нажатие
+    кнопки, отправленной до обновления, не привело к пустому экрану.
+    """
+    target = _section_brick(data, "tp_conde:")
+    if target is not None:
+        return target[1], target[2]
+    ids = _ids(data, "tp_conde:", 2)
+    if ids is None:
+        return None
+    part = next(
+        (
+            row
+            for row in _load_parts(session, telegram_user_id, template_id)
+            if row.id == ids[1]
+        ),
+        None,
+    )
+    if part is None:
+        return None
+    return part.section, part.brick_id
 
 
-async def handle_save(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Шаг 4: сохранение правила (или правка существующего)."""
+async def handle_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """«✏️ Изменить» из компактного списка: те же три способа скрытия."""
     query = ctx.query(update)
     data = query.data or ""
-    try:
-        template_id = int(data[len("tp_conds:") :])
-    except ValueError:
+    ids = _ids(data, "tp_conde:", 2)
+    target = _section_brick(data, "tp_conde:")
+    if ids is None and target is None:
         await _stale(update)
         return
+    template_id = ids[0] if ids is not None else target[0]  # type: ignore[index]
     cond = _guard(update, context, template_id)
-    if cond is None or not cond.get("fragment"):
+    if cond is None:
         await _stale(update)
         return
     telegram_user_id = ctx.user(update).id
     session = tp.SessionLocal()
     try:
         template = _editable(session, cond, telegram_user_id, template_id)
-        if template is None:
-            await query.answer(tp.DENIED_TEXT, show_alert=True)
-            return
-        part_id = cond.get("part_id")
-        if isinstance(part_id, int):
-            result = update_conditional_part(
-                session,
-                actor_telegram_user_id=telegram_user_id,
-                part_id=part_id,
-                expected_revision=template.revision,
-                fragment=cond.get("fragment"),
-                occurrence=int(cond.get("occurrence") or 1),
-                repair=True,
-            )
-        else:
-            result = create_conditional_part(
-                session,
-                actor_telegram_user_id=telegram_user_id,
-                template_id=template_id,
-                expected_revision=template.revision,
-                section=str(cond.get("section") or SECTION_CONTENT),
-                brick_id=int(cond.get("brick_id") or 0),
-                fragment=cond.get("fragment"),
-                occurrence=int(cond.get("occurrence") or 1),
-            )
-    except Exception as exc:  # noqa: BLE001 — автор не должен видеть traceback
-        logger.exception("Не удалось сохранить условную часть: %s", exc)
-        await query.answer(tr("templates.cond.save_failed"), show_alert=True)
-        return
+        resolved = (
+            _resolve_edit_target(session, telegram_user_id, template_id, data)
+            if template is not None
+            else None
+        )
+        groups = (
+            _group_rules(session, telegram_user_id, template)
+            if template is not None
+            else []
+        )
     finally:
         session.close()
-    if result.status == "stale":
-        await query.answer(tr("templates.cond.template_changed"), show_alert=True)
-        cond.update({"step": STEP_LIST, "part_id": None})
-        await _render_cond(update, context, cond)
-        return
-    if not result.ok:
-        # Понятное сообщение домена — на экран предпросмотра, автор остаётся
-        # в маршруте и может исправить фрагмент.
-        await query.answer()
-        cond["error"] = result.message or tr("templates.cond.save_failed")
-        cond["step"] = STEP_PROPOSAL
-        await _render_cond(update, context, cond)
-        return
-    await query.answer(tr("templates.cond.saved_toast"))
-    _cond_input_on(context, cond, flag=False)
-    cond.update(
-        {
-            "step": STEP_LIST,
-            "brick_id": None,
-            "code": None,
-            "fragment": None,
-            "part_id": None,
-            "error": None,
-        }
-    )
-    await _render_cond(update, context, cond)
-
-
-async def handle_list(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Все правила шаблона: активные и требующие перенастройки."""
-    query = ctx.query(update)
-    data = query.data or ""
-    try:
-        template_id = int(data[len("tp_condl:") :])
-    except ValueError:
-        await _stale(update)
-        return
-    cond = _guard(update, context, template_id)
-    if cond is None:
-        await _stale(update)
-        return
-    await query.answer()
-    _cond_input_on(context, cond, flag=False)
-    cond.update({"step": STEP_LIST, "part_id": None, "error": None})
-    await _render_cond(update, context, cond)
-
-
-async def handle_rule(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Карточка правила: фрагмент целиком, Изменить/Удалить/Назад."""
-    query = ctx.query(update)
-    data = query.data or ""
-    parts = data[len("tp_condo:") :].split(":") if data.startswith("tp_condo:") else []
-    if len(parts) != 2:
-        await _stale(update)
-        return
-    try:
-        template_id, part_id = int(parts[0]), int(parts[1])
-    except ValueError:
-        await _stale(update)
-        return
-    cond = _guard(update, context, template_id)
-    if cond is None:
-        await _stale(update)
-        return
-    await query.answer()
-    cond.update({"step": STEP_RULE, "part_id": part_id, "error": None})
-    await _render_cond(update, context, cond)
-
-
-async def handle_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    «Изменить»: открывает выбор фрагмента для существующего правила.
-
-    Если правило относится к прежней версии или помечено `stale`, оно
-    привязывается к текущей версии через `repair=True` при сохранении —
-    «висеть» на несуществующем тексте правило не остаётся (§44).
-    """
-    query = ctx.query(update)
-    data = query.data or ""
-    parts = data[len("tp_conde:") :].split(":") if data.startswith("tp_conde:") else []
-    if len(parts) != 2:
-        await _stale(update)
-        return
-    try:
-        template_id, part_id = int(parts[0]), int(parts[1])
-    except ValueError:
-        await _stale(update)
-        return
-    cond = _guard(update, context, template_id)
-    if cond is None:
-        await _stale(update)
-        return
-    telegram_user_id = ctx.user(update).id
-    session = tp.SessionLocal()
-    try:
-        parts_list = _load_parts(session, telegram_user_id, template_id)
-        part = _find_part(parts_list, part_id)
-    finally:
-        session.close()
-    if part is None:
+    if resolved is None:
         await query.answer(tr("templates.cond.rule_gone"), show_alert=True)
-        cond.update({"step": STEP_LIST, "part_id": None})
+        cond.update({"step": STEP_LIST, "brick_id": None})
+        await _render_cond(update, context, cond)
+        return
+    section, brick_id = resolved
+    group = _find_group(groups, section, brick_id)
+    if group is None:
+        await query.answer(tr("templates.cond.rule_gone"), show_alert=True)
+        cond.update({"step": STEP_LIST, "brick_id": None})
         await _render_cond(update, context, cond)
         return
     await query.answer()
     cond.update(
         {
-            "step": STEP_FRAGMENT,
-            "section": part.section,
-            "brick_id": part.brick_id,
-            "code": part.code,
-            "occurrence": part.occurrence,
-            "fragment": part.fragment,
-            "part_id": part.id,
+            "step": STEP_MODE,
+            "section": group.section,
+            "brick_id": group.brick_id,
             "error": None,
         }
     )
     await _render_cond(update, context, cond)
+
+
+def _group_for_callback(
+    session,
+    telegram_user_id: int,
+    template_id: int,
+    data: str,
+    prefix: str,
+) -> RuleGroup | None:
+    """
+    Правило по callback-данным удаления.
+
+    Действующий протокол — `:<секция>:<кирпичик>`; прежний `:<id правила>`
+    принимается, чтобы старая кнопка не открывала пустой экран.
+    """
+    template = tp._load_editable(session, telegram_user_id, template_id)
+    if template is None:
+        return None
+    groups = _group_rules(session, telegram_user_id, template)
+    target = _section_brick(data, prefix)
+    if target is not None:
+        return _find_group(groups, target[1], target[2])
+    ids = _ids(data, prefix, 2)
+    if ids is None:
+        return None
+    brick_id = ids[1]
+    for group in groups:
+        if group.brick_id == brick_id or brick_id in group.part_ids:
+            return group
+    return None
 
 
 async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """«Удалить» — экран подтверждения, правило удаляется только явно."""
     query = ctx.query(update)
     data = query.data or ""
-    parts = data[len("tp_condd:") :].split(":") if data.startswith("tp_condd:") else []
-    if len(parts) != 2:
+    ids = _ids(data, "tp_condd:", 2)
+    target = _section_brick(data, "tp_condd:")
+    if ids is None and target is None:
         await _stale(update)
         return
-    try:
-        template_id, part_id = int(parts[0]), int(parts[1])
-    except ValueError:
-        await _stale(update)
-        return
+    template_id = ids[0] if ids is not None else target[0]  # type: ignore[index]
     cond = _guard(update, context, template_id)
     if cond is None:
         await _stale(update)
         return
+    telegram_user_id = ctx.user(update).id
+    session = tp.SessionLocal()
+    try:
+        group = _group_for_callback(
+            session, telegram_user_id, template_id, data, "tp_condd:"
+        )
+    finally:
+        session.close()
+    if group is None:
+        await query.answer(tr("templates.cond.rule_gone"), show_alert=True)
+        cond.update({"step": STEP_LIST, "brick_id": None})
+        await _render_cond(update, context, cond)
+        return
     await query.answer()
-    cond.update({"step": STEP_DELETE, "part_id": part_id, "error": None})
+    cond.update(
+        {
+            "step": STEP_DELETE,
+            "section": group.section,
+            "brick_id": group.brick_id,
+            "error": None,
+        }
+    )
     await _render_cond(update, context, cond)
 
 
 async def handle_delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Подтверждённое удаление правила."""
+    """Подтверждённое удаление правила целиком (все вхождения кирпичика)."""
     query = ctx.query(update)
     data = query.data or ""
-    parts = (
-        data[len("tp_conddy:") :].split(":") if data.startswith("tp_conddy:") else []
-    )
-    if len(parts) != 2:
+    ids = _ids(data, "tp_conddy:", 2)
+    target = _section_brick(data, "tp_conddy:")
+    if ids is None and target is None:
         await _stale(update)
         return
-    try:
-        template_id, part_id = int(parts[0]), int(parts[1])
-    except ValueError:
-        await _stale(update)
-        return
+    template_id = ids[0] if ids is not None else target[0]  # type: ignore[index]
     cond = _guard(update, context, template_id)
     if cond is None:
         await _stale(update)
@@ -1332,11 +1468,22 @@ async def handle_delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     session = tp.SessionLocal()
     try:
         template = _editable(session, cond, telegram_user_id, template_id)
-        result = delete_conditional_part(
+        group = _group_for_callback(
+            session, telegram_user_id, template_id, data, "tp_conddy:"
+        )
+        if template is None or group is None:
+            await query.answer(tr("templates.cond.rule_gone"), show_alert=True)
+            cond.update({"step": STEP_LIST, "brick_id": None})
+            await _render_cond(update, context, cond)
+            return
+        result = replace_conditional_rules(
             session,
             actor_telegram_user_id=telegram_user_id,
-            part_id=part_id,
-            expected_revision=template.revision if template is not None else None,
+            template_id=template_id,
+            expected_revision=template.revision,
+            section=group.section,
+            brick_id=group.brick_id,
+            fragments=(),
         )
     except Exception as exc:  # noqa: BLE001 — удаление не должно ломать экран
         logger.exception("Не удалось удалить условную часть: %s", exc)
@@ -1350,17 +1497,12 @@ async def handle_delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.answer(tr("templates.cond.deleted_toast"))
     else:
         await query.answer(result.message or tr("templates.cond.delete_failed"))
-    cond.update({"step": STEP_LIST, "part_id": None, "error": None})
+    cond.update({"step": STEP_LIST, "brick_id": None, "error": None})
     await _render_cond(update, context, cond)
 
 
 async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    «Назад» внутри раздела правил — фактический предыдущий шаг (§8).
-
-    Из первого шага возвращает в карточку шаблона; текст и состояние
-    шаблона при этом не теряются.
-    """
+    """«Назад» внутри раздела правил — фактический предыдущий шаг."""
     query = ctx.query(update)
     data = query.data or ""
     parts = (
@@ -1385,7 +1527,7 @@ async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     _cond_input_on(context, cond, flag=False)
     if target == "card":
         # Возврат в карточку: правила забываются, текст и страница списка
-        # остаются прежними (§8).
+        # остаются прежними.
         _forget(context)
         state = load_template_session(ctx.user(update).id)
         if not tp._valid_state(state) or state.get("template_id") != template_id:
@@ -1399,16 +1541,15 @@ async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     cond["step"] = target
     cond["error"] = None
-    if target == STEP_BRICKS:
-        cond["part_id"] = None
-        cond["fragment"] = None
+    if target in {STEP_LIST, STEP_BRICKS}:
+        cond["brick_id"] = None
     await _render_cond(update, context, cond)
 
 
 async def handle_custom_text(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
-    """Свой фрагмент: проверка по store, ошибка — остаться на вводе (§40)."""
+    """Свой фрагмент: применяем ко всем вхождениям кирпичика (§6)."""
     cond = _state(ctx.data(context))
     if cond.get("step") != STEP_CUSTOM:
         return
@@ -1417,44 +1558,13 @@ async def handle_custom_text(
         return
     message = ctx.message(update)
     # Срезаются только внешние переводы строк: ведущий пробел фрагмента
-    # значим (§42-В: ` ([адрес])` — часть авторского текста), поэтому
-    # предпросмотр обязан совпасть с сохранённым.
+    # значим (§42-В: ` ([адрес])` — часть авторского текста).
     fragment = (message.text or "").strip("\n")
-    telegram_user_id = ctx.user(update).id
-    session = tp.SessionLocal()
-    try:
-        template = _editable(session, cond, telegram_user_id, template_id)
-        entry = (
-            _find_entry(
-                template,
-                str(cond.get("section")),
-                int(cond.get("brick_id") or 0),
-                int(cond.get("occurrence") or 1),
-            )
-            if template is not None
-            else None
-        )
-        text = _section_text(template, str(cond.get("section"))) if template else ""
-        if entry is None or template is None:
-            error: str | None = tr("templates.cond.entry_gone")
-        else:
-            checked = _custom_fragment(entry, text, fragment)
-            if isinstance(checked, str):
-                error = checked
-            else:
-                cond["fragment"], cond["occurrence"] = checked
-                error = None
-    finally:
-        session.close()
-    if error is not None:
-        # Остаёмся на вводе: сообщение пользователя не удаляется (§5.3).
-        cond["error"] = error
+    if not fragment.strip():
+        cond["error"] = tr("templates.cond.custom_error_empty")
         await _render_cond(update, context, cond)
         return
-    cond["step"] = STEP_PREVIEW
-    cond["error"] = None
-    _cond_input_on(context, cond, flag=False)
-    await _render_cond(update, context, cond, drop_input=True)
+    await _apply_mode(update, context, cond, MODE_FRAGMENT, fragment)
 
 
 # --- Регистрация -------------------------------------------------------------
@@ -1490,20 +1600,26 @@ class CondTextHandler(MessageHandler):
 
 
 def conditional_handlers() -> list[BaseHandler]:
-    """Обработчики раздела «Условные части» шаблона (spec §39–45)."""
+    """Обработчики раздела «Условные части» шаблона (Poster 2.5.2 §6–7)."""
     return [
         CallbackQueryHandler(handle_open, pattern=r"^tp_cond:\d+$"),
-        CallbackQueryHandler(handle_bricks, pattern=r"^tp_condb:\d+:[ce]:\d+:\d+$"),
+        CallbackQueryHandler(handle_page, pattern=r"^tp_condp:\d+:\d+$"),
+        CallbackQueryHandler(handle_add, pattern=r"^tp_condadd:\d+$"),
         CallbackQueryHandler(
-            handle_fragment, pattern=r"^tp_condf:\d+:(sep|line|custom)$"
+            handle_bricks,
+            pattern=r"^tp_condb:\d+(?::[ce])?:\d+(?::\d+)?$",
         ),
-        CallbackQueryHandler(handle_use, pattern=r"^tp_conduse:\d+$"),
-        CallbackQueryHandler(handle_save, pattern=r"^tp_conds:\d+$"),
-        CallbackQueryHandler(handle_list, pattern=r"^tp_condl:\d+$"),
-        CallbackQueryHandler(handle_rule, pattern=r"^tp_condo:\d+:\d+$"),
-        CallbackQueryHandler(handle_edit, pattern=r"^tp_conde:\d+:\d+$"),
-        CallbackQueryHandler(handle_delete, pattern=r"^tp_condd:\d+:\d+$"),
-        CallbackQueryHandler(handle_delete_yes, pattern=r"^tp_conddy:\d+:\d+$"),
+        CallbackQueryHandler(handle_mode, pattern=r"^tp_condf:\d+:(line|sep|custom)$"),
+        CallbackQueryHandler(
+            handle_edit, pattern=r"^tp_conde:\d+(?::[ce])?:\d+(?::\d+)?$"
+        ),
+        CallbackQueryHandler(
+            handle_delete, pattern=r"^tp_condd:\d+(?::[ce])?:\d+(?::\d+)?$"
+        ),
+        CallbackQueryHandler(
+            handle_delete_yes, pattern=r"^tp_conddy:\d+(?::[ce])?:\d+(?::\d+)?$"
+        ),
         CallbackQueryHandler(handle_back, pattern=r"^tp_condback:\d+:\w+$"),
+        CallbackQueryHandler(handle_open, pattern=r"^tp_condl:\d+$"),
         CondTextHandler(filters.TEXT & ~filters.COMMAND, handle_custom_text),
     ]

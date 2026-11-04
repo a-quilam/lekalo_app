@@ -11,8 +11,9 @@ callback_data, сохранение только после предпросмо
 Покрытие не дублирует соседние наборы, а дополняет их приёмочными
 проверками:
 
-1. §40 — маршрут `карточка → «Условные части» → кирпичик → фрагмент →
-   предпросмотр → сохранение → список` и «Назад» на каждом шаге.
+1. §40 (2.5.2 §6–7) — маршрут `карточка → «Условные части» → список →
+   кирпичик → способ скрытия → сохранение → список` и «Назад» на каждом
+   шаге; выбранный способ сохраняется сразу.
 2. §42 — обязательные примеры А–Е сквозным рендером анонса (не только
    `apply_conditional_parts`): тире, цена, адрес, абзац, повтор.
 3. §42/§45 — фрагмент внутри форматирования не оставляет пустых тегов.
@@ -66,6 +67,7 @@ try:
     from place_store import create_place
     from template_store import (
         create_personal_template,
+        get_standard_template,
         render_template_version,
         update_template_content,
     )
@@ -201,7 +203,20 @@ def _place_with_admin(h, admin_tg: int) -> tuple[int, int]:
             )
         )
         assert template is not None
-        return place.id, template.id
+        template_id = template.id
+        # Poster 2.5.2 §6: раздел правил есть только у расширенного шаблона,
+        # поэтому стандарт получает расширенную версию явно.
+        details = get_standard_template(session, admin_tg, place.id)
+        result = update_template_content(
+            session,
+            actor_telegram_user_id=admin_tg,
+            template_id=template_id,
+            expected_revision=details.revision,
+            content=details.current_version.content,
+            extended_content=details.current_version.content,
+        )
+        assert result.ok, result.message
+        return place.id, template_id
 
 
 # --- 1. маршрут §40 --------------------------------------------------------
@@ -212,10 +227,10 @@ def _place_with_admin(h, admin_tg: int) -> tuple[int, int]:
     f"интеграционное окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
 )
 class RouteTests(unittest.TestCase):
-    """§40: карточка → кирпичик → фрагмент → предпросмотр → сохранение."""
+    """§40: карточка → список → кирпичик → способ скрытия → сохранение."""
 
     @scenario_test
-    async def test_route_preview_then_save(self, h) -> None:
+    async def test_route_saves_rule_immediately(self, h) -> None:
         template_id, revision = _template_with_system_time_bricks(h)
         await _open_card(h, template_id)
         self.assertIn(
@@ -225,45 +240,37 @@ class RouteTests(unittest.TestCase):
         )
 
         await h.callback(f"tp_cond:{template_id}")
+        self.assertIn("Правил пока нет", h.screen_text(), "главный экран — список")
+        await h.callback(f"tp_condadd:{template_id}")
+
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
-        self.assertIn("время_окончания", h.screen_text(), "кирпичик из текста")
+        self.assertIn("Время окончания", h.screen_text(), "кирпичик из текста")
         self.assertEqual(
-            len(_callbacks(h, f"tp_condb:{template_id}:c:")), 2, "оба вхождения"
+            len(_callbacks(h, f"tp_condb:{template_id}:e:")),
+            2,
+            "по кнопке на кирпичик, без номеров вхождений",
         )
 
-        await h.callback(f"tp_condb:{template_id}:c:{end_brick.id}:1")
+        await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
         self.assertEqual(
             _labels(h)[:3],
             [
-                "Скрыть с соседним разделителем",
-                "Скрыть целую строку",
-                "✏️ Свой фрагмент",
+                "Скрыть всю строку",
+                "Скрыть с разделителем",
+                "Скрыть свой фрагмент",
             ],
             "§40 шаг 2: понятные варианты фрагмента",
         )
         await h.callback(f"tp_condf:{template_id}:sep")
-        self.assertIn("не сохранён", h.screen_text(), "предложение не автосохраняется")
-        self.assertEqual(_parts(h, template_id), [], "правила ещё нет")
 
-        await h.callback(f"tp_conduse:{template_id}")
-        self.assertIn("Кирпичик заполнен", h.screen_text(), "§40 шаг 4: обе стороны")
-        self.assertIn("Кирпичик пуст", h.screen_text())
-        self.assertEqual(_parts(h, template_id), [], "без подтверждения не сохраняем")
-
-        answers_before = len(h.answer_texts())
-        await h.callback(f"tp_conds:{template_id}")
-        self.assertEqual(
-            h.answer_texts()[answers_before:],
-            ["Условная часть сохранена."],
-            "подтверждение сохранения — одно",
-        )
         parts = _parts(h, template_id)
-        self.assertEqual(len(parts), 1, "правило появилось в списке")
+        self.assertEqual(len(parts), 1, "правило появилось сразу после выбора")
         self.assertEqual(parts[0].fragment, "–[время_окончания]")
         self.assertEqual(parts[0].status, STATUS_ACTIVE)
-        self.assertIn("действует", h.screen_text(), "§40 шаг 5: статус виден")
+        self.assertIn("Время окончания", h.screen_text(), "§40 шаг 5: список правил")
+        self.assertIn("строка с разделителем", h.screen_text(), "способ виден")
         self.assertEqual(
             _template_revision(h, template_id), revision, "правило не создаёт версию"
         )
@@ -273,49 +280,49 @@ class RouteTests(unittest.TestCase):
         template_id, _revision = _template_with_system_time_bricks(h)
         await _open_card(h, template_id)
         await h.callback(f"tp_cond:{template_id}")
+        await h.callback(f"tp_condadd:{template_id}")
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
-        await h.callback(f"tp_condb:{template_id}:c:{end_brick.id}:1")
-        await h.callback(f"tp_condf:{template_id}:sep")
-        await h.callback(f"tp_conduse:{template_id}")
+        await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
+        await h.callback(f"tp_condf:{template_id}:custom")
 
-        await h.callback(f"tp_condback:{template_id}:proposal")
-        self.assertIn("Будет скрываться фрагмент", h.screen_text())
-        await h.callback(f"tp_condback:{template_id}:fragment")
-        self.assertIn("Скрыть целую строку", _labels(h), "варианты на месте")
+        await h.callback(f"tp_condback:{template_id}:mode")
+        self.assertIn("Как скрывать текст", h.screen_text())
         await h.callback(f"tp_condback:{template_id}:bricks")
-        self.assertIn("время_окончания", h.screen_text(), "кирпичик не потерян")
+        self.assertIn("Время окончания", h.screen_text(), "кирпичик не потерян")
+        await h.callback(f"tp_condback:{template_id}:list")
+        self.assertIn("Правил пока нет", h.screen_text())
         await h.callback(f"tp_condback:{template_id}:card")
         self.assertIn("Версия", h.screen_text(), "вернулись в редактор шаблона")
         self.assertEqual(_parts(h, template_id), [], "«Назад» ничего не сохранил")
 
     @scenario_test
-    async def test_custom_fragment_validation_and_preview(self, h) -> None:
+    async def test_custom_fragment_validation(self, h) -> None:
         template_id, _revision = _template_with_system_time_bricks(h)
         await _open_card(h, template_id)
         await h.callback(f"tp_cond:{template_id}")
+        await h.callback(f"tp_condadd:{template_id}")
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
-        await h.callback(f"tp_condb:{template_id}:c:{end_brick.id}:1")
+        await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
         await h.callback(f"tp_condf:{template_id}:custom")
 
         # §40 шаг 3: фрагмент обязан существовать и включать кирпичик.
         await h.text("–[совсем_другой]")
         self.assertIn("Свой фрагмент", h.screen_text(), "автор остался на вводе")
+        self.assertIn("нет в тексте шаблона", h.screen_text(), "причина названа")
         self.assertEqual(_parts(h, template_id), [])
 
         await h.text("–[время_окончания]")
-        self.assertIn("Предпросмотр", h.screen_text())
-        self.assertIn(
-            "[время_начала]",
-            h.screen_text().split("Кирпичик пуст:")[-1],
-            "предпросмотр пустой стороны",
-        )
-        await h.callback(f"tp_conds:{template_id}")
-        self.assertEqual(len(_parts(h, template_id)), 1)
-        self.assertEqual(_parts(h, template_id)[0].fragment, "–[время_окончания]")
+        parts = _parts(h, template_id)
+        self.assertEqual(len(parts), 1, "правило сохранено")
+        self.assertEqual(parts[0].fragment, "–[время_окончания]")
+        # Фрагмент совпал с разделителем: список показывает человеческое
+        # название способа, а не сырой текст правила (§7).
+        self.assertIn("Время окончания", h.screen_text())
+        self.assertNotIn("–[время_окончания]", h.screen_text())
 
 
 # --- 2. рендер §42 А–Е -----------------------------------------------------
@@ -615,11 +622,14 @@ class ExtendedIndependenceTests(unittest.TestCase):
         )
         await _open_card(h, template_id)
         await h.callback(f"tp_cond:{template_id}")
-        self.assertIn("Расширенный текст", h.screen_text(), "видны обе секции")
-        await h.callback(f"tp_condb:{template_id}:e:{bricks['cost']}:1")
+        await h.callback(f"tp_condadd:{template_id}")
+        self.assertIn(
+            "расширенный текст",
+            h.screen_text(),
+            "секция подписана, если кирпичик есть в обоих текстах",
+        )
+        await h.callback(f"tp_condb:{template_id}:e:{bricks['cost']}")
         await h.callback(f"tp_condf:{template_id}:line")
-        await h.callback(f"tp_conduse:{template_id}")
-        await h.callback(f"tp_conds:{template_id}")
         parts = _parts(h, template_id)
         self.assertEqual(len(parts), 1)
         self.assertEqual(parts[0].section, "extended_content", "правило в расширенной")
@@ -687,13 +697,12 @@ class RuleEditTests(unittest.TestCase):
         await h.text("/templates")
         await h.callback(f"tp_open:{template_id}")
         await h.callback(f"tp_cond:{template_id}")
+        await h.callback(f"tp_condadd:{template_id}")
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
-        await h.callback(f"tp_condb:{template_id}:c:{end_brick.id}:1")
+        await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
         await h.callback(f"tp_condf:{template_id}:sep")
-        await h.callback(f"tp_conduse:{template_id}")
-        await h.callback(f"tp_conds:{template_id}")
 
         with h.session_factory() as session:
             result = update_template_content(
@@ -753,13 +762,12 @@ class RuleEditTests(unittest.TestCase):
         await h.text("/templates")
         await h.callback(f"tp_open:{template_id}")
         await h.callback(f"tp_cond:{template_id}")
+        await h.callback(f"tp_condadd:{template_id}")
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
-        await h.callback(f"tp_condb:{template_id}:c:{end_brick.id}:1")
+        await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
         await h.callback(f"tp_condf:{template_id}:sep")
-        await h.callback(f"tp_conduse:{template_id}")
-        await h.callback(f"tp_conds:{template_id}")
         self.assertEqual(len(_parts(h, template_id)), 1)
 
         await h.callback(f"tp_condback:{template_id}:card")
@@ -770,15 +778,18 @@ class RuleEditTests(unittest.TestCase):
         self.assertEqual(len(parts), 1, "§44: правило не удалено молча")
         self.assertEqual(parts[0].status, STATUS_STALE)
 
-        await h.callback(f"tp_cond:{template_id}")
-        self.assertIn(
-            f"tp_condl:{template_id}",
-            _callbacks(h, "tp_condl:"),
-            "кнопка списка доступна",
+        # Сброс вернул встроенный стандарт без расширенной версии: раздел
+        # правил снова недоступен (§6), но правило ждёт в БД и вернётся в
+        # список, как только автор снова создаст расширенную версию.
+        self.assertNotIn(
+            f"tp_cond:{template_id}",
+            _callbacks(h, f"tp_cond:{template_id}"),
+            "без расширенной версии раздела нет",
         )
-        await h.callback(f"tp_condl:{template_id}")
-        self.assertIn(
-            "требует перенастройки", h.screen_text(), "правило видно в списке"
+        self.assertEqual(
+            _parts(h, template_id)[0].status,
+            STATUS_STALE,
+            "правило по-прежнему ждёт перенастройки",
         )
 
 
@@ -819,6 +830,8 @@ class AccessTests(unittest.TestCase):
         # Действующий админ места проходит маршрут (регресс MINOR-1).
         await h.callback(f"tp_std:{place_id}", user_id=OTHER_TG)
         await h.callback(f"tp_cond:{standard_id}", user_id=OTHER_TG)
+        self.assertIn("Правил пока нет", h.screen_text(), "список правил открылся")
+        await h.callback(f"tp_condadd:{standard_id}", user_id=OTHER_TG)
         self.assertIn("Выберите кирпичик", h.screen_text())
         brick_buttons = [
             data
@@ -829,9 +842,9 @@ class AccessTests(unittest.TestCase):
         answers_before = len(h.answer_texts())
         await h.callback(brick_buttons[0], user_id=OTHER_TG)
         self.assertEqual(
-            h.answer_texts()[answers_before:], [], "нет ложного «вхождение исчезло»"
+            h.answer_texts()[answers_before:], [], "нет ложного «кирпичик исчез»"
         )
-        self.assertIn("Выберите, какую часть текста скрывать", h.screen_text())
+        self.assertIn("Как скрывать текст", h.screen_text())
 
         # Пользователь без прав на место — отказ, ничего не меняется.
         answers_before = len(h.answer_texts())
@@ -849,6 +862,8 @@ class AccessTests(unittest.TestCase):
             answers_before = len(h.answer_texts())
             await h.callback(f"tp_cond:{standard_id}", user_id=SUPERADMIN_TG)
             self.assertEqual(h.answer_texts()[answers_before:], [], "без отказа")
+            self.assertIn("Правил пока нет", h.screen_text(), "список открылся")
+            await h.callback(f"tp_condadd:{standard_id}", user_id=SUPERADMIN_TG)
             self.assertIn("Выберите кирпичик", h.screen_text())
 
 
@@ -871,15 +886,15 @@ class PersistenceTests(unittest.TestCase):
                 ("mesto", "Место", "short_text", {}),
                 ("adres", "Адрес", "short_text", {}),
             ],
-            content="📍 [mesto] ([adres])",
+            content="📍 [mesto]",
+            extended_content="📍 [mesto] ([adres])",
         )
         await _open_card(h, template_id)
         await h.callback(f"tp_cond:{template_id}")
-        await h.callback(f"tp_condb:{template_id}:c:{bricks['adres']}:1")
+        await h.callback(f"tp_condadd:{template_id}")
+        await h.callback(f"tp_condb:{template_id}:e:{bricks['adres']}")
         await h.callback(f"tp_condf:{template_id}:custom")
         await h.text(" ([adres])")
-        self.assertIn(" ([adres])", h.screen_text(), "ведущий пробел значим")
-        await h.callback(f"tp_conds:{template_id}")
         self.assertEqual(_parts(h, template_id)[0].fragment, " ([adres])")
 
         await h.restart()
@@ -889,16 +904,54 @@ class PersistenceTests(unittest.TestCase):
         await h.text("/templates")
         await h.callback(f"tp_open:{template_id}")
         await h.callback(f"tp_cond:{template_id}")
-        await h.callback(f"tp_condl:{template_id}")
-        self.assertIn("действует", h.screen_text(), "правило видно после рестарта")
+        self.assertIn("Адрес", h.screen_text(), "правило видно после рестарта")
         self.assertEqual(len(_parts(h, template_id)), 1)
 
         place_id, _alias = _seed_place(h)
         self.assertEqual(
             _draft_preview(h, template_id, {bricks["mesto"]: "РанДом"}, place_id),
             "📍 РанДом",
-            "правило применяется после рестарта",
+            "§43: основной текст без правил расширенной секции",
         )
+        with h.session_factory() as session:
+            draft = start_announcement_wizard(
+                session, actor_telegram_user_id=h.user_id, place_id=place_id
+            )
+            confirmed = confirm_announcement_place(
+                session,
+                actor_telegram_user_id=h.user_id,
+                draft_id=draft.draft_id,
+                expected_revision=draft.revision,
+            )
+            details = choose_announcement_template(
+                session,
+                actor_telegram_user_id=h.user_id,
+                draft_id=confirmed.draft_id,
+                template_id=template_id,
+                expected_revision=confirmed.revision,
+            )
+            details = save_announcement_value(
+                session,
+                actor_telegram_user_id=h.user_id,
+                draft_id=details.draft_id,
+                brick_id=bricks["mesto"],
+                value="РанДом",
+                expected_revision=details.revision,
+            )
+            details = add_announcement_extra(
+                session,
+                actor_telegram_user_id=h.user_id,
+                draft_id=details.draft_id,
+                brick_id=bricks["adres"],
+                value=None,
+            )
+            self.assertEqual(
+                build_announcement_preview(
+                    session, actor_telegram_user_id=h.user_id, draft_id=details.draft_id
+                ).html,
+                "📍 РанДом",
+                "правило расширенной секции применяется после рестарта",
+            )
 
 
 # --- 7. нет синтаксиса условий §39 ----------------------------------------

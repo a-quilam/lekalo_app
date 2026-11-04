@@ -800,6 +800,171 @@ def delete_conditional_part(
     return _mutation("deleted", part, "Условная часть удалена.")
 
 
+def replace_conditional_rules(
+    session: Session,
+    *,
+    actor_telegram_user_id: int | None,
+    template_id: int,
+    expected_revision: int,
+    section: str,
+    brick_id: int,
+    fragments: Sequence[tuple[str, int]],
+) -> ConditionalPartMutationResult:
+    """
+    Заменяет ВСЕ правила одного кирпичика одной секции (Poster 2.5.2 §6).
+
+    Повторяющийся кирпичик — ОДНО правило для автора: выбранный способ
+    скрытия применяется ко всем его вхождениям. Хранится это по-прежнему
+    строками `template_conditional_parts` (по строке на вхождение), потому
+    что рендер и замороженные снимки работают с точными фрагментами.
+
+    Замена атомарна: старые строки кирпичика удаляются и новые вставляются
+    в одной транзакции, поэтому неудачная проверка не оставляет шаблон без
+    правила. Пересечения проверяются только с правилами ДРУГИХ кирпичиков:
+    собственные строки заменяются целиком.
+
+    `fragments` — пары `(фрагмент, вхождение)`, уже вычисленные интерфейсом.
+    Пустой список означает «удалить правило этого кирпичика».
+    """
+    actor, template = _editable_template(session, actor_telegram_user_id, template_id)
+    if template is None:
+        return _mutation("not_found", None, "Шаблон не найден.")
+    if not _can_edit_template(session, actor, template):
+        return _mutation("forbidden", None, _forbidden_message(template))
+    stale = _check_revision(template, expected_revision)
+    if stale is not None:
+        return stale
+    checked_section = _validate_section(section)
+    if not _valid_positive_id(brick_id):
+        raise TemplateError("brick_id должен быть положительным целым числом.")
+
+    version_row = _version_row(session, template)
+    try:
+        text = _section_text(version_row, checked_section)
+    except TemplateError as exc:
+        return _mutation("invalid", None, str(exc))
+    code = _binding_code(session, version_row.id, brick_id)
+    if code is None:
+        return _mutation(
+            "invalid",
+            None,
+            "Кирпичик не привязан к этой версии шаблона: правило невозможно.",
+        )
+
+    # Правила других кирпичиков этой секции: только с ними проверяем
+    # пересечение, собственные строки будут заменены целиком.
+    other_spans = [
+        span
+        for owner, spans in _active_spans_by_brick(
+            session, version_row=version_row, section=checked_section
+        ).items()
+        if owner != brick_id
+        for span in spans
+    ]
+    checked: list[tuple[str, int]] = []
+    spans: list[tuple[int, int]] = []
+    for fragment, occurrence in fragments:
+        checked_occurrence = _validate_occurrence(occurrence)
+        try:
+            checked_fragment = _validate_fragment(
+                text=text,
+                fragment=fragment,
+                occurrence=checked_occurrence,
+                code=code,
+                other_spans=other_spans,
+            )
+        except TemplateError as exc:
+            return _mutation("invalid", None, str(exc))
+        span = _fragment_span(text, checked_fragment, checked_occurrence)
+        if span is None:  # pragma: no cover — проверено `_validate_fragment`
+            return _mutation("invalid", None, "Фрагмент не найден в тексте.")
+        if any(span[0] < end and start < span[1] for start, end in spans):
+            return _mutation(
+                "invalid",
+                None,
+                "Фрагменты правила пересекаются между собой. Выберите другой вариант.",
+            )
+        spans.append(span)
+        checked.append((checked_fragment, checked_occurrence))
+
+    now = utcnow()
+    try:
+        session.execute(
+            sqlalchemy_delete(template_conditional_parts).where(
+                template_conditional_parts.c.template_id == template.id,
+                template_conditional_parts.c.section == checked_section,
+                template_conditional_parts.c.brick_id == brick_id,
+            )
+        )
+        for fragment, occurrence in checked:
+            session.execute(
+                template_conditional_parts.insert().values(
+                    template_id=template.id,
+                    version_id=version_row.id,
+                    section=checked_section,
+                    brick_id=brick_id,
+                    fragment=fragment,
+                    occurrence=occurrence,
+                    status=STATUS_ACTIVE,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        session.commit()
+    except (IntegrityError, OperationalError):
+        session.rollback()
+        return _mutation(
+            "conflict",
+            None,
+            "Не удалось сохранить правило из-за одновременной записи. "
+            "Повторите попытку.",
+        )
+    except Exception:
+        session.rollback()
+        raise
+    if not checked:
+        return _mutation("deleted", None, "Условная часть удалена.")
+    rows = session.execute(
+        select(template_conditional_parts)
+        .where(
+            template_conditional_parts.c.version_id == version_row.id,
+            template_conditional_parts.c.section == checked_section,
+            template_conditional_parts.c.brick_id == brick_id,
+        )
+        .order_by(template_conditional_parts.c.id)
+    ).all()
+    first = _view(session, rows[0]) if rows else None
+    return _mutation("updated", first, "Условная часть сохранена.")
+
+
+def _active_spans_by_brick(
+    session: Session,
+    *,
+    version_row: TemplateVersion,
+    section: str,
+) -> dict[int, list[tuple[int, int]]]:
+    """Диапазоны активных правил секции, сгруппированные по кирпичику."""
+    text = _section_text(version_row, section)
+    rows = session.execute(
+        select(
+            template_conditional_parts.c.brick_id,
+            template_conditional_parts.c.fragment,
+            template_conditional_parts.c.occurrence,
+        ).where(
+            template_conditional_parts.c.version_id == version_row.id,
+            template_conditional_parts.c.section == section,
+            template_conditional_parts.c.status == STATUS_ACTIVE,
+        )
+    ).all()
+    grouped: dict[int, list[tuple[int, int]]] = {}
+    for row in rows:
+        span = _fragment_span(text, str(row.fragment), int(row.occurrence))
+        if span is None:
+            continue
+        grouped.setdefault(int(row.brick_id), []).append(span)
+    return grouped
+
+
 # --- Актуальность после изменения шаблона (§44) -----------------------------
 
 
@@ -938,6 +1103,7 @@ __all__ = [
     "get_conditional_part",
     "list_conditional_parts",
     "refresh_conditional_parts",
+    "replace_conditional_rules",
     "template_conditional_parts",
     "template_snapshot_conditional_parts",
     "update_conditional_part",
