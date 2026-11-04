@@ -397,7 +397,7 @@ class CurrentValueDisplayTests(unittest.TestCase):
 
         text = h.screen_text()
         # Подпись, рамка, значение, рамка — без <code> вокруг значения.
-        self.assertIn(f"📝 Текст:\n{SEPARATOR}\nТело [main]\n{SEPARATOR}", text)
+        self.assertIn(f"Шаблон:\n{SEPARATOR}\nТело [main]\n{SEPARATOR}", text)
         self.assertNotIn("<code>", text)
         self.assertNotIn(TRUNCATED_NOTE, text, "короткое значение не помечается")
 
@@ -429,7 +429,7 @@ class CurrentValueDisplayTests(unittest.TestCase):
 
         # Обе половины рамки на месте: значение осталось блоком.
         self.assertEqual(text.count(SEPARATOR), 2)
-        self.assertIn("📝 Текст:", text)
+        self.assertIn("Шаблон:", text)
 
     @scenario_test
     async def test_two_huge_place_values_fit_one_screen(self, h) -> None:

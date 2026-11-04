@@ -41,6 +41,7 @@ try:
     import announcement_controls as controls
     from announcement_instances import get_instance
     from announcement_store import (
+        add_announcement_extra,
         build_announcement_preview,
         choose_announcement_template,
         confirm_announcement_place,
@@ -845,7 +846,8 @@ class ConditionalEntryTests(unittest.TestCase):
         await h.callback("tp_hub")
         await h.callback(f"tp_open:{extended_id}")
         self.assertIn(
-            ("🧩 Условные части", f"tp_cond:{extended_id}"), h.screen_buttons()
+            ("🧩 Условия расширенного шаблона", f"tp_cond:{extended_id}"),
+            h.screen_buttons(),
         )
 
     @scenario_test
@@ -890,8 +892,11 @@ class ConditionalEntryTests(unittest.TestCase):
         await h.callback(f"tp_std:{place_id}")
         self.assertIn("Стандартный шаблон места", h.screen_text())
         await h.callback(f"tp_cond:{template_id}")
-        self.assertIn("Правил пока нет", h.screen_text(), "ложный отказ по origin")
-        self.assertIn(f"tp_condadd:{template_id}", screen_callbacks(h, "tp_condadd:"))
+        self.assertIn(
+            "🧩 Условия расширенного шаблона",
+            h.screen_text(),
+            "ложный отказ по origin",
+        )
 
 
 @unittest.skipIf(
@@ -920,6 +925,52 @@ class ConditionalEngineTests(unittest.TestCase):
             )
         for brick_id, value in values.items():
             with h.session_factory() as session:
+                details = save_announcement_value(
+                    session,
+                    actor_telegram_user_id=h.user_id,
+                    draft_id=details.draft_id,
+                    brick_id=brick_id,
+                    value=value,
+                    expected_revision=details.revision,
+                )
+        with h.session_factory() as session:
+            return build_announcement_preview(
+                session, actor_telegram_user_id=h.user_id, draft_id=details.draft_id
+            ).html
+
+    def _preview_extended(
+        self, h, template_id: int, values: dict[int, str], extra_id: int
+    ) -> str:
+        """Готовый анонс по расширенному тексту (доп. поле включает его)."""
+        with h.session_factory() as session:
+            draft = start_announcement_wizard(
+                session, actor_telegram_user_id=h.user_id, place_id=self.place_id
+            )
+            confirmed = confirm_announcement_place(
+                session,
+                actor_telegram_user_id=h.user_id,
+                draft_id=draft.draft_id,
+                expected_revision=draft.revision,
+            )
+            details = choose_announcement_template(
+                session,
+                actor_telegram_user_id=h.user_id,
+                draft_id=confirmed.draft_id,
+                template_id=template_id,
+                expected_revision=confirmed.revision,
+            )
+        for brick_id, value in values.items():
+            with h.session_factory() as session:
+                if brick_id == extra_id:
+                    details = add_announcement_extra(
+                        session,
+                        actor_telegram_user_id=h.user_id,
+                        draft_id=details.draft_id,
+                        brick_id=brick_id,
+                        value=value,
+                        expected_revision=details.revision,
+                    )
+                    continue
                 details = save_announcement_value(
                     session,
                     actor_telegram_user_id=h.user_id,
@@ -980,8 +1031,11 @@ class ConditionalEngineTests(unittest.TestCase):
             )
             self.assertTrue(created.ok, created.message)
         await _open_rules(h, template_id)
-        text = h.screen_text()
-        self.assertEqual(text.count("Основное поле"), 1, f"правило не одно: {text}")
+        # §3: один кирпичик — одна кнопка и одно условие, сколько бы раз он
+        # ни встречался в тексте.
+        self.assertEqual(
+            screen_labels(h).count("Основное поле ✓"), 1, h.screen_buttons()
+        )
 
         # Без правила пунктуация вокруг пустого поля НЕ вычищается.
         with h.session_factory() as session:
@@ -1027,11 +1081,14 @@ class ConditionalEngineTests(unittest.TestCase):
                 )
                 self.assertTrue(result.ok, result.message)
         await _open_rules(h, template_id)
+        # §3: на экране только кнопки кирпичиков, без нумерованного списка.
         text = h.screen_text()
-        for number in ("1. ", "5. "):
-            self.assertIn(number, text)
-        self.assertNotIn("6. ", text, "шестое правило на первой странице")
-        self.assertIn("1 / 3", screen_labels(h))
+        self.assertNotIn("1. ", text, "перечня полей в теле нет")
+        labels = screen_labels(h)
+        for number in (0, 4):
+            self.assertIn(f"Поле {number} ✓", labels)
+        self.assertNotIn("Поле 5 ✓", labels, "шестой кирпичик на второй странице")
+        self.assertIn("1 / 3", labels)
         self.assertNotIn("◀️", screen_labels(h), "левая стрелка на первой странице")
         self.assertEqual(screen_callbacks(h, "noop:"), ["noop:1:3"])
 
@@ -1093,8 +1150,11 @@ class ConditionalEngineTests(unittest.TestCase):
             ],
         )
         await h.callback(f"tp_condf:{template_id}:line")
-        self.assertIn("вся строка", h.screen_text(), "режим не виден в списке")
         self.assertEqual(len(_parts(h, template_id)), 1)
+        # §3: способ виден на экране кирпичика, а в списке — только «✓».
+        self.assertIn("Время окончания ✓", screen_labels(h))
+        await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
+        self.assertIn("вся строка · выбрано", h.screen_text(), "режим не виден")
 
     @scenario_test
     async def test_19_rule_list_is_human_readable(self, h) -> None:
@@ -1122,7 +1182,7 @@ class ConditionalEngineTests(unittest.TestCase):
             self.assertTrue(created.ok, created.message)
         await _open_rules(h, template_id)
         text = h.screen_text()
-        self.assertIn("Цена", text)
+        self.assertIn("Цена ✓", screen_labels(h))
         self.assertNotIn("💰 Цена: [cost]", text, "сырой фрагмент в списке")
         for banned in (
             "вхождени",
@@ -1144,7 +1204,7 @@ class ConditionalEngineTests(unittest.TestCase):
         # видно, применилось ли правило на самом деле.
         template_id, revision, bricks = await self._setup(
             h,
-            content="[main] — [cost] итого\nКонец",
+            content="[main]\nКонец",
             extended="[main] — [cost] итого\nКонец\nДополнительная строка",
             specs=[PLAIN_SPEC, ("cost", "Цена", "short_text", {})],
         )
@@ -1155,42 +1215,46 @@ class ConditionalEngineTests(unittest.TestCase):
                 actor_telegram_user_id=h.user_id,
                 template_id=template_id,
                 expected_revision=revision,
-                section=SECTION_CONTENT,
+                section=SECTION_EXTENDED_CONTENT,
                 brick_id=control_id,
                 fragment=" — [cost] итого",
                 occurrence=1,
             )
             self.assertTrue(created.ok, created.message)
         empty_cost = {bricks["main"]: "Концерт", control_id: ""}
-        with_rule = self._preview(h, template_id, empty_cost)
+        with_rule = self._preview_extended(h, template_id, empty_cost, control_id)
         self.assertNotIn("[cost]", with_rule)
         self.assertNotIn("итого", with_rule, "правило не скрыло фрагмент")
 
         # Правка правила через интерфейс: режим «свой фрагмент».
         await _open_rules(h, template_id)
-        await h.callback(screen_data(h, f"tp_conde:{template_id}:"))
+        await h.callback(f"tp_condb:{template_id}:e:{control_id}")
         await h.callback(f"tp_condf:{template_id}:custom")
         # Автор вводит фрагмент ровно как в тексте: кирпичик внутри строки.
         await h.text(" — [cost] итого")
-        self.assertIn("свой фрагмент", h.screen_text())
+        self.assertIn("Цена ✓", screen_labels(h), "условие сохранено и помечено")
+        await h.callback(f"tp_condb:{template_id}:e:{control_id}")
+        self.assertIn("свой фрагмент · выбрано", h.screen_text())
         self.assertEqual(
             {(part.fragment, part.occurrence) for part in _parts(h, template_id)},
             {(" — [cost] итого", 1)},
             "правка сохранила авторский фрагмент",
         )
         self.assertEqual(
-            self._preview(h, template_id, empty_cost),
+            self._preview_extended(h, template_id, empty_cost, control_id),
             with_rule,
             "правка фрагмента не изменила рендер",
         )
         # Удаление через подтверждение.
-        await h.callback(screen_data(h, f"tp_condd:{template_id}:"))
-        self.assertIn("Удалить правило?", h.screen_text())
-        await h.callback(screen_data(h, "tp_conddy:"))
+        await h.callback(f"tp_condb:{template_id}:e:{control_id}")
+        await h.callback(f"tp_condd:{template_id}:e:{control_id}")
+        self.assertIn("Удалить условие?", h.screen_text())
+        await h.callback(f"tp_conddy:{template_id}:e:{control_id}")
         self.assertEqual(_parts(h, template_id), [])
-        self.assertIn("Правил пока нет", h.screen_text())
+        self.assertIn("Цена", screen_labels(h), "условие удалено — без ✓")
+        self.assertNotIn("Цена ✓", screen_labels(h))
         # Правило больше не влияет: скрытый фрагмент вернулся в анонс.
-        after_delete = self._preview(h, template_id, empty_cost)
+        after_delete = self._preview_extended(h, template_id, empty_cost, control_id)
         self.assertIn("итого", after_delete, "удалённое правило всё ещё скрывает")
 
         # Справка описывает три режима скрытия и условие расширенной версии.

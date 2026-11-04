@@ -1,27 +1,27 @@
 # tests/test_stage25_conditional_ui.py
 """
-Poster 2.5.2 §6–7 — Telegram-интерфейс условных частей шаблона.
+Poster 2.5.3 §3 — Telegram-интерфейс условий расширенного шаблона.
 
 Обновления проходят через настоящее приложение `build_application`, как в
-Stage 9: проверяются экраны шагов, callback-кнопки, тексты каталога,
+Stage 9: проверяются экраны, callback-кнопки, тексты каталога,
 оптимистическая блокировка и записи в SQLite. Telegram и реальная
 `post_bot.db` не используются.
 
-Что закрепляется (Poster 2.5.2 §6–7):
+Что закрепляется (Poster 2.5.3 §3):
 
-1. раздел существует ТОЛЬКО у расширенного шаблона: у простого нет кнопки,
+1. условия существуют ТОЛЬКО у расширенного шаблона: у простого нет кнопки,
    а прямой callback получает отказ и ничего не меняет;
-2. главный экран — компактный список правил: не больше пяти на страницу,
-   у каждого правка и удаление, навигация `◀️ | 1 / 3 | ▶️`;
-3. при одной странице навигации нет, средняя кнопка инертна;
-4. три способа скрытия: вся строка, строка с разделителем, свой фрагмент;
+2. путь автора — ОДИН экран «🧩 Условия расширенного шаблона»: подсказка и
+   кнопки кирпичиков расширенного текста, без перечня полей в теле;
+3. кирпичик в обоих текстах показывается ОДИН раз; у настроенного условия в
+   подписи стоит «✓»;
+4. не больше пяти кирпичиков на страницу; при одной странице навигации нет,
+   средняя кнопка инертна, по краям нет лишних стрелок;
+5. три способа скрытия: вся строка, строка с разделителем, свой фрагмент;
    выбор сохраняется сразу, без предпросмотра;
-5. повторяющийся кирпичик — ОДНО правило на все вхождения;
-6. в интерфейсе нет номеров вхождений, технических диапазонов и сырого
-   текста фрагментов: только название поля и понятный способ скрытия;
-7. правка и удаление правила без дублей и без молчаливых потерь;
-8. `stale` после правки текста: правило видно, но не применяется;
-9. права: чужой личный шаблон не открывает раздел правил.
+6. повторяющийся кирпичик — ОДНО условие на все вхождения;
+7. удаление условия — только через подтверждение;
+8. права: чужой личный шаблон не открывает раздел.
 """
 
 from __future__ import annotations
@@ -39,7 +39,6 @@ from brick_store import get_system_brick
 from conditional_parts import (
     SECTION_EXTENDED_CONTENT,
     STATUS_ACTIVE,
-    STATUS_STALE,
     create_conditional_part,
     list_conditional_parts,
 )
@@ -63,6 +62,9 @@ except Exception as e:  # noqa: BLE001
 
 # §42-А: шаблон без заполненного времени окончания превращается в «19:00».
 TIME_TEMPLATE = "[время_начала]–[время_окончания]"
+
+TITLE = "🧩 Условия расширенного шаблона"
+HINT = "Здесь можно настроить, что убрать из анонса, если поле останется пустым."
 
 
 def _callbacks(h, prefix: str) -> list[str]:
@@ -100,9 +102,8 @@ def _template_with_system_time_bricks(
     """
     Личный шаблон на системных кирпичиках времени.
 
-    Poster 2.5.2 §6: условные части есть только у шаблона с расширенной
-    версией, поэтому по умолчанию расширение совпадает с основным текстом:
-    движку правил нужен существующий расширенный текст, иначе раздела нет.
+    Poster 2.5.3 §3: условия принадлежат только расширенному тексту, поэтому
+    по умолчанию расширение совпадает с текстом — раздел доступен.
     """
     with h.session_factory() as session:
         user = _user(session, h.user_id)
@@ -173,7 +174,7 @@ def _place_with_admin(h, telegram_user_id: int) -> tuple[int, int]:
     f"интеграционное окружение недоступно: {INTEGRATION_ERROR}",
 )
 class ConditionalAvailabilityTests(unittest.TestCase):
-    """§6: раздел правил есть только у расширенного шаблона."""
+    """§3: раздел условий есть только у расширенного шаблона."""
 
     @scenario_test
     async def test_simple_template_has_no_rules_entry(self, h) -> None:
@@ -191,7 +192,7 @@ class ConditionalAvailabilityTests(unittest.TestCase):
         self.assertNotIn(
             f"tp_cond:{template_id}",
             _callbacks(h, "tp_cond"),
-            "у простого шаблона нет кнопки условных частей",
+            "у простого шаблона нет кнопки условий",
         )
         self.assertIn("Версия", h.screen_text(), "карточка простого шаблона на месте")
 
@@ -214,17 +215,32 @@ class ConditionalAvailabilityTests(unittest.TestCase):
             len(h.answer_texts()), answers_before, "прямой callback получил отказ"
         )
         self.assertTrue(h.answer_texts()[-1])
-        self.assertNotIn("Выберите кирпичик", h.screen_text())
-        self.assertNotIn("Правил пока нет", h.screen_text())
+        self.assertNotIn(TITLE, h.screen_text())
         self.assertEqual(_parts(h, template_id), [], "правил не создано")
 
     @scenario_test
     async def test_extended_template_shows_rules_entry(self, h) -> None:
         template_id, _revision = _template_with_system_time_bricks(h)
         await _open_card(h, template_id)
-        self.assertIn(
-            ("🧩 Условные части", f"tp_cond:{template_id}"), h.screen_buttons()
+        self.assertIn((TITLE, f"tp_cond:{template_id}"), h.screen_buttons())
+
+    @scenario_test
+    async def test_content_section_callback_is_refused(self, h) -> None:
+        """2.5.3 §3: у простого текста условий нет — отказ без записи."""
+        template_id, _revision = _template_with_system_time_bricks(h)
+        await _open_rules(h, template_id)
+        with h.session_factory() as session:
+            end_brick = get_system_brick(session, "время_окончания")
+            assert end_brick is not None
+        answers_before = len(h.answer_texts())
+        await h.callback(f"tp_condb:{template_id}:c:{end_brick.id}")
+        self.assertGreater(
+            len(h.answer_texts()), answers_before, "старая кнопка отклонена"
         )
+        self.assertEqual(_parts(h, template_id), [], "в БД ничего не записано")
+        # Секция расширенного текста того же кирпичика работает.
+        await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
+        self.assertIn("Как скрывать текст", h.screen_text())
 
 
 @unittest.skipIf(
@@ -232,44 +248,44 @@ class ConditionalAvailabilityTests(unittest.TestCase):
     f"интеграционное окружение недоступно: {INTEGRATION_ERROR}",
 )
 class ConditionalUiRouteTests(unittest.TestCase):
-    """§7: компактный список → кирпичик → способ скрытия → сохранение."""
+    """§3: один экран → кирпичик → способ скрытия → сохранение."""
 
     @scenario_test
-    async def test_open_shows_compact_empty_list(self, h) -> None:
+    async def test_open_shows_single_screen_with_hint(self, h) -> None:
         template_id, _revision = _template_with_system_time_bricks(h)
         await _open_rules(h, template_id)
-        self.assertIn("🧩 Условные части", h.screen_text())
-        self.assertIn("Правил пока нет", h.screen_text())
-        self.assertIn(
-            f"tp_condadd:{template_id}",
-            _callbacks(h, "tp_condadd:"),
-            "из пустого списка можно создать правило",
+        text = h.screen_text()
+        self.assertIn(TITLE, text)
+        self.assertIn(HINT, text)
+        # В теле только заголовок и подсказка: перечня полей нет.
+        self.assertNotIn("Время начала", text)
+        self.assertNotIn("Время окончания", text)
+        self.assertEqual(
+            [label for label, _data in h.screen_buttons()],
+            ["Время начала", "Время окончания", "◀️ Назад"],
         )
         # Одна страница — навигации нет вовсе.
         self.assertEqual(_callbacks(h, "tp_condp:"), [])
         self.assertEqual(_callbacks(h, "noop:"), [])
+        self.assertEqual(
+            _callbacks(h, f"tp_condback:{template_id}:card"),
+            [f"tp_condback:{template_id}:card"],
+        )
 
     @scenario_test
-    async def test_bricks_step_has_no_occurrences_or_fragments(self, h) -> None:
+    async def test_bricks_have_no_occurrences_or_fragments(self, h) -> None:
         template_id, _revision = _template_with_system_time_bricks(
             h,
             content="[время_начала] • [время_окончания] • [время_окончания]",
         )
         await _open_rules(h, template_id)
-        await h.callback(f"tp_condadd:{template_id}")
-
         text = h.screen_text()
-        self.assertIn("Выберите кирпичик", text)
-        self.assertIn("Время окончания", text)
-        # §7: в интерфейсе нет номеров вхождений и технических диапазонов.
+        # §3: в интерфейсе нет номеров вхождений и технических диапазонов.
         self.assertNotIn("вхождение", text.lower())
         self.assertNotIn("⏎", text)
         self.assertNotIn("диапазон", text.lower())
         # Один кирпичик — одна кнопка, сколько бы раз он ни встречался.
         self.assertEqual(len(_callbacks(h, f"tp_condb:{template_id}:e:")), 2)
-        self.assertEqual(
-            len({data for data in _callbacks(h, f"tp_condb:{template_id}:")}), 2
-        )
 
     @scenario_test
     async def test_separator_mode_saves_immediately(self, h) -> None:
@@ -278,7 +294,6 @@ class ConditionalUiRouteTests(unittest.TestCase):
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
-        await h.callback(f"tp_condadd:{template_id}")
         await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
 
         labels = _labels(h)
@@ -291,7 +306,7 @@ class ConditionalUiRouteTests(unittest.TestCase):
         await h.callback(f"tp_condf:{template_id}:sep")
         self.assertEqual(
             h.answer_texts()[answers_before:],
-            ["Правило сохранено."],
+            ["Условие сохранено."],
             "выбор способа сохраняется сразу, без предпросмотра",
         )
         parts = _parts(h, template_id)
@@ -299,12 +314,12 @@ class ConditionalUiRouteTests(unittest.TestCase):
         self.assertEqual(parts[0].fragment, "–[время_окончания]")
         self.assertEqual(parts[0].section, SECTION_EXTENDED_CONTENT)
         self.assertEqual(parts[0].status, STATUS_ACTIVE)
-        # Список правил человекочитаемый: поле и способ, без сырого фрагмента.
+        # Вернулись на единый экран: настроенный кирпичик помечен «✓».
         text = h.screen_text()
-        self.assertIn("Время окончания", text)
-        self.assertIn("строка с разделителем", text)
-        self.assertNotIn("–[время_окончания]", text)
-        # Правило не создаёт новую версию шаблона.
+        self.assertIn(TITLE, text)
+        self.assertIn("Время окончания ✓", _labels(h))
+        self.assertIn("Время начала", _labels(h))
+        # Условие не создаёт новую версию шаблона.
         with h.session_factory() as session:
             from models import Template
 
@@ -319,7 +334,6 @@ class ConditionalUiRouteTests(unittest.TestCase):
             content="🕒 [время_начала]\n💰 Цена: [время_окончания]\nКонтакты",
         )
         await _open_rules(h, template_id)
-        await h.callback(f"tp_condadd:{template_id}")
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
@@ -329,13 +343,11 @@ class ConditionalUiRouteTests(unittest.TestCase):
         parts = _parts(h, template_id)
         self.assertEqual(len(parts), 1)
         self.assertEqual(parts[0].fragment, "💰 Цена: [время_окончания]")
-        self.assertIn("вся строка", h.screen_text())
 
     @scenario_test
     async def test_custom_mode_errors_and_then_saves(self, h) -> None:
         template_id, _revision = _template_with_system_time_bricks(h)
         await _open_rules(h, template_id)
-        await h.callback(f"tp_condadd:{template_id}")
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
@@ -351,7 +363,7 @@ class ConditionalUiRouteTests(unittest.TestCase):
         parts = _parts(h, template_id)
         self.assertEqual(len(parts), 1)
         self.assertEqual(parts[0].fragment, "–[время_окончания]")
-        self.assertIn("—", h.screen_text())  # длинное тире в человекочитаемой строке
+        self.assertIn(TITLE, h.screen_text(), "вернулись на единый экран")
 
     @scenario_test
     async def test_repeated_brick_is_one_rule(self, h) -> None:
@@ -361,21 +373,19 @@ class ConditionalUiRouteTests(unittest.TestCase):
             content="[время_начала] • [время_окончания] • [время_окончания]",
         )
         await _open_rules(h, template_id)
-        await h.callback(f"tp_condadd:{template_id}")
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
         await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
         await h.callback(f"tp_condf:{template_id}:sep")
 
-        # Автор видит ОДНО правило, хотя вхождений два.
+        # Строки БД — по вхождению, кнопка — одна.
         self.assertEqual(len(_parts(h, template_id)), 2, "строки БД — по вхождению")
-        text = h.screen_text()
-        self.assertEqual(text.count("Время окончания"), 1, "одно правило в списке")
-        self.assertNotIn("вхождение", text.lower())
+        labels = _labels(h)
+        self.assertEqual(labels.count("Время окончания ✓"), 1, "одно условие")
 
-        # Правка правила заменяет оба вхождения, а не добавляет третье.
-        await h.callback(_callback(h, f"tp_conde:{template_id}:e:"))
+        # Правка условия заменяет оба вхождения, а не добавляет третье.
+        await h.callback(_callback(h, f"tp_condb:{template_id}:e:"))
         await h.callback(f"tp_condf:{template_id}:custom")
         await h.text(" • [время_окончания]")
         parts = _parts(h, template_id)
@@ -383,36 +393,36 @@ class ConditionalUiRouteTests(unittest.TestCase):
         self.assertEqual({part.fragment for part in parts}, {" • [время_окончания]"})
 
     @scenario_test
-    async def test_list_edit_and_delete(self, h) -> None:
+    async def test_edit_and_delete_from_brick_screen(self, h) -> None:
         template_id, _revision = _template_with_system_time_bricks(h)
         await _open_rules(h, template_id)
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
-        await h.callback(f"tp_condadd:{template_id}")
         await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
         await h.callback(f"tp_condf:{template_id}:sep")
 
-        # Правка: экран способов открывается с уже выбранным вариантом.
-        await h.callback(_callback(h, f"tp_conde:{template_id}:e:"))
+        # Повторный вход в кирпичик — просмотр/правка с текущим способом.
+        await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
         self.assertIn("· выбрано", h.screen_text())
         await h.callback(f"tp_condf:{template_id}:custom")
         await h.text("–[время_окончания]")
         self.assertEqual(len(_parts(h, template_id)), 1, "правка не создаёт дубль")
 
         # Удаление — только через подтверждение.
-        await h.callback(_callback(h, f"tp_condd:{template_id}:e:"))
-        self.assertIn("Удалить правило?", h.screen_text())
+        await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
+        await h.callback(f"tp_condd:{template_id}:e:{end_brick.id}")
+        self.assertIn("Удалить условие?", h.screen_text())
         self.assertEqual(len(_parts(h, template_id)), 1, "без подтверждения не удаляем")
-        await h.callback(_callback(h, f"tp_conddy:{template_id}:e:"))
+        await h.callback(f"tp_conddy:{template_id}:e:{end_brick.id}")
         self.assertEqual(_parts(h, template_id), [])
-        self.assertIn("Правил пока нет", h.screen_text())
+        self.assertIn(TITLE, h.screen_text())
+        self.assertIn("Время окончания", _labels(h), "условия больше нет — без ✓")
 
     @scenario_test
-    async def test_back_keeps_context_on_every_step(self, h) -> None:
+    async def test_back_returns_to_card_from_every_step(self, h) -> None:
         template_id, _revision = _template_with_system_time_bricks(h)
         await _open_rules(h, template_id)
-        await h.callback(f"tp_condadd:{template_id}")
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
@@ -422,9 +432,10 @@ class ConditionalUiRouteTests(unittest.TestCase):
         await h.callback(f"tp_condback:{template_id}:mode")
         self.assertIn("Как скрывать текст", h.screen_text())
         await h.callback(f"tp_condback:{template_id}:bricks")
-        self.assertIn("Выберите кирпичик", h.screen_text())
+        self.assertIn(TITLE, h.screen_text())
+        # Прежний шаг «список правил» в 2.5.3 — тот же экран кирпичиков.
         await h.callback(f"tp_condback:{template_id}:list")
-        self.assertIn("Правил пока нет", h.screen_text())
+        self.assertIn(TITLE, h.screen_text())
         await h.callback(f"tp_condback:{template_id}:card")
         self.assertIn("Версия", h.screen_text(), "вернулись в карточку шаблона")
         self.assertEqual(_parts(h, template_id), [], "«Назад» ничего не сохранил")
@@ -432,7 +443,7 @@ class ConditionalUiRouteTests(unittest.TestCase):
     @scenario_test
     async def test_pagination_five_per_page_with_inert_indicator(self, h) -> None:
         place_id, _standard = _place_with_admin(h, h.user_id)  # noqa: F841
-        # Шесть правил строятся на личных кирпичиках: по правилу на строку.
+        # Шесть кирпичиков строятся на личных кирпичиках: по одному на строку.
         from tests.test_stage27b_announcement_ui import _seed_personal_template
 
         specs: list[tuple[str, str, str, dict[str, object]]] = [
@@ -441,7 +452,7 @@ class ConditionalUiRouteTests(unittest.TestCase):
         content = "\n".join(f"Строка {index}: [f{index}]" for index in range(6))
         template_id, revision, bricks = _seed_personal_template(
             h,
-            name="Много правил",
+            name="Много условий",
             specs=specs,
             content=content,
             extended_content=content,
@@ -461,13 +472,14 @@ class ConditionalUiRouteTests(unittest.TestCase):
                 self.assertTrue(result.ok, result.message)
         await _open_rules(h, template_id)
 
-        # Страница 1: пять правил и строка навигации `1 / 2`.
-        self.assertIn("1. ", h.screen_text())
-        self.assertIn("5. ", h.screen_text())
-        self.assertNotIn("6. ", h.screen_text(), "шестое правило на второй странице")
-        self.assertIn("1 / 2", _labels(h))
-        self.assertIn("▶️", _labels(h))
-        self.assertNotIn("◀️", _labels(h), "на первой странице левой стрелки нет")
+        # Страница 1: пять кирпичиков и строка навигации `1 / 2`.
+        labels = _labels(h)
+        self.assertIn("Поле 0 ✓", labels)
+        self.assertIn("Поле 4 ✓", labels)
+        self.assertNotIn("Поле 5 ✓", labels, "шестой кирпичик на второй странице")
+        self.assertIn("1 / 2", labels)
+        self.assertIn("▶️", labels)
+        self.assertNotIn("◀️", labels, "на первой странице левой стрелки нет")
         noop = _callbacks(h, "noop:")
         self.assertEqual(noop, ["noop:1:2"], "индикатор — безопасный no-op")
 
@@ -475,14 +487,16 @@ class ConditionalUiRouteTests(unittest.TestCase):
         screen_before = h.screen_texts()[-1]
         await h.callback("noop:1:2")
         self.assertEqual(h.screen_texts()[-1], screen_before, "индикатор инертен")
-        self.assertEqual(_parts(h, template_id).__len__(), 6, "данные не изменились")
+        self.assertEqual(len(_parts(h, template_id)), 6, "данные не изменились")
 
         # Вторая страница: `2 / 2` и нет правой стрелки.
         await h.callback(_callback(h, "tp_condp:"))
-        self.assertIn("6. ", h.screen_text())
-        self.assertIn("2 / 2", _labels(h))
-        self.assertNotIn("▶️", _labels(h), "на последней странице правой стрелки нет")
-        self.assertIn("◀️", _labels(h))
+        labels = _labels(h)
+        self.assertIn("Поле 5 ✓", labels)
+        self.assertNotIn("Поле 0 ✓", labels)
+        self.assertIn("2 / 2", labels)
+        self.assertNotIn("▶️", labels, "на последней странице правой стрелки нет")
+        self.assertIn("◀️", labels)
 
         # Назад на первую: навигация не теряет страницу.
         await h.callback(_callback(h, "tp_condp:"))
@@ -503,7 +517,6 @@ class ConditionalUiRouteTests(unittest.TestCase):
             session.commit()
             template_id = template.template_id
         await _open_rules(h, template_id)
-        await h.callback(f"tp_condadd:{template_id}")
         with h.session_factory() as session:
             address = get_system_brick(session, "адрес")
             assert address is not None
@@ -516,9 +529,9 @@ class ConditionalUiRouteTests(unittest.TestCase):
 
     @scenario_test
     async def test_admin_of_place_edits_standard_template_rules(self, h) -> None:
-        """Админ места проходит маршрут в стандартном шаблоне (§6: один движок)."""
+        """Админ места проходит маршрут в стандартном шаблоне (§3: один движок)."""
         place_id, template_id = _place_with_admin(h, h.user_id)
-        # Стандарт получает расширенную версию: без неё раздела правил нет.
+        # Стандарт получает расширенную версию: без неё раздела условий нет.
         with h.session_factory() as session:
             from template_store import get_standard_template
 
@@ -536,9 +549,7 @@ class ConditionalUiRouteTests(unittest.TestCase):
         self.assertIn("Стандартный шаблон места", h.screen_text())
 
         await h.callback(f"tp_cond:{template_id}")
-        self.assertIn("Правил пока нет", h.screen_text())
-        await h.callback(f"tp_condadd:{template_id}")
-        self.assertIn("Выберите кирпичик", h.screen_text())
+        self.assertIn(TITLE, h.screen_text())
         with h.session_factory() as session:
             address = get_system_brick(session, "адрес")
             assert address is not None
@@ -556,7 +567,7 @@ class ConditionalUiRouteTests(unittest.TestCase):
     f"интеграционное окружение недоступно: {INTEGRATION_ERROR}",
 )
 class ConditionalAnnouncementTests(unittest.TestCase):
-    """§42: правило, созданное через интерфейс, работает в готовом анонсе."""
+    """§42: условие, созданное через интерфейс, работает в готовом анонсе."""
 
     def _seed_place(self, h):
         with h.session_factory() as session:
@@ -611,7 +622,6 @@ class ConditionalAnnouncementTests(unittest.TestCase):
             assert end_brick is not None
             start_brick = get_system_brick(session, "время_начала")
             assert start_brick is not None
-        await h.callback(f"tp_condadd:{template_id}")
         await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
         await h.callback(f"tp_condf:{template_id}:sep")
         self.assertEqual(len(_parts(h, template_id)), 1)
@@ -682,7 +692,6 @@ class ConditionalAnnouncementTests(unittest.TestCase):
             session.commit()
             template_id = template.template_id
         await _open_rules(h, template_id)
-        await h.callback(f"tp_condadd:{template_id}")
         await h.callback(_callback(h, f"tp_condb:{template_id}:e:"))
         await h.callback(f"tp_condf:{template_id}:line")
         self.assertEqual(_parts(h, template_id)[0].fragment, "💰 Цена: [цена]")
@@ -701,21 +710,21 @@ class ConditionalAnnouncementTests(unittest.TestCase):
     INTEGRATION_ERROR is not None,
     f"интеграционное окружение недоступно: {INTEGRATION_ERROR}",
 )
-class ConditionalStaleAndAccessTests(unittest.TestCase):
-    """§44 и права: stale-правило видно, но не применяется; чужое не открыть."""
+class ConditionalRefreshAndAccessTests(unittest.TestCase):
+    """§3: исчез кирпичик — условие удалено; чужое не открыть."""
 
     @scenario_test
-    async def test_stale_rule_is_shown_and_not_applied(self, h) -> None:
+    async def test_removed_brick_deletes_rule(self, h) -> None:
         template_id, revision = _template_with_system_time_bricks(h)
         await _open_rules(h, template_id)
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
-        await h.callback(f"tp_condadd:{template_id}")
         await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
         await h.callback(f"tp_condf:{template_id}:sep")
+        self.assertEqual(len(_parts(h, template_id)), 1)
 
-        # Текст шаблона меняется мимо интерфейса правил: фрагмент исчез.
+        # Правка текста мимо интерфейса условий: кирпичика больше нет.
         with h.session_factory() as session:
             result = update_template_content(
                 session,
@@ -723,48 +732,38 @@ class ConditionalStaleAndAccessTests(unittest.TestCase):
                 template_id=template_id,
                 expected_revision=revision,
                 content="Совсем другой текст",
-                extended_content="Совсем другой текст",
+                extended_content=None,
             )
             self.assertTrue(result.ok, result.message)
-        parts = _parts(h, template_id)
-        self.assertEqual(len(parts), 1, "правило не удалено молча")
-        self.assertEqual(parts[0].status, STATUS_STALE)
-
-        # Карточка честно предупреждает (и не меняет правила при отрисовке).
-        await h.callback("tp_hub")
-        await h.callback(f"tp_open:{template_id}")
-        self.assertIn("требуют перенастройки", h.screen_text())
-        self.assertEqual(_parts(h, template_id)[0].status, STATUS_STALE)
-
-        # Stale-правило видно в списке и помечено.
-        await h.callback(f"tp_cond:{template_id}")
-        self.assertIn("требует перенастройки", h.screen_text())
         self.assertEqual(
-            [part.status for part in _parts(h, template_id)], [STATUS_STALE]
+            _parts(h, template_id),
+            [],
+            "условие исчезнувшего кирпичика удалено в той же транзакции",
         )
 
+        # Карточка без расширения: раздела условий нет и нет плашки.
+        await h.callback("tp_hub")
+        await h.callback(f"tp_open:{template_id}")
+        self.assertNotIn("требуют перенастройки", h.screen_text())
+        self.assertNotIn(f"tp_cond:{template_id}", _callbacks(h, "tp_cond:"))
+
     @scenario_test
-    async def test_reset_shows_rule_as_stale_and_keeps_list(self, h) -> None:
-        """Сброс не прячет правило молча: оно остаётся видимым stale."""
+    async def test_reset_removes_extension_and_rules(self, h) -> None:
+        """Сброс убирает расширение — условия кирпичиков удаляются."""
         template_id, _revision = _template_with_system_time_bricks(h)
         await _open_rules(h, template_id)
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
-        await h.callback(f"tp_condadd:{template_id}")
         await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
         await h.callback(f"tp_condf:{template_id}:sep")
         self.assertEqual(len(_parts(h, template_id)), 1)
 
-        # Сброс к стандарту создаёт новую версию без расширения: правило
-        # обязано стать видимым «требует перенастройки», а не исчезнуть.
         await h.callback(f"tp_condback:{template_id}:card")
         await h.callback(f"tp_reset:{template_id}")
         await h.callback(f"tp_reset_yes:{template_id}")
-        self.assertIn("требуют перенастройки", h.screen_text())
-        parts = _parts(h, template_id)
-        self.assertEqual(len(parts), 1, "правило не удалено молча (§44)")
-        self.assertEqual(parts[0].status, STATUS_STALE)
+        self.assertNotIn("требуют перенастройки", h.screen_text())
+        self.assertEqual(_parts(h, template_id), [])
 
     @scenario_test
     async def test_foreign_personal_template_is_refused(self, h) -> None:
@@ -782,8 +781,8 @@ class ConditionalStaleAndAccessTests(unittest.TestCase):
         await h.text("/templates")
         answers_before = len(h.answer_texts())
         await h.callback(f"tp_cond:{foreign_id}")
-        # Ни раздела правил, ни изменений в БД: чужой шаблон неотличим от
+        # Ни раздела условий, ни изменений в БД: чужой шаблон неотличим от
         # несуществующего.
         self.assertGreater(len(h.answer_texts()), answers_before)
         self.assertEqual(_parts(h, foreign_id), [])
-        self.assertNotIn("Выберите кирпичик", h.screen_text())
+        self.assertNotIn(TITLE, h.screen_text())

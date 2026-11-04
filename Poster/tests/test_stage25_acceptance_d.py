@@ -61,6 +61,7 @@ try:
     from conditional_parts import (
         STATUS_ACTIVE,
         STATUS_STALE,
+        active_rules_for_version,
         create_conditional_part,
     )
     from models import PlaceAdmin, Template, utcnow
@@ -171,6 +172,12 @@ def _rule(
         )
 
 
+def _active_rules(h, version_id: int):
+    """Активные правила версии: устаревшее правило не применяется (§44)."""
+    with h.session_factory() as session:
+        return active_rules_for_version(session, version_id, "extended_content")
+
+
 def _template_revision(h, template_id: int) -> int:
     with h.session_factory() as session:
         row = session.get(Template, template_id)
@@ -234,19 +241,21 @@ class RouteTests(unittest.TestCase):
         template_id, revision = _template_with_system_time_bricks(h)
         await _open_card(h, template_id)
         self.assertIn(
-            ("🧩 Условные части", f"tp_cond:{template_id}"),
+            ("🧩 Условия расширенного шаблона", f"tp_cond:{template_id}"),
             h.screen_buttons(),
-            "в редакторе шаблона есть отдельный раздел правил (§39)",
+            "в редакторе шаблона есть раздел условий (§3)",
         )
 
         await h.callback(f"tp_cond:{template_id}")
-        self.assertIn("Правил пока нет", h.screen_text(), "главный экран — список")
+        self.assertIn(
+            "🧩 Условия расширенного шаблона", h.screen_text(), "единый экран условий"
+        )
         await h.callback(f"tp_condadd:{template_id}")
 
         with h.session_factory() as session:
             end_brick = get_system_brick(session, "время_окончания")
             assert end_brick is not None
-        self.assertIn("Время окончания", h.screen_text(), "кирпичик из текста")
+        self.assertIn("Время окончания", _labels(h), "кирпичик из текста")
         self.assertEqual(
             len(_callbacks(h, f"tp_condb:{template_id}:e:")),
             2,
@@ -269,8 +278,9 @@ class RouteTests(unittest.TestCase):
         self.assertEqual(len(parts), 1, "правило появилось сразу после выбора")
         self.assertEqual(parts[0].fragment, "–[время_окончания]")
         self.assertEqual(parts[0].status, STATUS_ACTIVE)
-        self.assertIn("Время окончания", h.screen_text(), "§40 шаг 5: список правил")
-        self.assertIn("строка с разделителем", h.screen_text(), "способ виден")
+        self.assertIn(
+            "Время окончания ✓", _labels(h), "§3: настроенный кирпичик помечен"
+        )
         self.assertEqual(
             _template_revision(h, template_id), revision, "правило не создаёт версию"
         )
@@ -290,9 +300,9 @@ class RouteTests(unittest.TestCase):
         await h.callback(f"tp_condback:{template_id}:mode")
         self.assertIn("Как скрывать текст", h.screen_text())
         await h.callback(f"tp_condback:{template_id}:bricks")
-        self.assertIn("Время окончания", h.screen_text(), "кирпичик не потерян")
+        self.assertIn("Время окончания", _labels(h), "кирпичик не потерян")
         await h.callback(f"tp_condback:{template_id}:list")
-        self.assertIn("Правил пока нет", h.screen_text())
+        self.assertIn("🧩 Условия расширенного шаблона", h.screen_text())
         await h.callback(f"tp_condback:{template_id}:card")
         self.assertIn("Версия", h.screen_text(), "вернулись в редактор шаблона")
         self.assertEqual(_parts(h, template_id), [], "«Назад» ничего не сохранил")
@@ -319,10 +329,10 @@ class RouteTests(unittest.TestCase):
         parts = _parts(h, template_id)
         self.assertEqual(len(parts), 1, "правило сохранено")
         self.assertEqual(parts[0].fragment, "–[время_окончания]")
-        # Фрагмент совпал с разделителем: список показывает человеческое
-        # название способа, а не сырой текст правила (§7).
-        self.assertIn("Время окончания", h.screen_text())
-        self.assertNotIn("–[время_окончания]", h.screen_text())
+        # Фрагмент совпал с разделителем: экран показывает кирпичик с «✓»,
+        # а не сырой текст правила (§3, §7).
+        self.assertIn("Время окончания ✓", _labels(h))
+        self.assertNotIn("–[время_окончания]", "".join(_labels(h)))
 
 
 # --- 2. рендер §42 А–Е -----------------------------------------------------
@@ -623,11 +633,9 @@ class ExtendedIndependenceTests(unittest.TestCase):
         await _open_card(h, template_id)
         await h.callback(f"tp_cond:{template_id}")
         await h.callback(f"tp_condadd:{template_id}")
-        self.assertIn(
-            "расширенный текст",
-            h.screen_text(),
-            "секция подписана, если кирпичик есть в обоих текстах",
-        )
+        # §3: условия только у расширенного шаблона, секция не подписывается.
+        self.assertIn("Цена", _labels(h), "кирпичик расширенного текста доступен")
+        self.assertNotIn("основной текст", h.screen_text().lower())
         await h.callback(f"tp_condb:{template_id}:e:{bricks['cost']}")
         await h.callback(f"tp_condf:{template_id}:line")
         parts = _parts(h, template_id)
@@ -730,11 +738,18 @@ class RuleEditTests(unittest.TestCase):
                 ("en", "Конец", "short_text", {}),
             ],
             content="[st]–[en]",
+            extended_content="[st]–[en]",
         )
-        self.assertTrue(_rule(h, template_id, revision, bricks["en"], "–[en]").ok)
-        place_id, _alias = _seed_place(h)
-        self.assertEqual(
-            _draft_preview(h, template_id, {bricks["st"]: "19:00"}, place_id), "19:00"
+        # §3: условие принадлежит расширенному тексту.
+        self.assertTrue(
+            _rule(
+                h,
+                template_id,
+                revision,
+                bricks["en"],
+                "–[en]",
+                section="extended_content",
+            ).ok
         )
 
         with h.session_factory() as session:
@@ -744,20 +759,21 @@ class RuleEditTests(unittest.TestCase):
                 template_id=template_id,
                 expected_revision=revision,
                 content="[st]–[en] (резерв: –[en])",
+                extended_content="[st]–[en] (резерв: –[en])",
             )
             self.assertTrue(result.ok, result.message)
         parts = _parts(h, template_id)
-        self.assertEqual(len(parts), 1, "правило осталось в БД")
+        self.assertEqual(len(parts), 1, "правило не удалено молча")
         self.assertEqual(parts[0].status, STATUS_STALE, "два вхождения → перенастройка")
         self.assertEqual(
-            _draft_preview(h, template_id, {bricks["st"]: "19:00"}, place_id),
-            "19:00– (резерв: –)",
+            _active_rules(h, parts[0].version_id),
+            (),
             "§44: устаревшее правило не применяется к случайному месту",
         )
 
     @scenario_test
-    async def test_reset_marks_rule_stale_and_visible(self, h) -> None:
-        """Регресс MAJOR-2/MINOR-3: сброс не прячет правило."""
+    async def test_reset_deletes_rules_of_removed_extension(self, h) -> None:
+        """2.5.3 §3: сброс убирает расширение — условия кирпичиков удаляются."""
         template_id, _revision = _template_with_system_time_bricks(h)
         await h.text("/templates")
         await h.callback(f"tp_open:{template_id}")
@@ -773,23 +789,18 @@ class RuleEditTests(unittest.TestCase):
         await h.callback(f"tp_condback:{template_id}:card")
         await h.callback(f"tp_reset:{template_id}")
         await h.callback(f"tp_reset_yes:{template_id}")
-        self.assertIn("требуют перенастройки", h.screen_text(), "плашка на карточке")
-        parts = _parts(h, template_id)
-        self.assertEqual(len(parts), 1, "§44: правило не удалено молча")
-        self.assertEqual(parts[0].status, STATUS_STALE)
-
-        # Сброс вернул встроенный стандарт без расширенной версии: раздел
-        # правил снова недоступен (§6), но правило ждёт в БД и вернётся в
-        # список, как только автор снова создаст расширенную версию.
+        self.assertNotIn("требуют перенастройки", h.screen_text(), "плашки нет")
+        self.assertEqual(
+            _parts(h, template_id),
+            [],
+            "кирпичиков расширения больше нет — условия удалены",
+        )
+        # Сброс вернул встроенный стандарт без расширенной версии: раздела
+        # условий снова нет.
         self.assertNotIn(
             f"tp_cond:{template_id}",
             _callbacks(h, f"tp_cond:{template_id}"),
             "без расширенной версии раздела нет",
-        )
-        self.assertEqual(
-            _parts(h, template_id)[0].status,
-            STATUS_STALE,
-            "правило по-прежнему ждёт перенастройки",
         )
 
 
@@ -830,9 +841,11 @@ class AccessTests(unittest.TestCase):
         # Действующий админ места проходит маршрут (регресс MINOR-1).
         await h.callback(f"tp_std:{place_id}", user_id=OTHER_TG)
         await h.callback(f"tp_cond:{standard_id}", user_id=OTHER_TG)
-        self.assertIn("Правил пока нет", h.screen_text(), "список правил открылся")
+        self.assertIn(
+            "🧩 Условия расширенного шаблона", h.screen_text(), "экран условий открылся"
+        )
         await h.callback(f"tp_condadd:{standard_id}", user_id=OTHER_TG)
-        self.assertIn("Выберите кирпичик", h.screen_text())
+        self.assertIn("🧩 Условия расширенного шаблона", h.screen_text())
         brick_buttons = [
             data
             for _label, data in h.screen_buttons()
@@ -862,9 +875,11 @@ class AccessTests(unittest.TestCase):
             answers_before = len(h.answer_texts())
             await h.callback(f"tp_cond:{standard_id}", user_id=SUPERADMIN_TG)
             self.assertEqual(h.answer_texts()[answers_before:], [], "без отказа")
-            self.assertIn("Правил пока нет", h.screen_text(), "список открылся")
+            self.assertIn(
+                "🧩 Условия расширенного шаблона", h.screen_text(), "экран открылся"
+            )
             await h.callback(f"tp_condadd:{standard_id}", user_id=SUPERADMIN_TG)
-            self.assertIn("Выберите кирпичик", h.screen_text())
+            self.assertIn("🧩 Условия расширенного шаблона", h.screen_text())
 
 
 # --- 6. перезапуск §44 -----------------------------------------------------
@@ -904,7 +919,7 @@ class PersistenceTests(unittest.TestCase):
         await h.text("/templates")
         await h.callback(f"tp_open:{template_id}")
         await h.callback(f"tp_cond:{template_id}")
-        self.assertIn("Адрес", h.screen_text(), "правило видно после рестарта")
+        self.assertIn("Адрес ✓", _labels(h), "правило видно после рестарта")
         self.assertEqual(len(_parts(h, template_id)), 1)
 
         place_id, _alias = _seed_place(h)

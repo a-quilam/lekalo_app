@@ -27,7 +27,6 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1079,31 +1078,28 @@ def _refresh_conditional_parts_after_edit(
     *,
     actor_telegram_user_id: int | None,
     template_id: int,
+    version_id: int | None = None,
+    commit: bool = True,
 ) -> None:
     """
-    §44: проверяет актуальность условных частей после появления версии.
+    §3: приводит условные части к тексту новой версии.
 
     Правила живут отдельно от текста, поэтому сама новая версия их не
-    переносит: здесь фрагменты либо однозначно переносятся в новую версию,
-    либо помечаются `stale` (и остаются в БД — молча не удаляются). Ошибки
-    не отменяют уже сохранённый текст: автор увидит плашку «требует
-    перенастройки» и сможет исправить правило.
+    переносит: здесь правила либо переносятся в новую версию, либо
+    удаляются, если кирпичика больше нет в расширенном тексте (правила
+    секции content удаляются как унаследованные). `commit=False` — работа в
+    транзакции вызывающего: сохранение текста и правил атомарны (2.5.3 §3).
     """
     # Ленивый импорт: `conditional_parts` сам импортирует этот модуль.
     from conditional_parts import refresh_conditional_parts
 
-    try:
-        refresh_conditional_parts(
-            session,
-            actor_telegram_user_id=actor_telegram_user_id,
-            template_id=template_id,
-        )
-    except Exception as exc:  # noqa: BLE001 — сохранение текста важнее правил
-        logging.getLogger(__name__).warning(
-            "Не удалось актуализировать условные части шаблона %s: %s",
-            template_id,
-            exc,
-        )
+    refresh_conditional_parts(
+        session,
+        actor_telegram_user_id=actor_telegram_user_id,
+        template_id=template_id,
+        version_id=version_id,
+        commit=commit,
+    )
 
 
 def _commit_new_version(
@@ -1116,6 +1112,7 @@ def _commit_new_version(
     extended_content: str | None,
     bindings: Sequence[tuple[str, int]],
     builtin_version: int | None,
+    refresh_rules: bool = False,
 ) -> TemplateMutationResult:
     """
     Атомарно поднимает revision и добавляет версию с проверенными привязками.
@@ -1123,6 +1120,10 @@ def _commit_new_version(
     Условный UPDATE первым получает блокировку записи SQLite. Повторная
     проверка прав идёт после него и до коммита. Любая ошибка откатывает
     revision, версию и привязки вместе.
+
+    `refresh_rules=True` — приводит условные части к тексту НОВОЙ версии в
+    той же транзакции (Poster 2.5.3 §3): правило исчезнувшего кирпичика
+    удаляется вместе с сохранением текста, а не отдельным коммитом после.
     """
     now = utcnow()
     statement = (
@@ -1171,6 +1172,16 @@ def _commit_new_version(
             template_version_id=version.id,
             bindings=bindings,
         )
+        if refresh_rules:
+            # Та же транзакция: правила исчезнувшего кирпичика удаляются
+            # вместе с сохранением текста (2.5.3 §3).
+            _refresh_conditional_parts_after_edit(
+                session,
+                actor_telegram_user_id=actor.telegram_user_id,
+                template_id=row.id,
+                version_id=version.id,
+                commit=False,
+            )
         session.commit()
     except (IntegrityError, OperationalError):
         current_details, current_revision = _reload_after_failure(session, row.id)
@@ -1335,16 +1346,8 @@ def update_template_content(
         extended_content=checked_extended,
         bindings=new_bindings,
         builtin_version=None,
+        refresh_rules=True,
     )
-    if result.ok:
-        # §44: актуальность условных частей проверяется РОВНО здесь — после
-        # появления новой версии. Экран карточки только читает правила и не
-        # имеет права менять доменные данные при отрисовке.
-        _refresh_conditional_parts_after_edit(
-            session,
-            actor_telegram_user_id=actor.telegram_user_id,
-            template_id=template_id,
-        )
     return result
 
 
@@ -1441,16 +1444,8 @@ def _reset_to_builtin(
         extended_content=BUILTIN_TEMPLATE.extended_content,
         bindings=binding_pairs,
         builtin_version=BUILTIN_TEMPLATE_VERSION,
+        refresh_rules=True,
     )
-    if result.ok:
-        # §44: сброс — такая же новая версия, как и правка текста. Правила
-        # прежней версии либо переносятся однозначно, либо становятся
-        # `stale`; иначе они молча «исчезли» бы из редактора.
-        _refresh_conditional_parts_after_edit(
-            session,
-            actor_telegram_user_id=actor.telegram_user_id,
-            template_id=template_id,
-        )
     return result
 
 

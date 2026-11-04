@@ -1,28 +1,31 @@
 # handlers/template_conditional.py
 """
-Условные части шаблонов: Telegram-интерфейс (Poster 2.5.2 §6–7).
+Условные части шаблонов: Telegram-интерфейс (Poster 2.5.3 §3).
 
-Путь автора: карточка РАСШИРЕННОГО шаблона → «🧩 Условные части» → компактный
-список правил → «➕ Новая условная часть» → кирпичик → способ скрытия →
-сохранение. Список показывает не больше пяти правил на страницу, у каждого
-есть правка и удаление. Детали и примеры живут в «Помощи», а не на экране.
+Путь автора: карточка расширенного шаблона → «🧩 Условия расширенного
+шаблона» → ОДИН экран со списком кирпичиков расширенного текста → кирпичик →
+способ скрытия → сохранение. Экран показывает не больше пяти кирпичиков на
+страницу; у настроенного условия в подписи стоит «✓». Нажатие на кирпичик
+открывает просмотр/изменение/удаление условия. Детали и примеры живут в
+«Помощи», а не на экране.
 
-Семантика (Poster 2.5.2 §6), которую держит этот модуль:
+Семантика (Poster 2.5.3 §3), которую держит этот модуль:
 
-- условные части есть ТОЛЬКО у шаблона с расширенной версией: у простого нет
-  ни кнопки в карточке, ни маршрута — проверка одна
-  (`tp.conditional_parts_available`);
+- условные части принадлежат ТОЛЬКО расширенному тексту: у простого шаблона
+  нет ни кнопки в карточке, ни маршрута, ни применения при рендере, а прямой
+  callback с секцией `content` получает отказ без записи в БД;
 - один движок для личных шаблонов и стандарта места: никаких проверок по
   признаку `origin`, только факт расширенной версии и права редактора;
+- кирпичик, встречающийся в обоих текстах, показывается ОДИН раз и его
+  условие никогда не меняет простой текст;
 - повторяющийся кирпичик в тексте — ОДНО правило автора: выбранный способ
   скрытия применяется ко всем его вхождениям (в БД это по-прежнему строки
   на каждое вхождение — так рендер и замороженные снимки работают с
   точными фрагментами);
 - в интерфейсе нет номеров вхождений, технических диапазонов и сырого
-  текста фрагментов: только название поля, секция (если кирпичик есть в
-  обоих текстах) и понятный способ скрытия;
+  текста фрагментов: только название поля и понятный способ скрытия;
 - литеральный статический текст не вычищается: скрывается ровно то, что
-  выбрал автор (§41).
+  выбрал автор.
 
 Модуль намеренно не меняет доменный слой: правила читает и пишет
 `conditional_parts`, шаблон и версии — `template_store`. Здесь только
@@ -91,11 +94,12 @@ MODE_TITLE_KEYS = {
     MODE_FRAGMENT: "templates.cond.mode_custom_short",
 }
 
-# Секции текста шаблона. Короткий флаг `c`/`e` — часть callback-протокола:
-# правило принадлежит конкретной секции, иначе кирпичик, встречающийся в
-# обоих текстах, нельзя было бы отличить.
+# Секции текста шаблона. Короткий флаг `e` — часть callback-протокола;
+# флаг `c` принимается только чтобы старую кнопку можно было безопасно
+# отклонить: условия принадлежат ТОЛЬКО расширенному тексту (2.5.3 §3).
 SECTION_FLAGS = {SECTION_CONTENT: "c", SECTION_EXTENDED_CONTENT: "e"}
 FLAG_SECTIONS = {flag: section for section, flag in SECTION_FLAGS.items()}
+ALLOWED_SECTION = SECTION_EXTENDED_CONTENT
 
 # Символы, которые автор считает «разделителем» вокруг кирпичика (§38/§42).
 # Квадратные скобки сюда не входят: иначе фрагмент «съел» бы соседний токен.
@@ -173,7 +177,7 @@ def _forget(context: ContextTypes.DEFAULT_TYPE) -> None:
 def _new_state(template_id: int) -> dict:
     return {
         "template_id": template_id,
-        "step": STEP_LIST,
+        "step": STEP_BRICKS,
         "page": 0,
         "section": SECTION_EXTENDED_CONTENT,
         "brick_id": None,
@@ -186,6 +190,7 @@ def _new_state(template_id: int) -> dict:
 
 
 def _section_text(template: tp.TemplateDetails, section: str) -> str:
+    """Текст секции шаблона; условия существуют только в расширенном тексте."""
     version = template.current_version
     if section == SECTION_EXTENDED_CONTENT:
         return version.extended_content or ""
@@ -243,92 +248,53 @@ def _line_span(text: str, start: int, end: int) -> tuple[int, int]:
     return line_start, line_end
 
 
-def _section_texts(template: tp.TemplateDetails) -> dict[str, str]:
-    """
-    Непустые тексты шаблона по секциям.
-
-    Если расширенная версия дословно повторяет основной текст (так бывает у
-    шаблонов, где расширение добавляется позже), показывать один и тот же
-    кирпичик дважды бессмысленно: остаётся расширенная секция.
-    """
-    texts: dict[str, str] = {}
-    for section in (SECTION_CONTENT, SECTION_EXTENDED_CONTENT):
-        text = _section_text(template, section)
-        if text:
-            texts[section] = text
-    if texts.get(SECTION_CONTENT) == texts.get(SECTION_EXTENDED_CONTENT):
-        texts.pop(SECTION_CONTENT, None)
-    return texts
-
-
 def _entries(template: tp.TemplateDetails) -> list[BrickEntry]:
     """
-    Кирпичики, реально встречающиеся в текстах шаблона (шаг 1).
+    Кирпичики расширенного текста шаблона — по одному на кирпичик.
 
-    Записи идут по секциям: правило принадлежит тексту, где живёт фрагмент.
+    Poster 2.5.3 §3: условия принадлежат ТОЛЬКО `extended_content`. Кирпичик,
+    встречающийся в тексте несколько раз (или в обоих текстах), показывается
+    ОДИН раз: автор выбирает способ скрытия один раз на все вхождения.
+    Порядок — по первому вхождению в расширенном тексте, как читает автор.
     """
-    texts = _section_texts(template)
-    titles = {
-        binding.brick_id: binding.title for binding in template.current_version.bindings
-    }
-    codes = {
-        binding.brick_id: binding.code for binding in template.current_version.bindings
-    }
-    entries: list[BrickEntry] = []
-    for section in (SECTION_CONTENT, SECTION_EXTENDED_CONTENT):
-        text = texts.get(section)
-        if not text:
+    text = _section_text(template, SECTION_EXTENDED_CONTENT)
+    if not text:
+        return []
+    bindings = template.current_version.bindings
+    found: list[tuple[int, BrickEntry]] = []
+    for binding in bindings:
+        code = binding.code
+        if not code:
             continue
-        for brick_id, code in codes.items():
-            if not code:
-                continue
-            positions = _token_positions(text, code)
-            if not positions:
-                continue
-            entries.append(
+        positions = _token_positions(text, code)
+        if not positions:
+            continue
+        found.append(
+            (
+                positions[0],
                 BrickEntry(
-                    section=section,
-                    brick_id=brick_id,
+                    section=SECTION_EXTENDED_CONTENT,
+                    brick_id=binding.brick_id,
                     code=code,
-                    title=titles.get(brick_id) or code,
+                    title=binding.title or code,
                     occurrences=tuple(range(1, len(positions) + 1)),
-                )
+                ),
             )
-    return entries
+        )
+    found.sort(key=lambda item: item[0])
+    return [entry for _position, entry in found]
 
 
 def _entry(
     template: tp.TemplateDetails, section: str, brick_id: int
 ) -> BrickEntry | None:
+    """Кирпичик расширенного текста; у других секций условий нет (§3)."""
+    if section != ALLOWED_SECTION:
+        return None
     for entry in _entries(template):
-        if entry.section == section and entry.brick_id == brick_id:
+        if entry.brick_id == brick_id:
             return entry
     return None
-
-
-def _entry_label(entry: BrickEntry, *, show_section: bool) -> str:
-    """
-    Название поля для человека.
-
-    Секция подписывается только тогда, когда тот же кирпичик встречается в
-    обоих текстах: иначе автор не понял бы, какое из двух правил правит.
-    """
-    if not show_section:
-        return entry.title
-    return tr(
-        "templates.cond.entry_section",
-        title=entry.title,
-        section=_section_title(entry.section),
-    )
-
-
-def _section_title(section: str) -> str:
-    key = (
-        "templates.cond.section_extended"
-        if section == SECTION_EXTENDED_CONTENT
-        else "templates.cond.section_content"
-    )
-    return tr(key)
 
 
 # --- Фрагменты трёх режимов -------------------------------------------------
@@ -417,8 +383,6 @@ def _stored_mode(text: str, code: str, fragments: set[tuple[str, int]]) -> str:
 
 # --- Группировка правил ------------------------------------------------------
 
-SECTION_ORDER = {SECTION_CONTENT: 0, SECTION_EXTENDED_CONTENT: 1}
-
 
 def _group_rules(
     session,
@@ -426,22 +390,28 @@ def _group_rules(
     template: tp.TemplateDetails,
 ) -> list[RuleGroup]:
     """
-    Правила шаблона как список правил автора (один кирпичик — одно правило).
+    Правила расширенного текста как список правил автора.
+
+    Один кирпичик — одно правило. Строки устаревшей секции `content` в
+    интерфейс не попадают: условий у простого текста больше нет (§3), а
+    `refresh_conditional_parts` удаляет их при сохранении версии.
 
     `stale`-правила не теряются: они тоже входят в список со своим статусом
     (§44), иначе автор не увидел бы проблему.
     """
     parts = _load_parts(session, telegram_user_id, template.template_id)
     current_version = template.current_version.version_id
-    grouped: dict[tuple[str, int], list] = {}
+    grouped: dict[int, list] = {}
     for part in parts:
-        grouped.setdefault((part.section, part.brick_id), []).append(part)
+        if part.section != ALLOWED_SECTION:
+            continue
+        grouped.setdefault(part.brick_id, []).append(part)
+    text = _section_text(template, ALLOWED_SECTION)
     result: list[RuleGroup] = []
-    for (section, brick_id), rows in grouped.items():
-        text = _section_text(template, section)
+    for brick_id, rows in grouped.items():
         code = next((row.code for row in rows if row.code), "")
         title = code
-        entry = _entry(template, section, brick_id)
+        entry = _entry(template, ALLOWED_SECTION, brick_id)
         if entry is not None:
             title = entry.title
         active = [row for row in rows if row.status != STATUS_STALE]
@@ -456,7 +426,7 @@ def _group_rules(
         )
         result.append(
             RuleGroup(
-                section=section,
+                section=ALLOWED_SECTION,
                 brick_id=brick_id,
                 code=code,
                 title=title,
@@ -466,13 +436,7 @@ def _group_rules(
                 first_position=first_position,
             )
         )
-    result.sort(
-        key=lambda group: (
-            SECTION_ORDER.get(group.section, 1),
-            group.first_position,
-            group.title,
-        )
-    )
+    result.sort(key=lambda group: (group.first_position, group.title))
     return result
 
 
@@ -483,17 +447,6 @@ def _first_span_position(text: str, fragment: str, occurrence: int) -> int:
         if start < 0:
             return 1 << 30
     return start
-
-
-def _needs_section(brick_id: int, entries: list[BrickEntry]) -> bool:
-    """
-    Нужна ли подпись секции для этого кирпичика.
-
-    Только если кирпичик реально есть в обоих текстах: иначе секция —
-    техническая подробность, которой в интерфейсе быть не должно (§7).
-    """
-    sections = {entry.section for entry in entries if entry.brick_id == brick_id}
-    return len(sections) > 1
 
 
 # --- Экраны -----------------------------------------------------------------
@@ -528,60 +481,42 @@ def _nav_row(
     return buttons
 
 
-def _rule_title(group: RuleGroup, entries: list[BrickEntry]) -> str:
-    """Название правила в списке: поле и, при необходимости, секция."""
-    entry = BrickEntry(
-        section=group.section,
-        brick_id=group.brick_id,
-        code=group.code,
-        title=group.title,
-        occurrences=(),
-    )
-    return _entry_label(entry, show_section=_needs_section(group.brick_id, entries))
-
-
-def _list_content(
-    groups: list[RuleGroup], entries: list[BrickEntry], template_id: int, page: int
+def _bricks_content(
+    entries: list[BrickEntry],
+    groups: list[RuleGroup],
+    template_id: int,
+    page: int = 0,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Компактный главный экран: до пяти правил, у каждого правка и удаление."""
-    page_slice = pagination.page_items(groups, page)
-    lines = [tr("templates.cond.list_title"), ""]
-    if not groups:
-        lines.append(tr("templates.cond.list_empty"))
-    else:
-        lines.append(tr("templates.cond.list_hint"))
-        for number, group in enumerate(page_slice.items, start=1):
-            lines.append(
-                tr(
-                    "templates.cond.list_item",
-                    index=page_slice.offset + number,
-                    title=_rule_title(group, entries),
-                    mode=group.mode_title(),
-                )
-            )
+    """
+    Единственный экран раздела: кирпичики расширенного текста.
+
+    Poster 2.5.3 §3: перечня полей в теле нет — только заголовок и подсказка,
+    дальше кнопки кирпичиков (не больше пяти на страницу) и «◀️ Назад» в
+    карточку. У настроенного кирпичика в подписи стоит «✓»; нажатие открывает
+    экран способа скрытия.
+    """
+    configured = {group.brick_id for group in groups}
+    page_slice = pagination.page_items(entries, page)
+    lines = [tr("templates.cond.title"), "", tr("templates.cond.hint")]
+    if not entries:
+        lines = [tr("templates.cond.title"), "", tr("templates.cond.no_bricks")]
     rows: list[list[InlineKeyboardButton]] = []
-    for group in page_slice.items:
-        base = f"{group.flag}:{group.brick_id}"
+    for entry in page_slice.items:
+        key = (
+            "templates.cond.brick_button_done"
+            if entry.brick_id in configured
+            else "templates.cond.brick_button"
+        )
         rows.append(
             [
                 InlineKeyboardButton(
-                    tp._short(tr("templates.cond.edit_item", title=group.title)),
-                    callback_data=f"tp_conde:{template_id}:{base}",
-                ),
-                InlineKeyboardButton(
-                    tr("templates.cond.delete_item"),
-                    callback_data=f"tp_condd:{template_id}:{base}",
-                ),
+                    tp._short(tr(key, title=entry.title)),
+                    callback_data=(
+                        f"tp_condb:{template_id}:{entry.flag}:{entry.brick_id}"
+                    ),
+                )
             ]
         )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                tr("templates.cond.add"),
-                callback_data=f"tp_condadd:{template_id}",
-            )
-        ]
-    )
     nav = _nav_row(page_slice.page, page_slice.total_pages, template_id)
     if nav is not None:
         rows.append(nav)
@@ -589,58 +524,14 @@ def _list_content(
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
-def _bricks_content(
-    entries: list[BrickEntry],
-    groups: list[RuleGroup],
-    template_id: int,
-) -> tuple[str, InlineKeyboardMarkup]:
-    """Шаг 1: выбор кирпичика (без номеров вхождений и без текста фрагментов)."""
-    used = {(group.section, group.brick_id) for group in groups}
-    lines = [tr("templates.cond.list_title"), "", tr("templates.cond.choose_brick")]
-    rows: list[list[InlineKeyboardButton]] = []
-    for entry in entries:
-        title = _entry_label(
-            entry, show_section=_needs_section(entry.brick_id, entries)
-        )
-        lines.append(tr("templates.cond.entry", title=title))
-        label_key = (
-            "templates.cond.entry_button_edit"
-            if (entry.section, entry.brick_id) in used
-            else "templates.cond.entry_button"
-        )
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tp._short(tr(label_key, title=title)),
-                    callback_data=(
-                        f"tp_condb:{template_id}:{entry.flag}:{entry.brick_id}"
-                    ),
-                )
-            ]
-        )
-    if not entries:
-        lines = [
-            tr("templates.cond.list_title"),
-            "",
-            tr("templates.cond.no_bricks"),
-        ]
-    rows.append([_back(f"tp_condback:{template_id}:list")])
-    return "\n".join(lines), InlineKeyboardMarkup(rows)
-
-
 def _mode_content(
     template_id: int,
     entry: BrickEntry,
-    current: str | None,
-    *,
-    show_section: bool,
+    group: RuleGroup | None,
 ) -> tuple[str, InlineKeyboardMarkup]:
-    """Шаг 2: три способа скрытия с короткими человеческими примерами."""
+    """Три способа скрытия с короткими человеческими примерами."""
     lines = [
-        tr(
-            "templates.cond.mode_title",
-            title=_entry_label(entry, show_section=show_section),
-        ),
+        tr("templates.cond.mode_title", title=entry.title),
         "",
         tr("templates.cond.mode_line_example"),
         tr("templates.cond.mode_sep_example"),
@@ -648,13 +539,13 @@ def _mode_content(
         "",
         tr("templates.cond.mode_hint"),
     ]
-    if current in MODES:
+    if group is not None and group.mode in MODES:
         # Действующий способ виден в тексте, а не только подписью кнопки:
         # автор сразу понимает, что произойдёт при повторном выборе.
         lines.append(
             tr(
                 "templates.cond.mode_current",
-                label=tr(MODE_TITLE_KEYS[current]),
+                label=tr(MODE_TITLE_KEYS[group.mode]),
             )
         )
     rows: list[list[InlineKeyboardButton]] = []
@@ -671,19 +562,29 @@ def _mode_content(
                 )
             ]
         )
+    if group is not None:
+        # У настроенного кирпичика удаление живёт здесь: отдельного списка
+        # правил в 2.5.3 §3 нет.
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tr("templates.cond.delete_item"),
+                    callback_data=(
+                        f"tp_condd:{template_id}:{group.flag}:{group.brick_id}"
+                    ),
+                )
+            ]
+        )
     rows.append([_back(f"tp_condback:{template_id}:bricks")])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
 def _custom_content(
-    template_id: int, entry: BrickEntry, *, show_section: bool
+    template_id: int, entry: BrickEntry
 ) -> tuple[str, InlineKeyboardMarkup]:
     text = "\n".join(
         [
-            tr(
-                "templates.cond.label",
-                title=_entry_label(entry, show_section=show_section),
-            ),
+            tr("templates.cond.label", title=entry.title),
             "",
             tr("templates.cond.custom_example"),
             "",
@@ -695,12 +596,11 @@ def _custom_content(
 
 
 def _delete_content(
-    group: RuleGroup, template_id: int, *, entries: list[BrickEntry]
+    group: RuleGroup, template_id: int
 ) -> tuple[str, InlineKeyboardMarkup]:
-    title = _rule_title(group, entries)
     text = tr(
         "templates.cond.delete_confirm",
-        title=title,
+        title=group.title,
         mode=group.mode_title(),
     )
     keyboard = InlineKeyboardMarkup(
@@ -713,7 +613,7 @@ def _delete_content(
                     ),
                 )
             ],
-            [_back(f"tp_condback:{template_id}:list")],
+            [_back(f"tp_condback:{template_id}:bricks")],
         ]
     )
     return text, keyboard
@@ -724,11 +624,13 @@ def _delete_content(
 
 def stale_count(session, template: "tp.TemplateDetails", telegram_user_id: int) -> int:
     """
-    Сколько правил требуют перенастройки (для плашки в карточке).
+    Сколько условий расширенного шаблона требуют перенастройки (плашка карточки).
 
     Только ЧТЕНИЕ. Актуальность правил проверяет `template_store` в момент
     создания новой версии текста: карточка не имеет права менять доменные
-    данные при отрисовке (иначе порядок экранов влиял бы на БД).
+    данные при отрисовке (иначе порядок экранов влиял бы на БД). Правила
+    секции `content` в счёт не входят: условий у простого текста нет (§3), а
+    `refresh_conditional_parts` такие строки удаляет при сохранении версии.
     """
     try:
         parts = list_conditional_parts(
@@ -745,7 +647,8 @@ def stale_count(session, template: "tp.TemplateDetails", telegram_user_id: int) 
     return sum(
         1
         for part in parts
-        if part.status == STATUS_STALE or part.version_id != current_version_id
+        if part.section == ALLOWED_SECTION
+        and (part.status == STATUS_STALE or part.version_id != current_version_id)
     )
 
 
@@ -881,44 +784,34 @@ def _content_for(
     Содержимое текущего шага; чистая функция от домена и состояния.
 
     `None` — выбранный кирпичик исчез из текста (правка в другом окне).
-    Вызывающий возвращает автора к выбору кирпичика, а не рисует экран с
+    Вызывающий возвращает автора к списку кирпичиков, а не рисует экран с
     пустым правилом.
     """
     template_id = template.template_id
     step = cond.get("step")
     groups = _group_rules(session, telegram_user_id, template)
     entries = _entries(template)
-    if step == STEP_LIST:
-        return _list_content(groups, entries, template_id, int(cond.get("page") or 0))
-    section = str(cond.get("section") or SECTION_EXTENDED_CONTENT)
+    page = int(cond.get("page") or 0)
+    if step in (STEP_LIST, STEP_BRICKS):
+        # Единственный экран раздела: список кирпичиков расширенного текста
+        # (2.5.3 §3). Отдельного шага «выберите кирпичик» больше нет.
+        return _bricks_content(entries, groups, template_id, page)
+    section = str(cond.get("section") or ALLOWED_SECTION)
     brick_id = int(cond.get("brick_id") or 0)
     entry = _entry(template, section, brick_id)
-    if step == STEP_BRICKS:
-        return _bricks_content(entries, groups, template_id)
     if step == STEP_DELETE:
         group = _find_group(groups, section, brick_id)
         if group is None:
-            cond["step"] = STEP_LIST
-            return _list_content(
-                groups, entries, template_id, int(cond.get("page") or 0)
-            )
-        return _delete_content(group, template_id, entries=entries)
+            cond["step"] = STEP_BRICKS
+            return _bricks_content(entries, groups, template_id, page)
+        return _delete_content(group, template_id)
     if entry is None:
         return None
     if step == STEP_MODE:
         group = _find_group(groups, section, brick_id)
-        return _mode_content(
-            template_id,
-            entry,
-            group.mode if group else None,
-            show_section=_needs_section(entry.brick_id, entries),
-        )
+        return _mode_content(template_id, entry, group)
     if step == STEP_CUSTOM:
-        return _custom_content(
-            template_id,
-            entry,
-            show_section=_needs_section(entry.brick_id, entries),
-        )
+        return _custom_content(template_id, entry)
     return None
 
 
@@ -1066,7 +959,7 @@ async def handle_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def handle_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Навигация `◀️ | 1 / 3 | ▶️` по списку правил."""
+    """Навигация `◀️ | 1 / 3 | ▶️` по списку кирпичиков."""
     query = ctx.query(update)
     ids = _ids(query.data or "", "tp_condp:", 2)
     if ids is None:
@@ -1078,13 +971,19 @@ async def handle_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _stale(update)
         return
     await query.answer()
-    cond["step"] = STEP_LIST
+    cond["step"] = STEP_BRICKS
     cond["page"] = max(offset, 0) // pagination.PAGE_SIZE
     await _render_cond(update, context, cond)
 
 
 async def handle_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """«➕ Новая условная часть» → выбор кирпичика."""
+    """
+    Прежняя кнопка «➕ Новая условная часть».
+
+    В 2.5.3 §3 отдельного шага создания нет: экран сразу показывает все
+    кирпичики расширенного текста. Старая кнопка из отправленного ранее
+    сообщения безопасно открывает этот же список.
+    """
     query = ctx.query(update)
     template_id = tp._callback_id(query.data or "", "tp_condadd:")
     cond = _guard(update, context, template_id) if template_id is not None else None
@@ -1132,7 +1031,7 @@ def _bricks_target(data: str) -> tuple[int, str, int] | None:
 
 
 async def handle_bricks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Выбран кирпичик: автор выбирает способ скрытия."""
+    """Выбран кирпичик расширенного текста: автор выбирает способ скрытия."""
     query = ctx.query(update)
     target = _bricks_target(query.data or "")
     if target is None:
@@ -1143,11 +1042,22 @@ async def handle_bricks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if cond is None:
         await _stale(update)
         return
+    if section != ALLOWED_SECTION:
+        # Старая кнопка с секцией простого текста: условий у него нет (§3).
+        # Отказ без записи в БД: доменный слой даже не вызывается.
+        await query.answer(tp.STALE_TEXT, show_alert=True)
+        cond["step"] = STEP_BRICKS
+        await _render_cond(update, context, cond)
+        return
     telegram_user_id = ctx.user(update).id
     session = tp.SessionLocal()
     try:
         template = _editable(session, cond, telegram_user_id, template_id)
-        entry = _entry(template, section, brick_id) if template is not None else None
+        entry = (
+            _entry(template, ALLOWED_SECTION, brick_id)
+            if template is not None
+            else None
+        )
         groups = (
             _group_rules(session, telegram_user_id, template)
             if template is not None
@@ -1158,7 +1068,7 @@ async def handle_bricks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if entry is None:
         # Кирпичик есть в старом правиле, но не в тексте: правило всё равно
         # должно остаться доступным (§44).
-        group = _find_group(groups, section, brick_id)
+        group = _find_group(groups, ALLOWED_SECTION, brick_id)
         if group is None:
             await query.answer(tr("templates.cond.entry_gone"), show_alert=True)
             cond["step"] = STEP_BRICKS
@@ -1237,7 +1147,14 @@ async def _apply_mode(
             _forget(context)
             await _stale(update)
             return
-        section = str(cond.get("section") or SECTION_EXTENDED_CONTENT)
+        section = str(cond.get("section") or ALLOWED_SECTION)
+        if section != ALLOWED_SECTION:
+            # Условия принадлежат только расширенному тексту (§3): отказ без
+            # записи в БД.
+            await _answer(update, tp.STALE_TEXT, show_alert=True)
+            cond.update({"step": STEP_BRICKS, "brick_id": None})
+            await _render_cond(update, context, cond)
+            return
         brick_id = int(cond.get("brick_id") or 0)
         entry = _entry(template, section, brick_id)
         if entry is None:
@@ -1273,7 +1190,7 @@ async def _apply_mode(
         session.close()
     if result.status == "stale":
         await _answer(update, tr("templates.cond.template_changed"), show_alert=True)
-        cond.update({"step": STEP_LIST, "brick_id": None})
+        cond.update({"step": STEP_BRICKS, "brick_id": None})
         _cond_input_on(context, cond, flag=False)
         await _render_cond(update, context, cond)
         return
@@ -1288,7 +1205,7 @@ async def _apply_mode(
     _cond_input_on(context, cond, flag=False)
     cond.update(
         {
-            "step": STEP_LIST,
+            "step": STEP_BRICKS,
             "brick_id": None,
             "error": None,
         }
@@ -1359,14 +1276,14 @@ async def handle_edit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         session.close()
     if resolved is None:
         await query.answer(tr("templates.cond.rule_gone"), show_alert=True)
-        cond.update({"step": STEP_LIST, "brick_id": None})
+        cond.update({"step": STEP_BRICKS, "brick_id": None})
         await _render_cond(update, context, cond)
         return
     section, brick_id = resolved
     group = _find_group(groups, section, brick_id)
     if group is None:
         await query.answer(tr("templates.cond.rule_gone"), show_alert=True)
-        cond.update({"step": STEP_LIST, "brick_id": None})
+        cond.update({"step": STEP_BRICKS, "brick_id": None})
         await _render_cond(update, context, cond)
         return
     await query.answer()
@@ -1435,7 +1352,7 @@ async def handle_delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         session.close()
     if group is None:
         await query.answer(tr("templates.cond.rule_gone"), show_alert=True)
-        cond.update({"step": STEP_LIST, "brick_id": None})
+        cond.update({"step": STEP_BRICKS, "brick_id": None})
         await _render_cond(update, context, cond)
         return
     await query.answer()
@@ -1473,7 +1390,7 @@ async def handle_delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
         if template is None or group is None:
             await query.answer(tr("templates.cond.rule_gone"), show_alert=True)
-            cond.update({"step": STEP_LIST, "brick_id": None})
+            cond.update({"step": STEP_BRICKS, "brick_id": None})
             await _render_cond(update, context, cond)
             return
         result = replace_conditional_rules(
@@ -1497,7 +1414,7 @@ async def handle_delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await query.answer(tr("templates.cond.deleted_toast"))
     else:
         await query.answer(result.message or tr("templates.cond.delete_failed"))
-    cond.update({"step": STEP_LIST, "brick_id": None, "error": None})
+    cond.update({"step": STEP_BRICKS, "brick_id": None, "error": None})
     await _render_cond(update, context, cond)
 
 
@@ -1539,9 +1456,10 @@ async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if target not in BACK_TARGETS:
         await _stale(update)
         return
-    cond["step"] = target
+    # Прежний шаг «список правил» в 2.5.3 §3 — тот же экран кирпичиков.
+    cond["step"] = STEP_BRICKS if target == STEP_LIST else target
     cond["error"] = None
-    if target in {STEP_LIST, STEP_BRICKS}:
+    if cond["step"] in {STEP_LIST, STEP_BRICKS}:
         cond["brick_id"] = None
     await _render_cond(update, context, cond)
 

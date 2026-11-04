@@ -64,7 +64,6 @@ from announcement_store import (
     start_announcement_wizard,
 )
 from conditional_parts import (
-    STATUS_STALE,
     create_conditional_part,
     list_conditional_parts,
 )
@@ -109,16 +108,25 @@ class ConditionalSnapshotTestBase(TemplateDatabaseTestCase):
         self.owner = self.make_user(OWNER_TG, username="snapshot-owner")
         self.main_brick = self.make_personal_brick(self.owner, "main")
         self.cost_brick = self.make_personal_brick(self.owner, "cost")
+        # Poster 2.5.3 §3: условия принадлежат только расширенному тексту,
+        # поэтому заготовка содержит расширение с тем же текстом и строку
+        # доп. поля: черновик с доп. полем рендерится по расширенному тексту.
+        # Пустая строка `[venue]` скрывается компилятором и не влияет на
+        # ожидаемый текст анонса.
+        self.venue_brick = self.make_personal_brick(self.owner, "venue")
         self.template = create_personal_template(
             self.session,
             actor_telegram_user_id=OWNER_TG,
             name="С ценой",
             content=CONTENT_V1,
+            extended_content=CONTENT_V1 + "\n[venue]",
         )
 
     # --- помощники ---------------------------------------------------------
 
-    def _add_rule(self, *, fragment: str = HIDDEN_FRAGMENT, section: str = "content"):
+    def _add_rule(
+        self, *, fragment: str = HIDDEN_FRAGMENT, section: str = "extended_content"
+    ):
         """Добавляет правило к ТЕКУЩЕЙ версии шаблона (версия не меняется)."""
         return create_conditional_part(
             self.session,
@@ -141,7 +149,7 @@ class ConditionalSnapshotTestBase(TemplateDatabaseTestCase):
 
     def _start_draft(self, template_id: int | None = None):
         """Пункт 1: автор начинает анонс по шаблону (снимок фиксируется)."""
-        return start_announcement_wizard(
+        draft = start_announcement_wizard(
             self.session,
             actor_telegram_user_id=OWNER_TG,
             origin=ORIGIN_PERSONAL,
@@ -149,6 +157,17 @@ class ConditionalSnapshotTestBase(TemplateDatabaseTestCase):
                 self.template.template_id if template_id is None else template_id
             ),
         )
+        if template_id is None:
+            # Доп. поле включает расширенный текст: иначе условия (§3)
+            # не применяются, потому что рендерится простой текст.
+            draft = add_announcement_extra(
+                self.session,
+                actor_telegram_user_id=OWNER_TG,
+                draft_id=draft.draft_id,
+                brick_id=self.venue_brick,
+                value="",
+            )
+        return draft
 
     def _save(self, draft, brick_id: int, value: object):
         return save_announcement_value(
@@ -172,17 +191,23 @@ class ConditionalSnapshotTestBase(TemplateDatabaseTestCase):
         self,
         content: str,
         *,
+        extended_content: str | None = None,
         template_id: int | None = None,
         revision: int | None = None,
     ) -> None:
         """Пункт 3: правка шаблона → новая версия + refresh правил."""
         checked_id = self.template.template_id if template_id is None else template_id
+        # Расширенный текст обязан оставаться расширенным (в нём кирпичик
+        # доп. поля), иначе черновик перестал бы рендериться по расширению.
+        if extended_content is None:
+            extended_content = content + "\n[venue]" if template_id is None else content
         result = update_template_content(
             self.session,
             actor_telegram_user_id=OWNER_TG,
             template_id=checked_id,
             expected_revision=(self._revision() if revision is None else revision),
             content=content,
+            extended_content=extended_content,
         )
         self.assertTrue(result.ok, result.message)
         self.session.expire_all()
@@ -276,10 +301,10 @@ class ConditionalSnapshotContractTests(ConditionalSnapshotTestBase):
             f"Состояние правил: {self._rules_state()}",
         )
 
-    def test_old_draft_keeps_rules_when_edit_marks_them_stale(self) -> None:
+    def test_old_draft_keeps_rules_when_edit_removes_brick(self) -> None:
         """
-        Пункт 4 (вторая сторона): правка убрала фрагмент из шаблона →
-        правило стало stale, но снимок старого черновика не меняется.
+        Пункт 4 (вторая сторона): правка убрала кирпичик из шаблона →
+        условие удалено (2.5.3 §3), но снимок старого черновика не меняется.
         """
         draft = self._start_draft()
         draft = self._save(draft, self.main_brick, "Концерт")
@@ -287,18 +312,18 @@ class ConditionalSnapshotContractTests(ConditionalSnapshotTestBase):
         self.assertEqual(before, EMPTY_COST_V1)
 
         self._edit_template("**[main]**\nСовсем другой текст")
-        self.assertIn(
-            STATUS_STALE,
+        self.assertEqual(
             self._rules_state(),
-            "подготовка теста: правило помечено stale, но не удалено",
+            "",
+            "подготовка теста: условие исчезнувшего кирпичика удалено",
         )
 
         self.session.expire_all()
         self.assertEqual(
             self._preview(draft),
             before,
-            "КОНТРАКТ 2.5.1, п.4: stale в живом шаблоне не отменяет правило "
-            "снимка старого черновика",
+            "КОНТРАКТ 2.5.1, п.4: удаление условия в живом шаблоне не "
+            "отменяет правило снимка старого черновика",
         )
 
     # --- пункт 5: рестарт --------------------------------------------------
@@ -359,9 +384,9 @@ class ConditionalSnapshotContractTests(ConditionalSnapshotTestBase):
 
     def test_old_draft_keeps_formatting_links_and_extras(self) -> None:
         """Пункт 7: форматирование, ссылка и доп. поле снимка не теряются."""
-        venue_brick = self.make_personal_brick(self.owner, "venue")
+        venue_brick = self.make_personal_brick(self.owner, "venue2")
         content = "**[main] – [cost]**\nБилеты(https://example.com/afisha)"
-        extended = content + "\nМесто: [venue]"
+        extended = content + "\nМесто: [venue2]"
         template = create_personal_template(
             self.session,
             actor_telegram_user_id=OWNER_TG,
@@ -403,10 +428,11 @@ class ConditionalSnapshotContractTests(ConditionalSnapshotTestBase):
 
         self._edit_template(
             content + "\nНовая строка",
+            extended_content=extended + "\nНовая строка",
             template_id=template.template_id,
             revision=template.revision,
         )
-        # extended_content не передан — остаётся прежним; правило переносится.
+        # Расширенный текст приходит вместе с правкой; правило переносится.
         self.session.expire_all()
 
         self.assertEqual(
@@ -489,18 +515,26 @@ class ConditionalSnapshotRestartTests(unittest.TestCase):
                 title="Цена",
                 value_type="short_text",
             )
+            venue = create_personal_brick(
+                session,
+                actor_telegram_user_id=h.user_id,
+                code="venue",
+                title="Место",
+                value_type="short_text",
+            )
             template = create_personal_template(
                 session,
                 actor_telegram_user_id=h.user_id,
                 name="С ценой",
                 content=CONTENT_V1,
+                extended_content=CONTENT_V1 + "\n[venue]",
             )
             created = create_conditional_part(
                 session,
                 actor_telegram_user_id=h.user_id,
                 template_id=template.template_id,
                 expected_revision=template.revision,
-                section="content",
+                section="extended_content",
                 brick_id=cost.id,
                 fragment=HIDDEN_FRAGMENT,
             )
@@ -510,6 +544,13 @@ class ConditionalSnapshotRestartTests(unittest.TestCase):
                 actor_telegram_user_id=h.user_id,
                 origin=ORIGIN_PERSONAL,
                 template_id=template.template_id,
+            )
+            draft = add_announcement_extra(
+                session,
+                actor_telegram_user_id=h.user_id,
+                draft_id=draft.draft_id,
+                brick_id=venue.id,
+                value="",
             )
             draft = save_announcement_value(
                 session,

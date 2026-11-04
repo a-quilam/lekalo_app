@@ -416,13 +416,28 @@ class SnapshotRulesFreezeTests(TemplateDatabaseTestCase):
 
     def test_stale_rules_are_not_frozen(self) -> None:
         """`stale`-правило не применялось на версии и в снимок не попадает."""
-        self.assertEqual(self._add_rule().status, "created")
+        # 2.5.3 §3: условия живут только в расширенном тексте, а `stale`
+        # возникает лишь при неоднозначном фрагменте (исчезнувший кирпичик
+        # теперь удаляет условие).
         updated = update_template_content(
             self.session,
             actor_telegram_user_id=OWNER_TG,
             template_id=self.template.template_id,
             expected_revision=self._revision(),
-            content="**[main]**\nСовсем другой текст",
+            content=CONTENT_V1,
+            extended_content=CONTENT_V1,
+        )
+        self.assertTrue(updated.ok, updated.message)
+        self.assertEqual(
+            self._add_rule(section="extended_content").status, "created"
+        )
+        updated = update_template_content(
+            self.session,
+            actor_telegram_user_id=OWNER_TG,
+            template_id=self.template.template_id,
+            expected_revision=self._revision(),
+            content=CONTENT_V1,
+            extended_content=CONTENT_V1 + "\nповтор: – [cost]",
         )
         self.assertTrue(updated.ok, updated.message)
         parts = list_conditional_parts(

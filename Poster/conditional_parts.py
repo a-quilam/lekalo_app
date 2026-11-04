@@ -186,12 +186,13 @@ class ConditionalPartMutationResult:
 
 @dataclass(frozen=True)
 class ConditionalRefreshResult:
-    """Итог переноса правил в актуальную версию (§44)."""
+    """Итог переноса правил в актуальную версию (Poster 2.5.3 §3)."""
 
     status: str
     parts: tuple[ConditionalPartDetails, ...] = ()
     transferred: int = 0
     stale: int = 0
+    deleted: int = 0
     message: str = ""
 
 
@@ -975,17 +976,26 @@ def refresh_conditional_parts(
     template_id: int,
     expected_revision: int | None = None,
     section: str | None = None,
+    version_id: int | None = None,
+    commit: bool = True,
 ) -> ConditionalRefreshResult:
     """
-    Переносит правила прежних версий в текущую версию — только однозначно.
+    Приводит правила к текущей версии расширенного текста (Poster 2.5.3 §3).
 
-    «Однозначно» = фрагмент встречается в новом тексте ровно один раз, а
-    управляющий кирпичик по-прежнему привязан к версии. Иначе правило
-    помечается `stale` и ОСТАЁТСЯ в БД: автор увидит проблему и сможет
-    перенастроить её. Правило никогда не применяется к случайному
-    похожему месту и не удаляется молча.
+    Условные части принадлежат ТОЛЬКО `extended_content`, поэтому:
 
-    `revision` шаблона не меняется: перенос правила — не новая версия.
+    - правила секции `content` (унаследованные) удаляются: простой текст
+      условий не имеет и менять их не может;
+    - правило расширенной секции, кирпичика которого больше нет в новом
+      тексте, УДАЛЯЕТСЯ (это не `stale`); кирпичик встречается хотя бы раз —
+      правило переносится в новую версию;
+    - неоднозначный фрагмент (встречается больше одного раза) по-прежнему
+      становится `stale` и не применяется к случайному похожему месту, а не
+      удаляется: автор увидит проблему и сможет её перенастроить.
+
+    Перенос выполняется в одной транзакции с сохранением версии текста:
+    неудачная проверка не оставляет шаблон без правила. `revision` шаблона
+    не меняется: перенос правила — не новая версия.
     """
     actor, template = _editable_template(session, actor_telegram_user_id, template_id)
     if template is None:
@@ -1003,37 +1013,69 @@ def refresh_conditional_parts(
                 message="Шаблон уже изменился в другом окне. Откройте его заново.",
             )
 
-    current = _version_row(session, template)
-    statement = select(template_conditional_parts).where(
-        template_conditional_parts.c.template_id == template.id,
-        template_conditional_parts.c.version_id != current.id,
-        template_conditional_parts.c.status == STATUS_ACTIVE,
-    )
-    if section is not None:
-        statement = statement.where(
-            template_conditional_parts.c.section == _validate_section(section)
+    current = (
+        session.scalar(
+            select(TemplateVersion).where(
+                TemplateVersion.id == int(version_id),
+                TemplateVersion.template_id == template.id,
+            )
         )
-    rows = session.execute(statement.order_by(template_conditional_parts.c.id)).all()
+        if version_id is not None
+        else _version_row(session, template)
+    )
+    if current is None:
+        return ConditionalRefreshResult(
+            "not_found", message="Версия шаблона не найдена."
+        )
+    rows = session.execute(
+        select(template_conditional_parts)
+        .where(template_conditional_parts.c.template_id == template.id)
+        .order_by(template_conditional_parts.c.id)
+    ).all()
 
+    extended_text = current.extended_content or ""
     transferred = 0
     marked_stale = 0
+    deleted = 0
     try:
         for row in rows:
             part_id = int(getattr(row, "id"))
             part_section = str(getattr(row, "section"))
+            part_version = int(getattr(row, "version_id"))
             brick_id = int(getattr(row, "brick_id"))
-            text = (
-                current.content
-                if part_section == SECTION_CONTENT
-                else (current.extended_content or "")
-            )
-            code = _binding_code(session, current.id, brick_id)
             fragment = str(getattr(row, "fragment"))
-            span = _fragment_span(text, fragment, 1) if text and code else None
+            if part_section != SECTION_EXTENDED_CONTENT:
+                # Наследственное правило простого текста: в 2.5.3 §3 условий
+                # у простого шаблона нет, поэтому строка удаляется.
+                session.execute(
+                    sqlalchemy_delete(template_conditional_parts).where(
+                        template_conditional_parts.c.id == part_id
+                    )
+                )
+                deleted += 1
+                continue
+            code = _binding_code(session, current.id, brick_id)
+            token = f"[{code}]" if code else ""
+            if not token or token not in extended_text:
+                # Кирпичика больше нет в расширенном тексте — правило
+                # кирпичика удаляется (2.5.3 §3), а не остаётся `stale`.
+                session.execute(
+                    sqlalchemy_delete(template_conditional_parts).where(
+                        template_conditional_parts.c.id == part_id
+                    )
+                )
+                deleted += 1
+                continue
+            if (
+                part_version == current.id
+                or str(getattr(row, "status")) == STATUS_STALE
+            ):
+                # Актуальные правила и правила, ждущие явной перенастройки,
+                # не трогаем: вторые автор исправит сам.
+                continue
             unambiguous = (
-                span is not None
-                and text.count(fragment) == 1
-                and _binding_code(session, current.id, brick_id) is not None
+                _fragment_span(extended_text, fragment, 1) is not None
+                and extended_text.count(fragment) == 1
             )
             if unambiguous:
                 session.execute(
@@ -1054,9 +1096,18 @@ def refresh_conditional_parts(
                     .values(status=STATUS_STALE, updated_at=utcnow())
                 )
                 marked_stale += 1
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            # Работа в транзакции вызывающего: сохранение текста и правил
+            # применяются вместе (2.5.3 §3).
+            session.flush()
     except (IntegrityError, OperationalError):
         session.rollback()
+        if not commit:
+            # Атомарно с сохранением текста: вызывающий откатит свою
+            # транзакцию и вернёт понятный отказ (2.5.3 §3).
+            raise
         return ConditionalRefreshResult(
             "conflict",
             message="Не удалось перенести правила из-за одновременной записи. "
@@ -1079,8 +1130,10 @@ def refresh_conditional_parts(
         parts=parts,
         transferred=transferred,
         stale=marked_stale,
+        deleted=deleted,
         message=(
             f"Перенесено правил: {transferred}; "
+            f"удалено: {deleted}; "
             f"требуют перенастройки: {marked_stale}."
         ),
     )

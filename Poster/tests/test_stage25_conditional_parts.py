@@ -272,6 +272,7 @@ class ConditionalPartStoreTests(AnnouncementDatabaseTestCase):
             actor_telegram_user_id=OWNER_TG,
             name="С ценой",
             content=self.TEMPLATE_CONTENT,
+            extended_content=self.TEMPLATE_CONTENT,
         )
 
     def create(self, **overrides):
@@ -279,7 +280,7 @@ class ConditionalPartStoreTests(AnnouncementDatabaseTestCase):
             "actor_telegram_user_id": OWNER_TG,
             "template_id": self.template.template_id,
             "expected_revision": self.template.revision,
-            "section": "content",
+            "section": "extended_content",
             "brick_id": self.price_brick,
             "fragment": "💰 Цена: [цена]",
         }
@@ -406,7 +407,8 @@ class ConditionalPartStoreTests(AnnouncementDatabaseTestCase):
         self.assertEqual(refreshed.transferred, 0)
         self.assertEqual(refreshed.stale, 0)
 
-    def test_edit_text_marks_rule_stale_instead_of_deleting(self) -> None:
+    def test_edit_text_deletes_rule_when_brick_disappears(self) -> None:
+        """2.5.3 §3: исчез кирпичик — условие удаляется вместе с сохранением."""
         created = self.create()
         assert created.part is not None
         update_template_content(
@@ -415,21 +417,40 @@ class ConditionalPartStoreTests(AnnouncementDatabaseTestCase):
             template_id=self.template.template_id,
             expected_revision=self.template.revision,
             content="Новое начало\nСовсем другой текст\nКонец",
+            extended_content="Новое начало\nСовсем другой текст\nКонец",
         )
-        # D2: пометка `stale` происходит при сохранении новой версии.
-        kept = get_conditional_part(self.session, OWNER_TG, created.part.id)
-        assert kept is not None, "правило не удаляется молча (§44)"
-        self.assertEqual(kept.status, STATUS_STALE)
-        refreshed = refresh_conditional_parts(
+        self.assertIsNone(
+            get_conditional_part(self.session, OWNER_TG, created.part.id),
+            "условие исчезнувшего кирпичика обязано удалиться",
+        )
+        self.assertEqual(
+            list_conditional_parts(
+                self.session,
+                OWNER_TG,
+                self.template.template_id,
+                include_stale=True,
+            ),
+            [],
+        )
+
+    def test_edit_text_marks_ambiguous_fragment_stale(self) -> None:
+        """Кирпичик остался, но фрагмент стал неоднозначным → `stale`."""
+        created = self.create()
+        assert created.part is not None
+        update_template_content(
             self.session,
             actor_telegram_user_id=OWNER_TG,
             template_id=self.template.template_id,
+            expected_revision=self.template.revision,
+            content="Новое начало\n💰 Цена: [цена]\nКонец",
+            extended_content=("Новое начало\n💰 Цена: [цена]\n💰 Цена: [цена]\nКонец"),
         )
-        self.assertEqual(refreshed.transferred, 0)
-        self.assertEqual(refreshed.stale, 0)
+        kept = get_conditional_part(self.session, OWNER_TG, created.part.id)
+        assert kept is not None, "правило не применяется наугад (§44)"
+        self.assertEqual(kept.status, STATUS_STALE)
         # Stale-правило не применяется к случайному похожему месту.
         self.assertEqual(
-            active_rules_for_version(self.session, kept.version_id, "content"),
+            active_rules_for_version(self.session, kept.version_id, "extended_content"),
             (),
         )
 
@@ -475,8 +496,8 @@ class ConditionalPartStoreTests(AnnouncementDatabaseTestCase):
         self.assertEqual(restored.fragment, "💰 Цена: [цена]")
         self.assertEqual(restored.status, STATUS_ACTIVE)
 
-    def test_reset_to_builtin_marks_rule_stale(self) -> None:
-        """MAJOR-2: сброс к стандарту актуализирует правила, а не прячет их."""
+    def test_reset_to_builtin_deletes_rules_of_missing_bricks(self) -> None:
+        """2.5.3 §3: сброс убирает расширение — условия кирпичиков удаляются."""
         created = self.create()
         assert created.part is not None
         self.session.expire_all()
@@ -489,18 +510,19 @@ class ConditionalPartStoreTests(AnnouncementDatabaseTestCase):
         )
         self.assertTrue(result.ok, result.message)
         self.session.expire_all()
-        kept = get_conditional_part(self.session, OWNER_TG, created.part.id)
-        assert kept is not None, "сброс не удаляет правило молча (§44)"
-        self.assertEqual(kept.status, STATUS_STALE)
-        # Правило не применяется к стандартному тексту и видно редактору.
+        self.assertIsNone(
+            get_conditional_part(self.session, OWNER_TG, created.part.id),
+            "кирпичика нет в новом расширенном тексте — условие удалено",
+        )
         self.assertEqual(
-            active_rules_for_version(self.session, kept.version_id, "content"),
-            (),
+            list_conditional_parts(
+                self.session,
+                OWNER_TG,
+                self.template.template_id,
+                include_stale=True,
+            ),
+            [],
         )
-        parts = list_conditional_parts(
-            self.session, OWNER_TG, self.template.template_id, include_stale=True
-        )
-        self.assertEqual([part.id for part in parts], [created.part.id])
 
 
 # --- рендер §42 А–Е, §45 ----------------------------------------------------
