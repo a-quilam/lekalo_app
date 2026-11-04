@@ -548,8 +548,7 @@ def _freeze_snapshot_conditional_parts(
     Признак `conditional_rules_frozen` выставляется ВСЕГДА, даже когда
     активных правил нет: пустая заморозка означает «на момент создания
     правил не было», и правило, добавленное к версии позже, к снимку уже не
-    применится. Legacy-снимки с `frozen = 0` остаются на прежнем пути
-    рендера — по правилам версии черновика.
+    применится. Рендер читает только эту копию (Poster 2.5.2 §8).
     """
     from conditional_parts import (
         STATUS_ACTIVE,
@@ -2047,13 +2046,13 @@ def render_template_snapshot(
     from template_compiler import render_template
     from template_parser import parse_template  # ленивый импорт
 
-    # Poster 2.5.1: снимок теперь может иметь замороженную копию правил
+    # Poster 2.5.1: снимок может иметь замороженную копию правил
     # (`template_snapshot_conditional_parts`, миграция 28). Этот путь рендера
     # её осознанно НЕ применяет: `render_template_snapshot` — просмотр
     # самостоятельного снимка вне анонса, а правила замораживаются для
     # конкретного черновика и применяются в
     # `announcement_store._conditional_snapshot_texts`. Живой рендер
-    # черновика (включая legacy-снимки) идёт через анонс, не здесь.
+    # черновика идёт через анонс, не здесь.
     tokens_by_text = {
         TEMPLATE_CONTENT: parse_template(snapshot_row.content),
     }

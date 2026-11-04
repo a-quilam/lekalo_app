@@ -401,8 +401,8 @@ class CalendarInputTests(unittest.TestCase):
                 self.assertEqual(_saved_values(h, today=TODAY), before)
 
     @scenario_test
-    async def test_legacy_calendar_callbacks_redirect_safely(self, h):
-        """Старые кнопки из прошлых сообщений не ломают экран."""
+    async def test_unknown_calendar_callbacks_are_safe(self, h):
+        """2.5.2 §8: неизвестное `aw_cal*` — «кнопка устарела», экран цел."""
         with frozen_today(2026, 10, 22):
             await _open_date_question(h)
             prefix = _field_prefix(h)

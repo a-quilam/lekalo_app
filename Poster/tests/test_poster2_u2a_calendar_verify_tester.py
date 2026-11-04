@@ -16,7 +16,7 @@ Poster 2.2 U2a: независимая приёмка компактного к�
 5) раскрытие диапазона: 7 дат на том же экране, возврат к быстрым датам;
 6) месяцы: сетка на горизонт, дни месяца, стрелки в пределах горизонта,
    выбор дня сохраняется сразу;
-7) негативы: legacy-callback, двойные нажатия, «Назад», «Пропустить»,
+7) негативы: неизвестные `aw_cal*`, двойные нажатия, «Назад», «Пропустить»,
    даты вне горизонта, чужой пользователь;
 8) понедельник и воскресенье дают одинаковую структуру экрана.
 
@@ -540,12 +540,13 @@ class NegativeScenarioTests(unittest.TestCase):
     """Требование 7: негативы не дают внутренних ошибок и не портят данные."""
 
     @scenario_test
-    async def test_legacy_callbacks_redirect_without_error(self, h):
+    async def test_legacy_callbacks_are_safe_without_error(self, h):
+        """2.5.2 §8: неизвестные `aw_cal*` не дают внутренней ошибки."""
         with frozen_today(2026, 11, 1):
             await _open(h)
             prefix = _prefix(h)
             before = _saved(h, today=SUNDAY)
-            legacy = (
+            unknown = (
                 f"aw_calroot:{prefix}",
                 f"aw_calroot:{prefix}:2026-11-05",
                 f"aw_calweek:{prefix}:cur",
@@ -555,7 +556,7 @@ class NegativeScenarioTests(unittest.TestCase):
                 f"aw_calweekdays:{prefix}:2026:11:0",
                 f"aw_calweekdays:{prefix}:2026:11:1",
             )
-            for data in legacy:
+            for data in unknown:
                 answers_before = len(h.answers())
                 await h.callback(data)
                 self.assertGreater(
