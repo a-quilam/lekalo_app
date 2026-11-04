@@ -1,5 +1,36 @@
 # State — Poster
 
+## 2026-11-04 — Poster 2.5.1: релиз выполнен (коммиты, CI ✓, деплой)
+
+- Коммиты (push 30d81e1..c1a292c main -> main, CI run 41727205774 — success
+  за 8m11s: lint, mypy 223 файла, 2583 tests OK):
+  - `140e8bd` — Rich Message по официальной схеме Bot API 10.1 (rich_message.py,
+    help_rich.py, contract-тест test_rich_message_api_contract.py);
+  - `99a58d0` — пагинация конструктора 5/страница + возврат из справки
+    (help_back, сохранение контекста разделов/конструктора, ui_texts
+    buttons.help_back, tests test_stage251_help_return 14 + пагинация);
+  - `c1a292c` — заморозка правил условных частей в снимке шаблона: миграция 28
+    (template_snapshot_conditional_parts + template_snapshots.conditional_rules_frozen,
+    backfill не делался — БД очищается по протоколу), рендер frozen/legacy,
+    tests test_stage251_conditional_snapshot + test_stage251_snapshot_rules_migration.
+- Приёмка 2.5.1: tests/test_stage251_acceptance.py 12/12 PASS.
+- Релизный цикл 2.5.1 НЕ ЗАВЕРШЁН: сессия работает под профилем `build`, которому
+  `make db-maintain-clean` запрещён (opencode.jsonc п.7). Служба `poster-bot`
+  остановлена штатно 2026-11-04 01:11 MSK (inactive) в рамках подготовки к
+  очистке — очистку рабочей БД и запуск службы выполняет poster-manager по
+  инструкции ниже. До их выполнения релиз 2.5.1 считать НЕ выпущенным.
+
+### Инструкция poster-manager (остаток релизного цикла 2.5.1)
+1. `make db-maintain-clean PYTHON=.venv/bin/python` из каталога Poster (служба
+   уже остановлена): зафиксировать путь бэкапа `post_bot.db.backup-*`, путь
+   `replaced_to`, `user_counts_after` (все нули, кроме bricks=10),
+   `integrity_after: ok`.
+2. `make db-maintain-report PYTHON=.venv/bin/python` — независимая верификация.
+3. `systemctl --user start poster-bot`; проверить: active, MainPID,
+   NRestarts=0, «Application started» в журнале, отсутствие Traceback.
+4. Живая проверка Rich Message в Telegram («Помощь» → возврат «Назад» в исходный
+   контекст) — за владельцем; FakeBot проверяет только структуру запроса.
+
 ## 2026-11-03 — Poster 2.5.1 (корректирующий релиз): план
 
 База: HEAD 30d81e1 (2.5, релиз выполнен, CI ✓, служба работала). Рабочее дерево
