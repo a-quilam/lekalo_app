@@ -929,9 +929,9 @@ async def _render_cond(
 async def handle_open(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Карточка расширенного шаблона → «🧩 Условные части»."""
     query = ctx.query(update)
+    # Легаси-алиас `tp_condl:` не поддерживается: старая кнопка попадает
+    # в общий fallback `^tp_` и получает короткий отказ (§3).
     template_id = tp._callback_id(query.data or "", "tp_cond:")
-    if template_id is None:
-        template_id = tp._callback_id(query.data or "", "tp_condl:")
     cond_state = load_template_session(ctx.user(update).id)
     if template_id is None:
         await _stale(update)
@@ -1538,6 +1538,5 @@ def conditional_handlers() -> list[BaseHandler]:
             handle_delete_yes, pattern=r"^tp_conddy:\d+(?::[ce])?:\d+(?::\d+)?$"
         ),
         CallbackQueryHandler(handle_back, pattern=r"^tp_condback:\d+:\w+$"),
-        CallbackQueryHandler(handle_open, pattern=r"^tp_condl:\d+$"),
         CondTextHandler(filters.TEXT & ~filters.COMMAND, handle_custom_text),
     ]

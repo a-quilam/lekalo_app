@@ -363,6 +363,45 @@ class ConditionalRefusalTests(unittest.TestCase):
         self.assertEqual(parts[0].section, SECTION_EXTENDED_CONTENT)
 
     @scenario_test
+    async def test_legacy_tp_condl_callback_is_refused(self, h) -> None:
+        """§3: старая кнопка `tp_condl:` получает отказ, а не экран."""
+        with h.session_factory() as session:
+            user = _user(session, h.user_id)
+            template = create_personal_template(
+                session,
+                actor_telegram_user_id=user.telegram_user_id,
+                name="Время",
+                content="[время_начала]–[время_окончания]",
+                extended_content="[время_начала]–[время_окончания]",
+            )
+            session.commit()
+            template_id = template.template_id
+
+        await _to_list(h)
+        await h.callback(f"tp_open:{template_id}")
+        card_text = h.screen_text()
+        screens_before = len(h.screen_texts())
+        answers_before = len(h.answer_texts())
+        awaits_before = len(_parts(h, template_id))
+
+        await h.callback(f"tp_condl:{template_id}")
+
+        self.assertEqual(
+            len(h.screen_texts()), screens_before, "легаси-кнопка не рисует экран"
+        )
+        self.assertEqual(h.screen_text(), card_text, "автор остался в карточке")
+        self.assertNotIn(TITLE, h.screen_text(), "экран условий не открылся")
+        self.assertGreater(
+            len(h.answer_texts()), answers_before, "старая кнопка получила ответ"
+        )
+        refusal = h.answer_texts()[-1]
+        self.assertIn("больше не работает", refusal, refusal)
+        self.assertNotIn("Что-то пошло не так", refusal, "не внутренняя ошибка")
+        self.assertEqual(
+            len(_parts(h, template_id)), awaits_before, "в БД ничего не записано"
+        )
+
+    @scenario_test
     async def test_content_rule_in_db_does_not_reach_screen(self, h) -> None:
         """Правило секции `content` не показывается и не применяется (§3)."""
         with h.session_factory() as session:

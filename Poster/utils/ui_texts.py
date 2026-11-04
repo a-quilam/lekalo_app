@@ -1341,7 +1341,7 @@ DEFAULTS: dict[str, str] = {
     "templates.build.prava_izmenilis_shablon_udalen": "Ваши права изменились или шаблон удалён. Текст ниже пока сохранён в текущем сеансе, но записать его в этот шаблон уже нельзя.",
     "templates.build.predprosmotr_podtverzhdenie": "✅ Проверьте текст перед сохранением ({title})",
     "templates.build.proverte_novyy_shablon": "📄 Проверьте новый шаблон",
-    "templates.build.rasshirennaya_versiya_osnova": "Расширенная версия задаёт место дополнительных кирпичиков в тексте анонса. Основа скопирована из основного текста.",
+    "templates.build.rasshirennaya_versiya_osnova": "Расширенная версия задаёт место дополнительных кирпичиков в тексте анонса. Основа скопирована из текущего шаблона.",
     "templates.build.rasshirennyy_tekst": "Расширенный шаблон",
     "templates.build.redaktirovanie_otpravte_novym": (
         "✏️ Правка {title}\n\n{value_block}\n\n"
@@ -1459,7 +1459,7 @@ DEFAULTS: dict[str, str] = {
         "Личных шаблонов пока нет. Шаблон задаёт вид текста анонса. Один шаблон можно использовать для разных мест."
     ),
     "templates.hub.moi_shablony_vsego": "📄 Мои шаблоны\n\nВсего: {total}.",
-    "templates.module.rasshirennogo_teksta": "расширенного текста",
+    "templates.module.rasshirennogo_teksta": "расширенного шаблона",
     "templates.module.shablon_nedostupen": "Шаблон недоступен.",
     "templates.module.shablon_nelzya_udalit_nemu": "По этому шаблону уже создавались анонсы. Удалить его нельзя: он нужен для их истории. Можно изменить шаблон или восстановить стандартный текст Poster.",
     "templates.module.tekst_prinyat_ispravte_ego": "Текст не принят. Исправьте его и отправьте целиком.",
