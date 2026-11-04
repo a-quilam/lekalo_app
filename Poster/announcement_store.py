@@ -72,8 +72,6 @@ from models import (
     AnnouncementValue,
     Brick,
     Place,
-    TemplateSnapshot,
-    TemplateVersion,
     User,
     utcnow,
 )
@@ -1675,6 +1673,99 @@ def _allowed_brick_ids(
     return set(snapshot.brick_ids) | {int(brick_id) for brick_id in extras}
 
 
+def extra_selectable(
+    session: Session,
+    details: AnnouncementDraftDetails,
+    brick_id: int,
+    *,
+    viewer_telegram_user_id: int | None,
+) -> bool:
+    """
+    Доступен ли доп. кирпичик автору для выбора/правки (Poster 2.5.2 §4).
+
+    Определение должно быть видно в контексте анонса (системное, кирпичик
+    выбранного места или личный кирпичик автора) и не быть архивным.
+    """
+    definition = get_visible_brick(
+        session,
+        brick_id,
+        viewer_telegram_user_id=viewer_telegram_user_id,
+        place_id=details.place_id,
+        include_archived=True,
+    )
+    if definition is None:
+        return False
+    return (
+        visible_brick_issue(
+            definition,
+            place_id=details.place_id,
+            owner_user_id=details.author_user_id,
+        )
+        is None
+    )
+
+
+def extras_available(
+    session: Session,
+    details: AnnouncementDraftDetails,
+    *,
+    actor_telegram_user_id: int | None,
+) -> bool:
+    """
+    Нужна ли в интерфейсе кнопка «🧩 Дополнительные поля» (Poster 2.5.2 §4).
+
+    Единый предикат для всех точек показа (обзор, ошибка обзора, редактор
+    доставленного анонса, панель экземпляра). Кнопка нужна только тогда,
+    когда экран списка не окажется пустым:
+
+    - у снимка есть расширенный текст (`extended_content`);
+    - в нём есть кирпичики, которых нет в простой версии (кандидаты), либо
+      у анонса уже выбраны доп. поля;
+    - хотя бы один из них доступен автору (определение видимо и не
+      архивно): `_extras_entries` строит строки только по доступным.
+
+    Снимок без расширенного текста и без выбранных полей — кнопки нет.
+    """
+    snapshot = details.template_snapshot
+    if snapshot is None:
+        return False
+    candidates = list(extra_candidate_brick_ids(snapshot))
+    chosen = [extra.brick_id for extra in details.extras]
+    if not candidates and not chosen:
+        return False
+    order = candidates + [item for item in chosen if item not in candidates]
+    for brick_id in order:
+        if extra_selectable(
+            session,
+            details,
+            brick_id,
+            viewer_telegram_user_id=actor_telegram_user_id,
+        ):
+            return True
+    return False
+
+
+def extras_available_for_draft(session: Session, draft_id: int) -> bool:
+    """
+    Предикат `extras_available` по id черновика (для панели экземпляра).
+
+    Управление готовым анонсом живёт вне диалога, поэтому ему нужен
+    самостоятельный вход: черновик и его автор читаются из БД.
+    """
+    row = session.get(AnnouncementDraft, int(draft_id))
+    if row is None:
+        return False
+    actor = session.get(User, int(row.author_user_id))
+    if actor is None:
+        return False
+    details = _draft_details(session, actor, row)
+    return extras_available(
+        session,
+        details,
+        actor_telegram_user_id=actor.telegram_user_id,
+    )
+
+
 def save_announcement_value(
     session: Session,
     *,
@@ -2814,7 +2905,6 @@ def build_announcement_render_payload(
 
     texts = _conditional_snapshot_texts(
         session,
-        row=row,
         snapshot=snapshot,
         values_by_id=values_by_id,
         definitions_by_id=definitions,
@@ -2834,7 +2924,6 @@ def build_announcement_render_payload(
 def _conditional_snapshot_texts(
     session: Session,
     *,
-    row: AnnouncementDraft,
     snapshot: AnnouncementTemplateSnapshot,
     values_by_id: Mapping[int, object],
     definitions_by_id: Mapping[int, BrickDefinition],
@@ -2842,67 +2931,28 @@ def _conditional_snapshot_texts(
     """
     Исходные тексты снимка с вырезанными условными частями (§38–45).
 
-    Poster 2.5.1: снимок, созданный после заморозки правил
-    (`template_snapshots.conditional_rules_frozen = 1`), рендерится
-    ИСКЛЮЧИТЕЛЬНО по собственной копии правил
-    (`template_snapshot_conditional_parts`). Поэтому последующая правка
-    шаблона — перенос правила в новую версию, пометка `stale` или новое
-    правило той же версии — рендер существующего анонса не меняет (§44).
+    Poster 2.5.1: снимок рендерится ИСКЛЮЧИТЕЛЬНО по собственной копии
+    правил (`template_snapshot_conditional_parts`). Поэтому последующая
+    правка шаблона — перенос правила в новую версию, пометка `stale` или
+    новое правило той же версии — рендер существующего анонса не меняет
+    (§44).
 
-    Legacy-снимки (`frozen = 0`, появившиеся до миграции 28) и черновики без
-    снимка рендерятся прежним путём: правила берутся по
-    `template_id`/`template_version` черновика. Без версии (legacy-аномалия)
-    вырезание просто не делается.
+    Poster 2.5.2 (§8): легаси-путь «правила по версии черновика» удалён.
+    Poster не публиковался, после rebuild в базе нет снимков, созданных до
+    миграции 28, поэтому второй способ расчёта правил не нужен: пустая
+    копия означает «на момент создания правил не было».
     """
-    from conditional_parts import active_rules_for_version
-
     raw_texts = {
         text_name: raw
         for text_name, raw in snapshot.texts.items()
         if isinstance(raw, str)
     }
-    if _snapshot_rules_frozen(session, snapshot.snapshot_id):
-        frozen_rules = _frozen_snapshot_rules(session, snapshot.snapshot_id)
-        return _apply_rules_to_texts(
-            raw_texts,
-            rules_by_section=frozen_rules,
-            values_by_id=values_by_id,
-            definitions_by_id=definitions_by_id,
-        )
-
-    if row.template_id is None or row.template_version is None:
-        return raw_texts
-    version_id = session.scalar(
-        select(TemplateVersion.id).where(
-            TemplateVersion.template_id == row.template_id,
-            TemplateVersion.version == row.template_version,
-        )
-    )
-    if version_id is None:
-        return raw_texts
-
-    legacy_rules: dict[str, tuple["ConditionalRule", ...]] = {
-        text_name: active_rules_for_version(session, int(version_id), text_name)
-        for text_name in raw_texts
-    }
     return _apply_rules_to_texts(
         raw_texts,
-        rules_by_section=legacy_rules,
+        rules_by_section=_frozen_snapshot_rules(session, snapshot.snapshot_id),
         values_by_id=values_by_id,
         definitions_by_id=definitions_by_id,
     )
-
-
-def _snapshot_rules_frozen(session: Session, snapshot_id: int | None) -> bool:
-    """Заморожены ли правила у этого снимка (миграция 28)."""
-    if snapshot_id is None:
-        return False
-    frozen = session.scalar(
-        select(TemplateSnapshot.conditional_rules_frozen).where(
-            TemplateSnapshot.id == snapshot_id
-        )
-    )
-    return bool(frozen)
 
 
 def _frozen_snapshot_rules(
