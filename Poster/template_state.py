@@ -45,7 +45,6 @@ _BROWSE_PHASES = frozenset(
     {
         "hub",
         "card",
-        "preview",
         "reset_confirm",
         "brick_list",
         "help",
@@ -142,7 +141,7 @@ def has_template_draft(telegram_user_id: int) -> bool:
     """
     Есть ли незавершённый редактор секции или создания.
 
-    Просмотр списка, карточки или предпросмотра не считается черновиком.
+    Просмотр списка, карточки и прочих экранных фаз не считается черновиком.
     """
     state = load_template_session(telegram_user_id)
     if not isinstance(state, dict):

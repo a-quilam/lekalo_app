@@ -775,11 +775,16 @@ class TemplateEditorLayoutTests(unittest.TestCase):
         await self._open_card(h)
 
         rows = _rows(h)
-        pairs = {tuple(label for label, _data in row) for row in rows}
-        self.assertIn(
-            ("👁 Предпросмотр", "📋 Кирпичики"),
-            pairs,
-            f"действия «посмотреть» должны стоять рядом: {rows}",
+        # 2.5.2 T4: отдельного экрана предпросмотра нет — текст показан на
+        # самой карточке, поэтому остаётся только список кодов кирпичиков.
+        self.assertTrue(
+            any(len(row) == 1 and row[0][0].endswith("📋 Кирпичики") for row in rows),
+            f"на карточке должен быть список кодов кирпичиков: {rows}",
+        )
+        self.assertNotIn(
+            "👁 Предпросмотр",
+            {label for row in rows for label, _data in row},
+            f"предпросмотр удалён из карточки: {rows}",
         )
         # Необратимое восстановление — отдельной строкой, не рядом с просмотром.
         reset_rows = [

@@ -704,7 +704,7 @@ class SystemEmojiCoverageDefectTests(unittest.TestCase):
     административный список, вопрос анонса) они уже с эмодзи.
 
     Воспроизведение: «Мои шаблоны» → карточка шаблона → «📋 Кирпичики»
-    (список доступных кирпичиков) и «👁 Предпросмотр» (связанные кирпичики).
+    (список доступных кирпичиков).
     Ожидание: «• [дата] — 📅 Дата …», «• [название] — 🏷 Название
     мероприятия»; коды `[код]` не меняются.
     """
@@ -757,26 +757,6 @@ class SystemEmojiCoverageDefectTests(unittest.TestCase):
                     f"[{code}] — {emoji}",
                     listed_text,
                     f"в списке кирпичиков шаблона [{code}] без эмодзи {emoji}",
-                )
-
-    @scenario_test
-    async def test_template_preview_bindings_show_system_emoji(
-        self, h: Harness
-    ) -> None:
-        template_id = await self._template_with_bindings(h)
-        await h.callback(f"tp_open:{template_id}")
-        await h.callback(f"tp_preview:{template_id}")
-        preview = h.screen_text()
-        for code, emoji in (
-            ("название", "🏷"),
-            ("место", "📍"),
-            ("дата", "📅"),
-        ):
-            with self.subTest(code=code):
-                self.assertIn(
-                    f"[{code}] — {emoji}",
-                    preview,
-                    f"в «Связанных кирпичиках» шаблона [{code}] без эмодзи {emoji}",
                 )
 
 

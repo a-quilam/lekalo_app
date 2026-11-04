@@ -633,18 +633,21 @@ class DeadKeyScreenTests(_TempCatalog):
         await _choose_personal(h, template_id)
         await h.text("Значение")
         await h.callback(_callback(h, "aw_photo_none"))
-        # §18 (2.5): категории правки уже на экране после доставки.
+        # 2.5.2 §2: после доставки служебного экрана нет — категории правки
+        # открываются кнопкой «📝 Данные» на самом анонсе.
+        data_control = h.control_callback("data")
+        self.assertIsNotNone(data_control, "у анонса нет кнопки «Данные»")
+        assert data_control is not None
+        await h.callback(data_control)
         self.assertIn("МЕНЮ-КАТАЛОГ", [label for label, _ in h.screen_buttons()])
 
         # Экран правки фотографий — тот же ключ заголовка, что шаг фото.
         # §34–37: на экране фото выход — «◀️ Назад», а не «В меню»;
         # подпись тоже берётся из каталога (`buttons.nav.back`), не литерал.
-        photos = [
-            data
-            for _label, data in h.screen_buttons()
-            if data and data.startswith("aw_photos:")
-        ]
-        await h.callback(photos[0])
+        photos_control = h.control_callback("photos")
+        self.assertIsNotNone(photos_control, "у анонса нет кнопки «Фото»")
+        assert photos_control is not None
+        await h.callback(photos_control)
         self.assertTrue(
             h.screen_text().startswith(ui_texts.DEFAULTS["wizard.photos.title"])
         )
@@ -671,12 +674,11 @@ class DeadKeyScreenTests(_TempCatalog):
         await _choose_personal(h, template_id)
         await h.text("Значение")
         await h.callback(_callback(h, "aw_photo_none"))
-        photos = [
-            data
-            for _label, data in h.screen_buttons()
-            if data and data.startswith("aw_photos:")
-        ]
-        await h.callback(photos[0])
+        # 2.5.2 §2: экран правки фото открывается управлением самого анонса.
+        photos_control = h.control_callback("photos")
+        self.assertIsNotNone(photos_control, "у анонса нет кнопки «Фото»")
+        assert photos_control is not None
+        await h.callback(photos_control)
         self.assertTrue(h.screen_text().startswith("📷 СНИМКИ-ПРАВКА"))
 
 

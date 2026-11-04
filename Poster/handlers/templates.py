@@ -128,7 +128,6 @@ PHASE_SECTION_EDIT = "section_edit"
 PHASE_CONFIRM_SAVE = "confirm_save"
 PHASE_SECTION_ERROR = "section_error"
 PHASE_RESOLVE_AMBIGUITY = "resolve_ambiguity"
-PHASE_PREVIEW = "preview"
 PHASE_RESET_CONFIRM = "reset_confirm"
 # Poster 2.1 R2: удаление личного шаблона — только после подтверждения и
 # только если у шаблона нет неизменяемой истории (снимки/анонсы).
@@ -161,7 +160,6 @@ _TEMPLATE_PHASES = frozenset(
         PHASE_CONFIRM_SAVE,
         PHASE_SECTION_ERROR,
         PHASE_RESOLVE_AMBIGUITY,
-        PHASE_PREVIEW,
         PHASE_RESET_CONFIRM,
         PHASE_DELETE_CONFIRM,
         PHASE_BRICK_LIST,
@@ -369,6 +367,20 @@ def _card_state(template: TemplateDetails, *, origin: str, page: int = 0) -> dic
 
 def _template_origin(template: TemplateDetails) -> str:
     return "admin" if template.kind == TEMPLATE_KIND_STANDARD else "personal"
+
+
+def conditional_parts_available(template: TemplateDetails) -> bool:
+    """
+    Есть ли у шаблона условные части (Poster 2.5.2 §6).
+
+    Единственный признак — расширенная версия текста. Признак `origin`
+    (личный/стандарт места) не участвует: движок правил один для обоих
+    видов, поэтому проверка нужна только одна и в одном месте.
+    """
+    version = getattr(template, "current_version", None)
+    if version is None:  # pragma: no cover — у TemplateDetails версия всегда есть
+        return False
+    return version.extended_content is not None
 
 
 def _valid_state(state: object) -> TypeGuard[dict[str, Any]]:
@@ -738,13 +750,9 @@ def _card_content(
     keyboard = InlineKeyboardMarkup(
         [
             edit_row,
-            # H3 (требование E): просмотр текста и список кодов — два
-            # связанных действия «посмотреть», они стоят рядом.
+            # Текст шаблона показан на этой же карточке, поэтому отдельный
+            # экран предпросмотра не нужен: остаётся список кодов кирпичиков.
             [
-                InlineKeyboardButton(
-                    tr("buttons.templates.predprosmotr"),
-                    callback_data=f"tp_preview:{template.template_id}",
-                ),
                 InlineKeyboardButton(
                     tr("buttons.templates.kirpichiki"),
                     callback_data=f"tp_bricks:{template.template_id}",
@@ -762,17 +770,21 @@ def _card_content(
         ]
     )
     rows = [list(row) for row in keyboard.inline_keyboard]
-    # Poster 2.5 §40: отдельный раздел правил стоит сразу после действий
-    # «посмотреть» — это про тот же текст, но не необратимое действие.
-    rows.insert(
-        2,
-        [
-            InlineKeyboardButton(
-                tr("buttons.templates.uslovnye_chasti"),
-                callback_data=f"tp_cond:{template.template_id}",
-            )
-        ],
-    )
+    # Poster 2.5.2 §6: раздел правил — только у расширенного шаблона. У
+    # простого нет ни расширенного текста, ни кнопки: правило скрывает часть
+    # расширенного текста, а его отсутствие делает раздел бессмысленным.
+    if has_extended:
+        # Отдельный раздел правил стоит сразу после списка кирпичиков —
+        # это про тот же текст, но не необратимое действие.
+        rows.insert(
+            2,
+            [
+                InlineKeyboardButton(
+                    tr("buttons.templates.uslovnye_chasti"),
+                    callback_data=f"tp_cond:{template.template_id}",
+                )
+            ],
+        )
     if template.kind == TEMPLATE_KIND_PERSONAL:
         # Стандарт места не удаляется: место не может остаться без шаблона
         # (это гарантирует триггер схемы). У личного удаление — в конце списка.
@@ -786,76 +798,6 @@ def _card_content(
             ],
         )
     return text, InlineKeyboardMarkup(rows)
-
-
-def _preview_content(
-    template: TemplateDetails, *, place_name: str | None = None
-) -> tuple[str, InlineKeyboardMarkup]:
-    version = template.current_version
-    has_extended = version.extended_content is not None
-
-    def build(limits: list[int]) -> str:
-        lines = [
-            tr_safe(
-                "templates.build.predprosmotr", display_name=_h(template.display_name)
-            ),
-        ]
-        if template.kind == TEMPLATE_KIND_STANDARD and place_name:
-            lines.append(tr_safe("templates.build.mesto", place_name=_h(place_name)))
-        lines.extend(
-            [
-                tr("templates.build.versiya", revision=template.revision),
-                "",
-                _value_block(
-                    tr("templates.build.tekst"), version.content, limit=limits[0]
-                ),
-            ]
-        )
-        if has_extended:
-            lines.extend(
-                [
-                    "",
-                    _value_block(
-                        tr("templates.build.rasshirennyy_tekst"),
-                        version.extended_content,
-                        limit=limits[1],
-                    ),
-                ]
-            )
-        lines.append("")
-        if version.bindings:
-            lines.append(tr("templates.build.privyazki_kirpichikov"))
-            for binding in version.bindings:
-                label = (
-                    f"• [{_h(binding.code)}] — "
-                    f"{_h(brick_title_display(binding.title, binding.code))} "
-                    f"({SCOPE_TITLES.get(binding.scope, binding.scope)})"
-                )
-                if not binding.is_active:
-                    label += tr("templates.build.arhiv")
-                lines.append(label)
-        else:
-            lines.append(tr("templates.build.privyazok_kirpichikov_net"))
-        lines.extend(
-            [
-                "",
-                tr("templates.build.eto_struktura_shablona_znacheniya"),
-            ]
-        )
-        return "\n".join(lines)
-
-    text = _fit_value_screen(build, blocks=2 if has_extended else 1)
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    tr("buttons.templates.k_shablonu"),
-                    callback_data=f"tp_open:{template.template_id}",
-                )
-            ]
-        ]
-    )
-    return text, keyboard
 
 
 def _reset_confirm_content(
@@ -1701,9 +1643,6 @@ async def _render_phase(
                         session=session,
                         telegram_user_id=telegram_user_id,
                     )
-                elif phase == PHASE_PREVIEW:
-                    state["revision"] = template.revision
-                    text, keyboard = _preview_content(template, place_name=place_name)
                 elif phase == PHASE_RESET_CONFIRM:
                     state["revision"] = template.revision
                     text, keyboard = _reset_confirm_content(template)
@@ -2112,7 +2051,6 @@ async def handle_hub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if phase not in {
         PHASE_HUB,
         PHASE_CARD,
-        PHASE_PREVIEW,
         PHASE_RESET_CONFIRM,
         PHASE_DELETE_CONFIRM,
         PHASE_SECTION_ERROR,
@@ -2259,43 +2197,6 @@ async def handle_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             else None
         ),
     )
-
-
-async def handle_preview(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = ctx.query(update)
-    state = load_template_session(ctx.user(update).id)
-    if not _valid_state(state) or state.get("phase") != PHASE_CARD:
-        await query.answer(STALE_TEXT, show_alert=True)
-        return
-    template_id = _callback_id(query.data or "", "tp_preview:")
-    if template_id is None or template_id != state.get("template_id"):
-        await query.answer(STALE_TEXT, show_alert=True)
-        return
-    telegram_user_id = ctx.user(update).id
-    session = SessionLocal()
-    try:
-        template = _load_editable(session, telegram_user_id, template_id)
-        if template is None:
-            await query.answer(tr("alerts.templates.shablon_nayden"), show_alert=True)
-            return
-        if template.kind == TEMPLATE_KIND_STANDARD and state.get("origin") != "admin":
-            await query.answer(DENIED_TEXT, show_alert=True)
-            return
-        await query.answer()
-        state.update(
-            {
-                "phase": PHASE_PREVIEW,
-                "revision": template.revision,
-                "origin": _template_origin(template),
-                "place_id": template.place_id,
-            }
-        )
-        text, keyboard = _preview_content(
-            template, place_name=_place_name(session, template.place_id)
-        )
-    finally:
-        session.close()
-    await _show(update, context, state, text, keyboard)
 
 
 # --- Обработчики: сброс ------------------------------------------------------
@@ -3477,7 +3378,6 @@ def templates_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(handle_open, pattern=r"^tp_open:\d+$"),
         CallbackQueryHandler(handle_edit_text, pattern=r"^tp_edit(_ext)?:\d+$"),
         CallbackQueryHandler(handle_edit_text, pattern=r"^tp_mkext:\d+$"),
-        CallbackQueryHandler(handle_preview, pattern=r"^tp_preview:\d+$"),
         CallbackQueryHandler(handle_reset, pattern=r"^tp_reset:\d+$"),
         CallbackQueryHandler(handle_reset_yes, pattern=r"^tp_reset_yes:\d+$"),
         CallbackQueryHandler(handle_delete, pattern=r"^tp_delete:\d+$"),

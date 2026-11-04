@@ -19,6 +19,7 @@ Telegram), поэтому разбор ведётся по utf-16-байтам �
 Telegram виде.
 """
 
+import logging
 import re
 from collections.abc import Sequence
 from datetime import datetime
@@ -28,6 +29,8 @@ from html import unescape as _unescape
 from telegram import MessageEntity
 
 from utils.parsers import APP_TZ
+
+logger = logging.getLogger(__name__)
 
 
 class FormattedText(str):
@@ -98,30 +101,107 @@ def utf16_len(text: str) -> int:
     return len(text.encode("utf-16-le", "surrogatepass")) // 2
 
 
+def _character_bounds(text: str) -> list[int]:
+    """
+    UTF-16-смещения границ символов: `bounds[i]` — начало `text[i]` в код-юнитах.
+
+    Последний элемент — полная длина текста в код-юнитах. Эмодзи вне BMP
+    занимает две единицы, кириллица и прочие символы BMP — одну.
+    """
+    bounds = [0]
+    total = 0
+    for char in text:
+        total += 2 if ord(char) > 0xFFFF else 1
+        bounds.append(total)
+    return bounds
+
+
+def _aligned_slices(
+    text: str, entities: Sequence[MessageEntity]
+) -> dict[MessageEntity, str]:
+    """
+    Entities с границами, выровненными по целым кодовым точкам UTF-16.
+
+    Смещения Telegram считаются в код-юнитах UTF-16, но клиент может прислать
+    entity, разрезающую суррогатную пару: `bold` на один юнит эмодзи. Декодер
+    `utf-16-le` на таком срезе падает `UnicodeDecodeError`, и сообщение
+    пользователя терялось бы целиком (error handler, экран остаётся прежним).
+    Поэтому начало сдвигается к началу символа, конец — к концу символа:
+    форматирование расширяется до целого эмодзи, текст не теряется.
+
+    Некорректируемая entity (нулевая длина, отрицательное смещение, выход за
+    конец текста) отбрасывается с логом: содержимое остаётся обычным текстом.
+    Возвращается словарь «выровненная entity → её текст».
+    """
+    if not text or not entities:
+        return {}
+    utf16_text = text.encode("utf-16-le", "surrogatepass")
+    bounds = _character_bounds(text)
+    total_units = bounds[-1]
+    sliced: dict[MessageEntity, str] = {}
+    for entity in entities:
+        length = entity.length
+        offset = entity.offset
+        if length <= 0 or offset < 0:
+            # Пустая или отрицательная entity — не оформление, а мусор:
+            # раньше она молча игнорировалась, поведение сохраняем.
+            continue
+        if offset + length > total_units:
+            logger.warning(
+                "entity %s за концом текста (%s, %s) отброшена: "
+                "текст сохраняется без оформления",
+                entity.type,
+                offset,
+                length,
+            )
+            continue
+        start = 0
+        while bounds[start + 1] <= offset:
+            start += 1
+        end = start
+        while bounds[end] < offset + length:
+            end += 1
+        start_units = bounds[start]
+        length_units = bounds[end] - start_units
+        if length_units != length or start_units != offset:
+            aligned = _copy_entity(entity, start_units, length_units)
+        else:
+            aligned = entity
+        sliced[aligned] = utf16_text[
+            start_units * 2 : (start_units + length_units) * 2
+        ].decode("utf-16-le")
+    return sliced
+
+
+def _copy_entity(entity: MessageEntity, offset: int, length: int) -> MessageEntity:
+    """Копия entity с новыми границами: `MessageEntity` неизменяем."""
+    return MessageEntity(
+        type=entity.type,
+        offset=offset,
+        length=length,
+        url=entity.url,
+        user=entity.user,
+        language=entity.language,
+        custom_emoji_id=entity.custom_emoji_id,
+        date_time_format=entity.date_time_format,
+        unix_time=entity.unix_time,
+    )
+
+
 def entities_to_html(text: str, entities: Sequence[MessageEntity] | None) -> str:
     """
     Текст сообщения с entities → безопасный HTML.
 
     Без entities — просто экранированный текст. Entities с битыми смещениями
     (нулевая длина, выход за конец текста) игнорируются: текст остаётся
-    как есть, содержимое не теряется.
+    как есть, содержимое не теряется. Entity, разрезавшая суррогатную пару
+    (эмодзи), расширяется до целого символа — иначе декодер UTF-16 падал бы
+    и терялся весь текст сообщения.
     """
     if not text or not entities:
         return escape_html(text)
 
-    utf16_text = text.encode("utf-16-le", "surrogatepass")
-    total_units = len(utf16_text) // 2
-    sliced: dict[MessageEntity, str] = {}
-    for entity in entities:
-        if entity.length <= 0 or entity.offset < 0:
-            continue
-        if entity.offset + entity.length > total_units:
-            continue
-        start = entity.offset * 2
-        sliced[entity] = utf16_text[start : start + entity.length * 2].decode(
-            "utf-16-le"
-        )
-
+    sliced = _aligned_slices(text, entities)
     if not sliced:
         return escape_html(text)
     return _parse_html(text, sliced)
@@ -646,7 +726,9 @@ def entities_to_template_markup(
 
     - смещения entities — в 16-битных код-юнитах UTF-16, разбор идёт по
       utf-16-байтам (как `entities_to_html`), поэтому кириллица и эмодзи
-      не сдвигают границы;
+      не сдвигают границы; entity, разрезавшая суррогатную пару (клиент
+      прислал длину 1 для эмодзи), расширяется до целого символа, а не
+      роняет ввод: текст сохраняется, оформление — по целому эмодзи;
     - вложенность entities сохраняется: `**` + text_link на том же диапазоне
       дают `**{подпись}(URL)**` (ссылка — внутри жирного), а не наоборот;
     - `text_link` пишется как `подпись(URL)`, даже если URL нет в видимом
@@ -677,18 +759,7 @@ def entities_to_template_markup(
     if not text or not entities:
         return text
 
-    utf16_text = text.encode("utf-16-le", "surrogatepass")
-    total_units = len(utf16_text) // 2
-    sliced: dict[MessageEntity, str] = {}
-    for entity in entities:
-        if entity.length <= 0 or entity.offset < 0:
-            continue
-        if entity.offset + entity.length > total_units:
-            continue
-        start = entity.offset * 2
-        sliced[entity] = utf16_text[start : start + entity.length * 2].decode(
-            "utf-16-le"
-        )
+    sliced = _aligned_slices(text, entities)
     if not sliced:
         return text
     return _parse_template_markup(text, sliced)
