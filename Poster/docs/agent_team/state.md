@@ -1,5 +1,34 @@
 # State — Poster
 
+## 2026-11-04 21:00 MSK — Poster 2.5.2: релиз ЗАВЕРШЁН (poster-manager)
+
+- Push: `4a61ca5..0adc8c7` (8 коммитов: §2–§8 + приёмка + docs), CI
+  41878651191 — success (20 min).
+- Релизная очистка БД (утверждена владельцем, протокол п. 11): служба
+  остановлена штатно → `make db-maintain-clean` → полный rebuild: бэкап
+  `post_bot.db.backup-20261104T175828178839Z-p1116328` (проверен), прежняя
+  база `post_bot.db.replaced-20261104T175828571491Z`; до очистки в базе были
+  тестовые данные приёмок (1 черновик, 2 инстанса, шаблоны) — после:
+  все счётчики 0, кроме bricks = 10 системных; миграции 1..28,
+  integrity_after ok, smoke init_db ok. Независимая пост-проверка
+  `make db-maintain-report` — ok, второй проверенный бэкап.
+- Служба запущена 20:58:37 MSK: active, PID 1116381, NRestarts=0,
+  «Application started», Traceback/ERROR 0, polling жив (48 ESTAB на :443).
+- MINOR от Reviewer (отложены): fail-open `_draft_extras_available`;
+  `delete_message(chat_id, 0)` best-effort; двойная загрузка editable в
+  handle_delete_yes.
+- Остаток за владельцем: живая визуальная приёмка в Telegram (21 сценарий §9,
+  прежде всего: публикация 0/1/2+ фото, «🏠 В меню» без дублей, «Назад» из
+  кирпичиков, первое сообщение в расширенном редакторе с эмодзи, новый UI
+  условных частей).
+- Показатели этапа 2.5.2: Developer 12 вызовов (T1 3+1, T2 1+1, T3 1, T4 1+1,
+  T5 1+1, T6 1, F-закрытие 2, mypy 1) — 6 достижений лимита steps, все
+  закрыты продолжением/новой сессией без изменения декомпозиции; Tester 1
+  вызов (лимит steps, 26 тестов); Reviewer 1 вызов (APPROVED, 0 повторных);
+  Manager: make check 1 раз, discover 2 раза, 0 изменений декомпозиции,
+  2 permission.rejected (edit файлов — запрещено роли, вернул Developer'у;
+  botctl.sh stop — заменён на systemctl).
+
 ## 2026-11-04 — 2.5.2: Reviewer APPROVED; make check зелёный; коммиты готовы
 
 - Reviewer: APPROVED, BLOCKER/IMPORTANT нет. MINOR (отложены, осознанные):
