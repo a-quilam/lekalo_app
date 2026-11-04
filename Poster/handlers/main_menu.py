@@ -584,17 +584,32 @@ async def help_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await open_admin(update, context)
         return
     if source == "wizard":
-        await ctx.query(update).answer()
-        if await _restore_wizard(update, context):
-            return
-        # Черновика нет — возврат технически невозможен: безопасное меню.
-        logger.info(
-            "Возврат из справки в конструктор невозможен: user_id=%s — меню.",
-            user_id,
-        )
-        await render_main_menu(update, context)
+        await restore_wizard_or_menu(update, context)
         return
     await ctx.query(update).answer()
+    await render_main_menu(update, context)
+
+
+async def restore_wizard_or_menu(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    Возврат в конструктор анонса с безопасным фолбэком (Poster 2.5.2 §3.1).
+
+    Общий маршрут для «◀️ Назад» из справки и из хаба кирпичиков, открытого
+    с шага конструктора: сначала восстанавливается экран текущего шага из
+    resume-снимка, иначе — главное меню (черновика нет, возврат технически
+    невозможен). Ответ на callback делается здесь ровно один раз: повторный
+    `answer` Telegram считает ошибкой запроса.
+    """
+    await ctx.query(update).answer()
+    if await _restore_wizard(update, context):
+        return
+    # Черновика нет — возврат технически невозможен: безопасное меню.
+    logger.info(
+        "Возврат в конструктор невозможен: user_id=%s — меню.",
+        ctx.user(update).id,
+    )
     await render_main_menu(update, context)
 
 
@@ -664,10 +679,16 @@ async def manage_templates(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def manage_bricks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """«Управление» → «Кирпичики»."""
-    from handlers.bricks import open_bricks
+    """
+    «Управление» → «Кирпичики».
 
-    await open_bricks(update, context)
+    Источник входа передаётся в раздел: «◀️ Назад» в личном хабе вернёт
+    сюда же, в «Управление» (Poster 2.5.2 §3.1, сценарий 11), а не в
+    главное меню. Источник хранится в сессии и переживает рестарт.
+    """
+    from handlers.bricks import HUB_ORIGIN_MANAGE, open_bricks
+
+    await open_bricks(update, context, origin=HUB_ORIGIN_MANAGE)
 
 
 async def cancel_without_dialog(

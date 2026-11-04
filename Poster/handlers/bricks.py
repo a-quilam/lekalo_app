@@ -196,8 +196,58 @@ SCREEN_PHASES = frozenset(
 # --- Состояние --------------------------------------------------------------
 
 
-def _new_hub(*, page: int = 0, archive_page: int = 0) -> dict:
-    return {"phase": "hub", "page": page, "archive_page": archive_page}
+# Источник входа в хаб «Мои кирпичики» (Poster 2.5.2 §3.1, сценарий 11):
+# куда вернёт «◀️ Назад». Значение живёт в payload `brick_sessions`, поэтому
+# возврат не зависит от памяти процесса и работает на старом сообщении после
+# рестарта. Штатные входы — «⚙️ Управление» и шаг конструктора анонса;
+# неизвестный или отсутствующий источник (прямая команда, старый callback) —
+# безопасный фолбэк «Управление».
+HUB_ORIGIN_MANAGE = "manage"
+# Вход из конструктора анонса: старый callback `bricks` на экране шага.
+# Возврат восстанавливает ТОТ ЖЕ шаг из resume-снимка; если черновика уже
+# нет — главное меню (единственный безопасный адрес).
+HUB_ORIGIN_WIZARD = "wizard"
+HUB_ORIGINS = frozenset({HUB_ORIGIN_MANAGE, HUB_ORIGIN_WIZARD})
+DEFAULT_HUB_ORIGIN = HUB_ORIGIN_MANAGE
+
+
+def _new_hub(
+    *, page: int = 0, archive_page: int = 0, hub_origin: str | None = None
+) -> dict:
+    state = {"phase": "hub", "page": page, "archive_page": archive_page}
+    if hub_origin is not None:
+        state["hub_origin"] = hub_origin
+    return state
+
+
+def _hub_origin(state: dict) -> str:
+    """Источник входа в хаб; неизвестное значение — безопасный фолбэк."""
+    value = state.get("hub_origin")
+    if isinstance(value, str) and value in HUB_ORIGINS:
+        return value
+    return DEFAULT_HUB_ORIGIN
+
+
+def _reset_hub(
+    state: dict, *, page: int | None = None, archive_page: int | None = None
+) -> None:
+    """
+    Возврат в хаб с сохранением источника входа.
+
+    Все переходы «в хаб» идут через эту функцию: иначе карточка, мастер,
+    архив или предложение затирали бы `hub_origin`, и «Назад» из хаба терял
+    бы экран-источник.
+    """
+    saved_page, saved_archive = _saved_page(state)
+    origin = _hub_origin(state)
+    state.clear()
+    state.update(
+        _new_hub(
+            page=saved_page if page is None else page,
+            archive_page=saved_archive if archive_page is None else archive_page,
+            hub_origin=origin,
+        )
+    )
 
 
 def _page_value(value: object) -> int:
@@ -221,14 +271,19 @@ def _empty_draft() -> dict:
     }
 
 
-def _new_create_state(*, page: int = 0, archive_page: int = 0) -> dict:
-    return {
+def _new_create_state(
+    *, page: int = 0, archive_page: int = 0, hub_origin: str | None = None
+) -> dict:
+    state = {
         "phase": "title_input",
         "mode": "create",
         "draft": _empty_draft(),
         "page": page,
         "archive_page": archive_page,
     }
+    if hub_origin is not None:
+        state["hub_origin"] = hub_origin
+    return state
 
 
 # --- Область создаваемого кирпичика (Poster 2.5 §13) ------------------------
@@ -642,6 +697,7 @@ def _hub_content(session: Session, user: User, state: dict):
                 )
             ]
         )
+    rows.append([InlineKeyboardButton(tr("buttons.nav.back"), callback_data="bk_back")])
     rows.append(
         [InlineKeyboardButton(tr("buttons.nav.main_menu"), callback_data="main_menu")]
     )
@@ -845,8 +901,7 @@ def _proposal_back_label(state: dict) -> str:
 
 def _proposal_reset_hub(state: dict, notice: str) -> None:
     page, archive_page = _saved_page(state)
-    state.clear()
-    state.update(_new_hub(page=page, archive_page=archive_page))
+    _reset_hub(state, page=page, archive_page=archive_page)
     state["_proposal_notice"] = notice
 
 
@@ -1739,14 +1794,12 @@ async def _render_phase(
     phase = state.get("phase")
     if phase not in PHASES:
         page, archive_page = _saved_page(state)
-        state.clear()
-        state.update(_new_hub(page=page, archive_page=archive_page))
+        _reset_hub(state, page=page, archive_page=archive_page)
         notice = notice or tr("bricks.render_phase.chernovik_nayden_razdel_otkryt")
         phase = "hub"
     if phase in _WIZARD_PHASES and not _valid_wizard_state(state):
         page, archive_page = _saved_page(state)
-        state.clear()
-        state.update(_new_hub(page=page, archive_page=archive_page))
+        _reset_hub(state, page=page, archive_page=archive_page)
         notice = notice or tr("bricks.render_phase.chernovik_kirpichika_povrezhden")
         phase = "hub"
 
@@ -1761,8 +1814,7 @@ async def _render_phase(
             content = _archive_content(session, user, state)
             if content is None:
                 page, archive_page = _saved_page(state)
-                state.clear()
-                state.update(_new_hub(page=page, archive_page=archive_page))
+                _reset_hub(state, page=page, archive_page=archive_page)
                 text, keyboard = _hub_content(session, user, state)
                 notice = notice or tr("bricks.render_phase.v_arhive_poka_net")
             else:
@@ -1775,8 +1827,7 @@ async def _render_phase(
             )
             if brick is None:
                 page, archive_page = _saved_page(state)
-                state.clear()
-                state.update(_new_hub(page=page, archive_page=archive_page))
+                _reset_hub(state, page=page, archive_page=archive_page)
                 text, keyboard = _hub_content(session, user, state)
                 notice = notice or tr("bricks.render_phase.kirpichik_nayden_bolshe_vam")
             else:
@@ -1790,8 +1841,7 @@ async def _render_phase(
             )
             if brick is None:
                 page, archive_page = _saved_page(state)
-                state.clear()
-                state.update(_new_hub(page=page, archive_page=archive_page))
+                _reset_hub(state, page=page, archive_page=archive_page)
                 text, keyboard = _hub_content(session, user, state)
                 notice = notice or tr("bricks.render_phase.kirpichik_nayden")
             elif brick.status != BRICK_STATUS_ACTIVE:
@@ -1810,8 +1860,7 @@ async def _render_phase(
             )
             if brick is None:
                 page, archive_page = _saved_page(state)
-                state.clear()
-                state.update(_new_hub(page=page, archive_page=archive_page))
+                _reset_hub(state, page=page, archive_page=archive_page)
                 text, keyboard = _hub_content(session, user, state)
                 notice = notice or tr("bricks.render_phase.kirpichik_nayden")
             elif brick.status != BRICK_STATUS_ACTIVE:
@@ -1964,8 +2013,21 @@ async def start_place_brick_create(
     )
 
 
-async def open_bricks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Вход в раздел: кнопка меню, /bricks или возврат после рестарта."""
+async def open_bricks(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    origin: str | None = None,
+) -> None:
+    """
+    Вход в раздел: кнопка меню, /bricks или возврат после рестарта.
+
+    `origin` — экран-источник для «◀️ Назад» из хаба. Его передаёт точка
+    входа, которая точно знает, откуда пришёл человек («⚙️ Управление» или
+    шаг конструктора); источник сохраняется в сессии `brick_sessions`,
+    поэтому возврат работает и после рестарта. Без источника (прямая
+    команда, старый callback) — безопасный фолбэк «Управление».
+    """
     query = getattr(update, "callback_query", None)
     if query is not None:
         await query.answer()
@@ -1976,7 +2038,10 @@ async def open_bricks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     clear_template_session(user_id)
     state = load_brick_session(user_id)
     if not isinstance(state, dict) or state.get("phase") not in PHASES:
-        state = _new_hub()
+        state = _new_hub(hub_origin=origin)
+    elif origin is not None:
+        # Повторный вход из другого источника обновляет адрес возврата.
+        state["hub_origin"] = origin
     await _render_phase(update, context, state, drop_input=True)
 
 
@@ -1988,8 +2053,7 @@ async def handle_hub(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await ctx.query(update).answer()
     if state.get("phase") == "archive":
         page, archive_page = _saved_page(state)
-        state.clear()
-        state.update(_new_hub(page=page, archive_page=archive_page))
+        _reset_hub(state, page=page, archive_page=archive_page)
     await _render_phase(update, context, state)
 
 
@@ -2003,7 +2067,9 @@ async def handle_create(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await _render_phase(
         update,
         context,
-        _new_create_state(page=page, archive_page=archive_page),
+        _new_create_state(
+            page=page, archive_page=archive_page, hub_origin=_hub_origin(state)
+        ),
         drop_input=True,
     )
 
@@ -2118,6 +2184,9 @@ def _proposal_parse_offset(data: str) -> int | None:
 
 def _proposal_new_state(state: dict, phase: str) -> None:
     page, archive_page = _saved_page(state)
+    # Источник входа хаба переживает мастер предложения: «Назад» на его
+    # экранах возвращает в хаб, а оттуда — в исходный раздел.
+    hub_origin = _hub_origin(state)
     state.clear()
     state.update(
         {
@@ -2125,6 +2194,7 @@ def _proposal_new_state(state: dict, phase: str) -> None:
             "page": page,
             "archive_page": archive_page,
             "proposal_page": 0,
+            "hub_origin": hub_origin,
         }
     )
 
@@ -2528,14 +2598,12 @@ async def handle_proposal_back(
     phase = state.get("phase")
     page, archive_page = _saved_page(state)
     if phase in {"proposal_select_brick", "proposal_list"}:
-        state.clear()
-        state.update(_new_hub(page=page, archive_page=archive_page))
+        _reset_hub(state, page=page, archive_page=archive_page)
     elif phase == "proposal_scope":
         # R4 №24: из строки хаба шаг выбора кирпичика был пропущен — «назад»
         # возвращает в хаб, а не на экран повторного выбора того же кирпичика.
         if state.get("proposal_entry") == "row":
-            state.clear()
-            state.update(_new_hub(page=page, archive_page=archive_page))
+            _reset_hub(state, page=page, archive_page=archive_page)
         else:
             state["phase"] = "proposal_select_brick"
             state.pop("proposal_scope", None)
@@ -2568,18 +2636,58 @@ async def handle_proposal_stale(
 # --- Навигация назад и отмена ----------------------------------------------
 
 
+async def _exit_hub_to_origin(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, state: dict
+) -> None:
+    """
+    «◀️ Назад» из хаба: выход в экран, откуда человек пришёл (§3.1, сц. 11).
+
+    Раньше кнопка просто перерисовывала хаб — выйти можно было только в
+    главное меню, а вход из «⚙️ Управление» терялся. Источник лежит в
+    сессии (`hub_origin`), поэтому возврат одинаково работает и после
+    рестарта. Неизвестный/отсутствующий источник (прямая команда, старое
+    сообщение) — безопасный фолбэк «Управление».
+
+    Ответ на callback делает вызываемый экран сам (`open_manage` /
+    `restore_wizard_or_menu`): повторный `answer` Telegram считает ошибкой
+    запроса.
+    """
+    raw = state.get("hub_origin")
+    if raw == HUB_ORIGIN_WIZARD:
+        # Вход из конструктора: возврат на тот же шаг из resume-снимка, а без
+        # черновика — главное меню (`_restore_wizard` отвечает на callback сам).
+        from handlers.main_menu import restore_wizard_or_menu
+
+        clear_brick_session(ctx.user(update).id)
+        await restore_wizard_or_menu(update, context)
+        return
+    if raw not in HUB_ORIGINS:
+        # Неизвестный/отсутствующий источник не должен превращаться в тупик:
+        # единственный безопасный адрес возврата — «Управление».
+        logger.info(
+            "Источник хаба кирпичиков %r неизвестен — возврат в «Управление».",
+            raw,
+        )
+    clear_brick_session(ctx.user(update).id)
+    from handlers.main_menu import open_manage
+
+    await open_manage(update, context)
+
+
 async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     state = load_brick_session(ctx.user(update).id)
     if state is None:
         await _stale(update)
+        return
+    if state.get("phase") == "hub":
+        await _exit_hub_to_origin(update, context, state)
         return
     await ctx.query(update).answer()
     phase = state.get("phase")
     cleanup = _failed_take(state)
     page, archive_page = _saved_page(state)
     if phase == "archive":
-        state.clear()
-        state.update(_new_hub(page=page, archive_page=archive_page))
+        _reset_hub(state, page=page, archive_page=archive_page)
     elif phase == "card":
         origin = state.get("origin")
         state.pop("mode", None)
@@ -2588,12 +2696,10 @@ async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         state.pop("revision", None)
         state.pop("failed_inputs", None)
         if origin == "archive":
-            state.clear()
-            state.update(_new_hub(page=page, archive_page=archive_page))
+            _reset_hub(state, page=page, archive_page=archive_page)
             state["phase"] = "archive"
         else:
-            state.clear()
-            state.update(_new_hub(page=page, archive_page=archive_page))
+            _reset_hub(state, page=page, archive_page=archive_page)
     elif phase == "archive_confirm":
         state["phase"] = "card"
     elif phase == "delete_confirm":
@@ -2611,8 +2717,7 @@ async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await _render_place_brick_list(update, context, place_id)
             return
         else:
-            state.clear()
-            state.update(_new_hub(page=page, archive_page=archive_page))
+            _reset_hub(state, page=page, archive_page=archive_page)
     elif phase == "code_input":
         state["phase"] = "edit_menu" if state.get("mode") == "edit" else "title_input"
     elif phase == "description_input":
@@ -2636,9 +2741,6 @@ async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # ведёт. На всякий случай трактуем как отмену без записи.
         await _cancel_preview(update, context, state, cleanup=cleanup)
         return
-    elif phase == "hub":
-        state.clear()
-        state.update(_new_hub(page=page, archive_page=archive_page))
     else:
         await _stale(update)
         return
@@ -2682,8 +2784,7 @@ async def _cancel_preview(
             notice=tr("bricks.cancel_preview.sozdanie_otmeneno_baze_nichego"),
         )
         return
-    state.clear()
-    state.update(_new_hub(page=page, archive_page=archive_page))
+    _reset_hub(state, page=page, archive_page=archive_page)
     await _render_phase(
         update,
         context,
@@ -3306,8 +3407,7 @@ async def _handle_create_save(
         await _render_place_brick_list(update, context, place_id, notice=notice)
         return
     page, archive_page = _saved_page(state)
-    state.clear()
-    state.update(_new_hub(page=page, archive_page=archive_page))
+    _reset_hub(state, page=page, archive_page=archive_page)
     await _render_phase(
         update,
         context,
@@ -3396,8 +3496,7 @@ async def _handle_edit_save(
         state.pop("draft", None)
         state["phase"] = "card" if result.brick is not None else "hub"
         if result.brick is None:
-            state.clear()
-            state.update(_new_hub())
+            _reset_hub(state)
         await _render_phase(
             update,
             context,
@@ -3412,8 +3511,7 @@ async def _handle_edit_save(
             state["revision"] = result.brick.revision
             state["phase"] = "card"
         else:
-            state.clear()
-            state.update(_new_hub())
+            _reset_hub(state)
         await _render_phase(
             update,
             context,
@@ -3526,8 +3624,7 @@ async def handle_archive_confirm(
         state["origin"] = "hub"
         state["phase"] = "card"
     else:
-        state.clear()
-        state.update(_new_hub())
+        _reset_hub(state)
     await _render_phase(
         update,
         context,
@@ -3578,8 +3675,7 @@ async def handle_restore(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         state["origin"] = "hub"
         state["phase"] = "card"
     else:
-        state.clear()
-        state.update(_new_hub())
+        _reset_hub(state)
     await _render_phase(
         update,
         context,
@@ -3673,8 +3769,7 @@ async def handle_delete_confirm(
     if result is not None and result.status == "deleted":
         # Кирпичика больше нет: карточка и подтверждение бессмысленны,
         # возвращаемся в хаб со списком и плашкой об успехе.
-        state.clear()
-        state.update(_new_hub(page=page, archive_page=archive_page))
+        _reset_hub(state, page=page, archive_page=archive_page)
         await _render_phase(
             update,
             context,
@@ -3699,8 +3794,7 @@ async def handle_delete_confirm(
         )
         return
     # Кирпичик исчез между шагами (или упал доменный вызов): в хаб.
-    state.clear()
-    state.update(_new_hub(page=page, archive_page=archive_page))
+    _reset_hub(state, page=page, archive_page=archive_page)
     await _render_phase(
         update,
         context,
