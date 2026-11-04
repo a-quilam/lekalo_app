@@ -30,7 +30,6 @@ try:
         create_personal_brick,
         list_personal_bricks,
     )
-    from handlers import announcement_wizard as announcement_wizard_handlers
     from handlers.announcement_wizard import (
         AW_EXTRAS,
         AW_PLACE,
@@ -59,6 +58,7 @@ try:
     from tests.integration_harness import (
         DEFAULT_USER_ID,
         HARNESS_IMPORT_ERROR,
+        inline_buttons,
         scenario_test,
     )
     from user_store import get_or_create_user
@@ -69,9 +69,22 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 
 OTHER_TG = 8_270_002
-# §18 (2.5): вместо экрана «✅ Анонс готов» после доставки открыт редактор.
+# §18 (2.5): вместо экрана «✅ Анонс готов» после доставки сразу управление.
 EDIT_TITLE = "✏️ Изменить анонс"
 TemplateSpec = tuple[str, str, str, dict[str, object]]
+
+
+def _assert_delivered_controls(h) -> None:
+    """
+    2.5.2 §2: после публикации служебного экрана нет.
+
+    Управление анонсом живёт на самом сообщении (0–1 фото) или на панели
+    медиагруппы; отдельного экрана «✏️ Изменить анонс» в чате не остаётся.
+    """
+    if h.screen_message_id() is not None:
+        raise AssertionError(f"Остался служебный экран: {h.screen_text()[:200]!r}")
+    if h.control_callback("data") is None:
+        raise AssertionError("Управление анонсом не привязано к сообщению")
 
 
 def _callbacks(h, prefix: str, suffix: str | None = None) -> list[str]:
@@ -269,18 +282,39 @@ async def _no_photos(h) -> None:
 
 async def _open_edit(h) -> None:
     """
-    U2b/2.5: открывает компактный экран правки доставленного анонса.
+    Открывает компактный экран правки доставленного анонса.
 
-    С C2b-2 (spec §18) экрана «✅ Анонс готов» нет: после доставки автор уже
-    стоит на экране категорий правки, поэтому helper ничего не делает, если
-    `aw_qmanage` на месте. Иначе используется устаревшая кнопка «✏️
-    Изменить» (`aw_edit`) — она по-прежнему ведёт на тот же экран.
+    2.5.2 §2: у опубликованного анонса ОДНО место управления — кнопки
+    `anp_` на самом сообщении (0–1 фото) или на панели медиагруппы. Экран
+    правки — временный: он открывается кнопкой «📝 Данные» и закрывается
+    после успешного сохранения. Поэтому helper сначала нажимает управление
+    активного экземпляра, а устаревшую кнопку «✏️ Изменить» (`aw_edit`)
+    использует только там, где экран правки уже открыт.
     """
     if _callbacks(h, "aw_qmanage"):
         return
-    data = _callbacks(h, "aw_edit")
-    if data:
-        await h.callback(data[0])
+    data = _control_callback(h, "data")
+    if data is not None:
+        await h.callback(data)
+        return
+    fallback = _callbacks(h, "aw_edit")
+    if fallback:
+        await h.callback(fallback[0])
+
+
+def _control_callback(h, action: str) -> str | None:
+    """
+    `callback_data` кнопки управления активного анонса (`anp_{action}:{id}`).
+
+    Кнопки живут не на служебном экране, а на самом анонсе или его панели,
+    поэтому ищутся в фактических клавиатурах чата, а не в `screen_buttons`.
+    """
+    prefix = f"anp_{action}:"
+    for record in reversed(h.calls):
+        for _label, data in inline_buttons(record.get("reply_markup")):
+            if data and data.startswith(prefix):
+                return data
+    return None
 
 
 async def _reopen_question(h) -> None:
@@ -524,7 +558,7 @@ class AnnouncementWizardTemplateTests(unittest.TestCase):
         self.assertTrue(_callbacks(h, "aw_photo_none"))
         self.assertFalse(_callbacks(h, "aw_send"))
         await _no_photos(h)
-        self.assertIn(EDIT_TITLE, h.screen_text())
+        _assert_delivered_controls(h)
         delivered = h.posts()[-1] or ""
         self.assertIn("СТАРЫЙ ТЕКСТ", delivered)
         self.assertNotIn("НОВЫЙ ТЕКСТ", delivered)
@@ -626,7 +660,7 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
         self.assertFalse(_callbacks(h, "aw_send"))
         self.assertEqual(h.posts(), [])
         await _no_photos(h)
-        self.assertIn(EDIT_TITLE, h.screen_text())
+        _assert_delivered_controls(h)
         posts_after_delivery = h.posts()
         self.assertEqual(len(posts_after_delivery), 1)
         text = posts_after_delivery[0] or ""
@@ -638,9 +672,9 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
         self.assertIn("42", text)
         self.assertIn("Музыка", text)
         self.assertIn("X, Y", text)
-        # §18 (2.5): экрана завершения нет — категории правки сразу на месте.
-        self.assertTrue(_callbacks(h, "aw_qmanage"))
-        self.assertTrue(_callbacks(h, "aw_photos"))
+        # 2.5.2 §2: экрана завершения нет — управление сразу у самого анонса.
+        self.assertIsNotNone(h.control_callback("data"), "нет кнопки «Данные»")
+        self.assertIsNotNone(h.control_callback("photos"), "нет кнопки «Фото»")
         self.assertFalse(_callbacks(h, "aw_edit"))
         # Финальной кнопки «отправить/сформировать» в доставке нет.
         self.assertFalse(_callbacks(h, "aw_send"))
@@ -715,7 +749,7 @@ class AnnouncementWizardExtrasTests(unittest.TestCase):
         self.assertEqual(h.posts(), [])
         await _no_photos(h)
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
-        self.assertIn(EDIT_TITLE, h.screen_text())
+        _assert_delivered_controls(h)
         self.assertEqual(len(h.posts()), 1)
         await _open_edit(h)
         await h.callback(_callback(h, "aw_extras"))
@@ -878,9 +912,8 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         await h.text("Новое")
         # H3: ответ сразу применил изменение — новой версии достаточно,
         # строки «Есть изменения» и кнопки применения больше нет.
-        self.assertEqual(
-            h.screen_text(), announcement_wizard_handlers.DELIVERED_EDIT_TEXT
-        )
+        # 2.5.2 §2: служебный экран правки закрыт, управление — у анонса.
+        _assert_delivered_controls(h)
         self.assertFalse(_callbacks(h, "aw_apply"))
         self.assertIn("Новое", h.posts()[-1] or "")
 
@@ -910,7 +943,7 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         self.assertIn("Черновик можно продолжить", h.screen_text())
         self.assertIn("Дом культуры", h.screen_text())
         await h.callback(_callback(h, "aw_open", f":{draft_id}"))
-        self.assertIn(EDIT_TITLE, h.screen_text())
+        _assert_delivered_controls(h)
         # §29–30 (2.5): повторное открытие публикует НОВЫЙ цельный экземпляр,
         # прежний остаётся в чате архивным снимком.
         self.assertEqual(len(h.posts()), len(posts_after_save) + 1)
@@ -951,7 +984,7 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         await h.text(long_value)
         # S3 п.6: сначала шаг фото, доставка — по «Без фотографий».
         await _no_photos(h)
-        self.assertIn(EDIT_TITLE, h.screen_text())
+        _assert_delivered_controls(h)
         await _preview(h)
         self.assertIn("Здесь показана часть текста", h.screen_text())
         self.assertIn("Полный текст сохранён в черновике", h.screen_text())
@@ -990,9 +1023,9 @@ class AnnouncementWizardSafetyTests(unittest.TestCase):
 
         await h.callback(stale_skip)
         # §18 (2.5): предупреждение об устаревшей кнопке уходит ответом на
-        # callback, а экран остаётся рабочим редактором анонса.
+        # callback, а управление анонсом остаётся рабочим (2.5.2 §2).
         self.assertIn("Данные изменились", h.answer_texts()[-1])
-        self.assertIn(announcement_wizard_handlers.DELIVERED_EDIT_TEXT, h.screen_text())
+        self.assertIsNotNone(h.control_callback("data"), "управление анонсом пропало")
         self.assertIn(
             "📝 Данные",
             [label for label, _data in h.screen_buttons()],
@@ -1129,7 +1162,7 @@ class AnnouncementWizardStandardTemplateTests(unittest.TestCase):
         self.assertTrue(_callbacks(h, "aw_photo_none"))
         self.assertFalse(_callbacks(h, "aw_send"))
         await _no_photos(h)
-        self.assertIn(EDIT_TITLE, h.screen_text())
+        _assert_delivered_controls(h)
         posts = h.posts()
         self.assertEqual(len(posts), 1)
         text = posts[0] or ""

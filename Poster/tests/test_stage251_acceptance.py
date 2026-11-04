@@ -20,7 +20,8 @@ Poster 2.5.1 — независимая приёмка релиза (12 скво
 9. пагинация личных шаблонов: 7 шаблонов → 5 и индикатор;
 10. пагинация доп. полей (`aw_exbpage`) и названий места (`aw_place_names`);
 11. фото-сетка не изменилась: `PHOTO_PAGE_SIZE == 8`, 8 фото — одна страница;
-12. снимок условных частей: заморозка при создании и legacy-путь (`frozen=0`).
+12. снимок условных частей: заморозка при создании; признак
+   `conditional_rules_frozen` больше не влияет на рендер (2.5.2 §8).
 
 Реальные Telegram, `.env` и `post_bot.db` не используются: настоящий
 `Application.process_update` поверх временной SQLite (`Harness`) и отдельная
@@ -503,7 +504,12 @@ class PhotoGridAcceptanceTests(unittest.TestCase):
             await h.photo(f"grid-{index}", media_group_id="mg-grid")
         await asyncio.sleep(0.6)
 
-        await h.callback(_callback(h, "aw_photos"))
+        # 2.5.2 §2: после публикации служебного экрана нет — коллекция фото
+        # открывается управлением самого анонса (`anp_photos`).
+        photos_control = h.control_callback("photos")
+        self.assertIsNotNone(photos_control, "у анонса нет кнопки «Фото»")
+        assert photos_control is not None
+        await h.callback(photos_control)
         self.assertIn("Страница 1 из 1", h.screen_text())
         self.assertEqual(
             len(_callbacks(h, "aw_photo_del:")),
@@ -525,7 +531,7 @@ class PhotoGridAcceptanceTests(unittest.TestCase):
 
 
 class ConditionalSnapshotAcceptanceTests(TemplateDatabaseTestCase):
-    """П.12: заморозка правил в снимке и legacy-путь после миграции 28."""
+    """П.12: заморозка правил в снимке после миграции 28."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -604,7 +610,7 @@ class ConditionalSnapshotAcceptanceTests(TemplateDatabaseTestCase):
 
     # --- сценарий ----------------------------------------------------------
 
-    def test_conditional_snapshot_e2e_and_legacy(self) -> None:
+    def test_conditional_snapshot_e2e_and_frozen_flag(self) -> None:
         template_id = self.template.template_id
         created = self._add_rule()
         self.assertEqual(created.status, "created", created.message)
@@ -646,7 +652,11 @@ class ConditionalSnapshotAcceptanceTests(TemplateDatabaseTestCase):
             "после рестарта снимок рендерится идентично",
         )
 
-        # --- legacy-снимок: frozen=0 читает правила версии черновика ------
+        # --- снимок остаётся источником правил при любом значении признака --
+        # 2.5.2 §8: легаси-путь «правила по версии черновика» удалён, признак
+        # `conditional_rules_frozen` больше не влияет на рендер. Снимок без
+        # строк правил не начинает применять правило, добавленное позже —
+        # даже если в базе остался `frozen = 0` от прежних версий.
         legacy_template = create_personal_template(
             self.session,
             actor_telegram_user_id=OWNER_TG,
@@ -660,7 +670,7 @@ class ConditionalSnapshotAcceptanceTests(TemplateDatabaseTestCase):
         self.assertEqual(
             before,
             "<b>Концерт – </b>\nКонец",
-            "предусловие legacy: правила на момент создания не было",
+            "предусловие: правила на момент создания не было",
         )
 
         snapshot_id = legacy_draft.template_snapshot.snapshot_id
@@ -674,7 +684,7 @@ class ConditionalSnapshotAcceptanceTests(TemplateDatabaseTestCase):
             {"snapshot_id": snapshot_id},
         )
         self.session.commit()
-        self.assertEqual(self._frozen_flag(snapshot_id), 0, "снимок стал legacy")
+        self.assertEqual(self._frozen_flag(snapshot_id), 0, "признак сброшен")
 
         added = create_conditional_part(
             self.session,
@@ -689,8 +699,9 @@ class ConditionalSnapshotAcceptanceTests(TemplateDatabaseTestCase):
         self.session.expire_all()
         self.assertEqual(
             self._preview_by_id(legacy_id),
-            EMPTY_COST_V1,
-            "legacy-снимок применяет правило, добавленное после его создания",
+            before,
+            "снимок рендерится по своей копии правил: новое правило версии "
+            "и признак frozen=0 на рендер не влияют",
         )
 
 

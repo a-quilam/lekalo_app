@@ -291,19 +291,27 @@ class InPlaceMediaTests(unittest.TestCase):
     f"интеграционное окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
 )
 class PhotoCountChangeTests(unittest.TestCase):
-    async def _add_photo(self, h, file_id: str) -> None:
-        """Шаг фото доставленного анонса: одно фото применяется сразу."""
+    async def _open_photo_collection(self, h) -> None:
+        """
+        Открывает коллекцию фото доставленного анонса.
+
+        2.5.2 §2: после публикации служебного экрана в чате нет, поэтому
+        навигация идёт только через управление экземпляром: «📝 Данные» →
+        «🖼 Фото». Текст прошлого экрана в журнале Harness не признак
+        открытого экрана — сообщение уже удалено.
+        """
+        await _open_edit(h)
+        await h.callback(_callback(h, "aw_photos"))
         if PHOTO_STEP_TITLE not in h.screen_text():
-            await _open_edit(h)
-            await h.callback(_callback(h, "aw_photos"))
-            if PHOTO_STEP_TITLE not in h.screen_text():
-                raise AssertionError(f"Не шаг фото: {h.screen_text()}")
+            raise AssertionError(f"Не коллекция фото: {h.screen_text()}")
+
+    async def _add_photo(self, h, file_id: str) -> None:
+        """Коллекция фото доставленного анонса: одно фото применяется сразу."""
+        await self._open_photo_collection(h)
         await h.photo(file_id)
 
     async def _delete_photo(self, h, index: int = 0) -> None:
-        if PHOTO_STEP_TITLE not in h.screen_text():
-            await _open_edit(h)
-            await h.callback(_callback(h, "aw_photos"))
+        await self._open_photo_collection(h)
         await h.callback(_callback(h, "aw_photo_del", f":{index}"))
 
     @scenario_test

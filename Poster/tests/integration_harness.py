@@ -19,6 +19,7 @@
 import asyncio
 import functools
 import json
+import re
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime
@@ -600,14 +601,30 @@ def call_text(record: dict) -> str | None:
 
 
 def inline_buttons(markup: Any) -> list[tuple[str, str | None]]:
-    """Плоский список (текст, callback_data) inline-клавиатуры."""
-    if markup is None:
+    """
+    Плоский список (текст, callback_data) inline-клавиатуры.
+
+    `reply_markup` бывает не только inline: `ReplyKeyboardRemove` (снятие
+    клавиатуры) и обычная `ReplyKeyboardMarkup` не имеют `inline_keyboard`,
+    поэтому для них кнопок нет — это не ошибка разбора.
+    """
+    if markup is None or not hasattr(markup, "inline_keyboard"):
         return []
-    return [
-        (button.text, button.callback_data)
-        for row in markup.inline_keyboard
-        for button in row
-    ]
+    rows = markup.inline_keyboard or []
+    return [(button.text, button.callback_data) for row in rows for button in row]
+
+
+def assert_delivered(h: "Harness", draft_id: int) -> None:
+    """
+    Анонс доставлен: `sent` в БД (Poster 2.5.2 §2).
+
+    После публикации в чате НЕТ служебного экрана редактирования, поэтому
+    признаком успеха служит статус черновика, а не текст экрана: экран шага
+    закрывается, а управление живёт на самом анонсе или его панели.
+    """
+    status = h.draft_status(draft_id)
+    if status != "sent":
+        raise AssertionError(f"Анонс не доставлен ({status}): {h.screen_text()}")
 
 
 @contextmanager
@@ -965,8 +982,26 @@ class Harness:
     # —— экран (постоянное сообщение управления) ——
 
     def screens(self) -> list[dict]:
-        """Все вызовы отрисовки экрана (send и edit) в порядке вызовов."""
-        return [c for c in self.calls if is_screen_record(c)]
+        """
+        Вызовы отрисовки экрана (send и edit), которые РЕАЛЬНО видны в чате.
+
+        Удалённый служебный экран — уже не место управления (Poster 2.5.2
+        §2): после успешной публикации сообщение экрана закрывается, и
+        журнал вызовов не должен выдавать его за текущий интерфейс.
+        """
+        deleted = {int(mid) for mid in self.deleted_ids()}
+        out: list[dict] = []
+        for call in self.calls:
+            if not is_screen_record(call):
+                continue
+            if call["type"] == "edit_message" and call.get("message_id") is not None:
+                ids: tuple = (call["message_id"],)
+            else:
+                ids = self.bot.call_message_ids.get(id(call), ())
+            if ids and all(int(message_id) in deleted for message_id in ids):
+                continue
+            out.append(call)
+        return out
 
     def screen(self) -> dict | None:
         """Последнее состояние экрана (его текст и клавиатура)."""
@@ -1028,6 +1063,60 @@ class Harness:
             if message_id is None:
                 continue
             out.append(int(message_id))
+        return out
+
+    def draft_status(self, draft_id: int) -> str | None:
+        """
+        `publication_status` черновика (`None` — публикация не начиналась).
+
+        Нужен проверкам «анонс доставлен»: после публикации служебного экрана
+        в чате нет (Poster 2.5.2 §2), и статус в БД — единственный надёжный
+        признак результата.
+        """
+        with self.session_factory() as session:
+            row = session.execute(
+                text(
+                    "SELECT publication_status FROM announcement_drafts "
+                    "WHERE id = :draft_id"
+                ),
+                {"draft_id": int(draft_id)},
+            ).first()
+        return row[0] if row is not None else None
+
+    def control_callback(self, action: str) -> str | None:
+        """
+        `callback_data` кнопки управления активным анонсом (`anp_{action}:{id}`).
+
+        Кнопки живут не на служебном экране, а на самом анонсе (0–1 фото) или
+        на его панели (2+ фото), поэтому ищутся в фактических клавиатурах
+        чата: последняя запись побеждает.
+        """
+        prefix = f"anp_{action}:"
+        for record in reversed(self.calls):
+            for _label, data in inline_buttons(record.get("reply_markup")):
+                if data and data.startswith(prefix):
+                    return data
+        return None
+
+    def live_control_callbacks(self) -> list[str]:
+        """
+        `anp_`-callback'и всех ЖИВЫХ (не удалённых) сообщений чата.
+
+        Проверки «одно место управления»: снятая клавиатура и удалённые
+        служебные сообщения сюда не попадают. FakeBot хранит ПОДПИСЬ
+        клавиатуры (repr), а не сам объект, поэтому callback'и извлекаются
+        из подписи.
+        """
+        deleted = {int(mid) for mid in self.deleted_ids()}
+        out: list[str] = []
+        for (_chat_id, message_id), (
+            _kind,
+            _text,
+            markup,
+        ) in self.bot._message_content.items():
+            if int(message_id) in deleted or not markup:
+                continue
+            out.extend(re.findall(r"anp_[a-z]+:\d+", str(markup)))
         return out
 
     def posts(self) -> list[str | None]:

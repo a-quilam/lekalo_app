@@ -644,10 +644,11 @@ class PersonalPlaceLineTests(unittest.TestCase):
         self._assert_no_empty_place(self, "шаг фото", photo_step)
 
         await h.callback(_callback(h, "aw_photo_none"))
-        delivered = h.screen_text()
-        # §18 (2.5): экрана «✅ Анонс готов» нет — после доставки редактор.
-        self.assertIn("✏️ Изменить анонс", delivered)
-        self._assert_no_empty_place(self, "доставлено", delivered)
+        # 2.5.2 §2: служебного экрана после публикации нет — проверяем
+        # доставленный анонс через его собственное управление.
+        self.assertIsNotNone(h.control_callback("data"), "нет управления анонсом")
+        self.assertNotIn("Место:", h.posts()[-1] or "")
+        self._assert_no_empty_place(self, "доставлено", h.posts()[-1] or "")
 
         await _open_preview(h)
         preview = h.screen_text()
@@ -727,14 +728,12 @@ class PersonalPlaceLineTests(unittest.TestCase):
         # S3 п.6: сначала шаг фото, доставка — по «Без фотографий».
         self.assertIn("Фотографии анонса", h.screen_text())
         await h.callback(_callback(h, "aw_photo_none"))
-        delivered = h.screen_text()
-        # §18 (2.5): экрана «✅ Анонс готов» нет — после доставки редактор.
-        self.assertIn("✏️ Изменить анонс", delivered)
-        # U2b: экран завершения фиксирован и не повторяет пост. Строка
-        # «Место: …» остаётся там, где живёт сам анонс — в посте и обзоре.
-        # В самом посте место — часть шаблона площадки, без префикса «Место:».
+        # 2.5.2 §2: служебного экрана после публикации нет. Строка «Место: …»
+        # остаётся там, где живёт сам анонс — в посте и обзоре. В самом посте
+        # место — часть шаблона площадки, без префикса «Место:».
+        self.assertIsNotNone(h.control_callback("data"), "нет управления анонсом")
         self.assertIn("Дом культуры", h.posts()[-1] or "")
-        self.assertNotIn("Место:", delivered)
+        self.assertNotIn("Место:", h.posts()[-1] or "")
         await _open_preview(h)
         self.assertIn("Место: Дом культуры", h.screen_text())
 

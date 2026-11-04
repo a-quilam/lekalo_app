@@ -32,6 +32,8 @@ try:
     from tests.integration_harness import (
         DEFAULT_USER_ID,
         HARNESS_IMPORT_ERROR,
+        assert_delivered,
+        inline_buttons,
         scenario_test,
     )
     from tests.test_stage27b_announcement_ui import (
@@ -53,7 +55,9 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
     INTEGRATION_IMPORT_ERROR = str(exc)
 
 
-# §18 (2.5): экрана «✅ Анонс готов» нет — после доставки открыт редактор.
+# 2.5.2 §2: после доставки служебного экрана редактора в чате нет, а
+# управление живёт на самом анонсе (`anp_`). Заголовок редактора остаётся
+# только у временного экрана, который открывается кнопкой «📝 Данные».
 DELIVERED_EDIT_TITLE = "✏️ Изменить анонс"
 
 
@@ -78,9 +82,8 @@ async def _personal_delivered(
     # Poster 2.0 S3 п.6: последний кирпичик ведёт на шаг фото; доставка —
     # по «Без фотографий» (доставка как функция не менялась).
     await _no_photos(h)
-    if DELIVERED_EDIT_TITLE not in h.screen_text():
-        raise AssertionError(f"Анонс не доставлен: {h.screen_text()}")
     draft = _latest_draft(h)
+    assert_delivered(h, draft.id)
     return draft, bricks
 
 
@@ -99,21 +102,27 @@ async def _standard_delivered(h):
             break
         await h.callback(skips[0])
     await _no_photos(h)
-    if DELIVERED_EDIT_TITLE not in h.screen_text():
-        raise AssertionError(f"Анонс не доставлен: {h.screen_text()}")
-    return _latest_draft(h)
+    draft = _latest_draft(h)
+    assert_delivered(h, draft.id)
+    return draft
 
 
 async def _open_photos(h) -> None:
     """
     Открывает коллекцию фото доставленного анонса.
 
-    U2b: с экрана завершения сначала открывается компактный экран правки,
-    и уже на нём есть категория «Фотографии».
+    2.5.2 §2: после публикации служебного экрана в чате нет — управление
+    живёт на самом анонсе (`anp_photos`). Прежний путь через экран
+    редактора (`aw_photos`) остаётся запасным для случаев, когда экран уже
+    открыт.
     """
-    if not _callbacks(h, "aw_photos"):
-        await _open_edit(h)
-    await h.callback(_callback(h, "aw_photos"))
+    control = h.control_callback("photos")
+    if control is not None:
+        await h.callback(control)
+    else:
+        if not _callbacks(h, "aw_photos"):
+            await _open_edit(h)
+        await h.callback(_callback(h, "aw_photos"))
     if "Фотографии анонса" not in h.screen_text():
         raise AssertionError(f"Не экран фотографий: {h.screen_text()}")
 
@@ -172,8 +181,17 @@ class AnnouncementAutoDeliveryStandardTests(unittest.TestCase):
         self.assertTrue(stored.delivered_message_ids)
         self.assertTrue(stored.delivery_fingerprint)
 
-        # Кнопки управления — в отдельном сообщении, а не в тексте анонса.
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
+        # Управление — на самом анонсе (`anp_`), а не на служебном экране.
+        self.assertIsNone(h.screen_message_id(), "служебный экран закрыт")
+        content_markup = _final_markup(h, stored.delivered_message_ids[0])
+        self.assertIsNotNone(content_markup, "у анонса нет управления")
+        self.assertTrue(
+            all(
+                data and data.startswith("anp_")
+                for _label, data in inline_buttons(content_markup)
+            ),
+            inline_buttons(content_markup),
+        )
         from tests.integration_harness import is_screen_record
 
         # U5: анонс без фото доставляется промоушеном живого блока — сообщение
@@ -248,10 +266,12 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("aw_start")
         await h.callback(_callback(h, "aw_open", f":{draft.id}"))
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
-        # H3: применённое изменение не оставляет «неприменённых» — экран
-        # завершения показывает ровно свой фиксированный текст.
-        self.assertNotIn("Есть изменения", h.screen_text())
+        # 2.5.2 §2: повторное открытие публикует новый экземпляр, и в чате
+        # снова нет служебного экрана — управление у самого анонса.
+        self.assertEqual(h.draft_status(draft.id), "sent")
+        self.assertIsNotNone(h.control_callback("data"))
+        # H3: применённое изменение не оставляет «неприменённых».
+        self.assertNotIn("Есть изменения", " ".join(h.screen_texts()))
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
 
         # Удаление одного фото и добавление нового — замена без фото-кирпичиков.
@@ -494,7 +514,7 @@ class AnnouncementAutoDeliveryFailureTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_send"))
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
+        self.assertIsNotNone(h.control_callback("data"), "у анонса нет управления")
         self.assertEqual(len(h.post_records()), 1)
 
     @scenario_test
@@ -526,7 +546,7 @@ class AnnouncementAutoDeliveryFailureTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_pub_resume"))
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
+        self.assertIsNotNone(h.control_callback("data"), "у анонса нет управления")
 
     @scenario_test
     async def test_foreign_callback_cannot_deliver(self, h) -> None:
@@ -714,7 +734,10 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
 
         # §28: правка текста идёт на месте, удаление прежнего сообщения не
         # требуется вовсе — запрет Telegram на удаление ничего не ломает.
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
+        # 2.5.2 §2: успешная правка закрывает временный экран, управление
+        # возвращается к самому анонсу.
+        self.assertIsNone(h.screen_message_id(), "временный экран должен быть закрыт")
+        self.assertIsNotNone(h.control_callback("data"), "управление у анонса")
         self.assertEqual(h.bot.content_text(h.chat_id, message_id), "Новая версия")
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
@@ -726,7 +749,7 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         # Смена структуры (0→1 фото) — контролируемая замена (§28): новый
         # экземпляр доставлен, прежний остался снимком без кнопок, статус
         # sent. Неудача удаления панели/клавиатуры не откатывает доставку.
-        await h.callback(_callback(h, "aw_photos"))
+        await _open_photos(h)
         await h.photo("photo-legacy")
         replaced = _stored(h, draft.id)
         self.assertEqual(replaced.publication_status, "sent")

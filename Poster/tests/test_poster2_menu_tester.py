@@ -42,6 +42,7 @@ try:
     from tests.integration_harness import (
         DEFAULT_USER_ID,
         HARNESS_IMPORT_ERROR,
+        is_screen_record,
         scenario_test,
     )
     from user_store import get_or_create_user
@@ -232,9 +233,15 @@ class FullPathTests(unittest.TestCase):
         self.assertIn("📝 Создать анонс", list_screen)
         self.assertIn(f"pl_pick:{place_id}", _cb(h, "pl_pick:"))
 
-        before_tap = len(h.screens())
+        # 2.5.2 §2: удалённые служебные экраны в историю не попадают, поэтому
+        # новые экраны считаются по журналу вызовов после нажатия.
+        mark = len(h.calls)
         await h.callback(f"pl_pick:{place_id}")
-        new_screens = h.screen_texts()[before_tap:]
+        new_screens = [
+            (call.get("text") or "")
+            for call in h.calls[mark:]
+            if is_screen_record(call)
+        ]
         self.assertEqual(
             len(new_screens), 1, f"между тапом и вопросами лишние экраны: {new_screens}"
         )
@@ -258,9 +265,10 @@ class FullPathTests(unittest.TestCase):
         await h.callback("pick_template")
         self.assertIn(f"tp_pick:{template_id}", _cb(h, "tp_pick:"))
 
-        before = len(h.screens())
+        mark = len(h.calls)
         await h.callback(f"tp_pick:{template_id}")
-        self.assertEqual(len(h.screens()) - before, 1)
+        new_screens = [call for call in h.calls[mark:] if is_screen_record(call)]
+        self.assertEqual(len(new_screens), 1, "ровно один новый экран")
         self.assertIn("🧩 Вопрос 1", h.screen_text())
         drafts = _drafts(h)
         self.assertEqual(len(drafts), 1)
@@ -537,9 +545,10 @@ class PersonalPlaceholderTests(unittest.TestCase):
         await h.text("Значение")
         # S3 п.6: сначала шаг фото, доставка — по «Без фотографий».
         await h.callback(_cb(h, "aw_photo_none"))
-        delivered = h.screen_text()
-        # §18 (2.5): экрана «✅ Анонс готов» нет — после доставки редактор.
-        self.assertIn("✏️ Изменить анонс", delivered)
+        # 2.5.2 §2: служебного экрана после публикации нет — анонс проверяем
+        # по его собственному управлению и тексту поста.
+        self.assertIsNotNone(h.control_callback("data"), "нет управления анонсом")
+        delivered = "\n".join(h.posts())
 
         await _open_preview(h)
         preview = h.screen_text()
@@ -650,10 +659,9 @@ class PersonalNoPlaceAllScreensTests(unittest.TestCase):
         await h.text("/start")
         await h.callback(f"pl_pick:{place_id}")
         await _skip_all_questions(h)
-        delivered = h.screen_text()
-        # §18 (2.5): итогового экрана нет — автор остаётся в редакторе, а
-        # место живёт в самом посте и в обзоре.
-        self.assertIn("✏️ Изменить анонс", delivered)
+        # 2.5.2 §2: итогового экрана нет — место живёт в самом посте и обзоре.
+        self.assertIsNotNone(h.control_callback("data"), "нет управления анонсом")
+        delivered = "\n".join(h.posts())
         self.assertNotIn("Место:", delivered)
         # В самом посте место — часть шаблона площадки, без префикса «Место:».
         self.assertIn("Дом культуры", h.posts()[-1] or "")

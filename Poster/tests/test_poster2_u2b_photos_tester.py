@@ -218,8 +218,9 @@ class DuplicatePhotoTests(unittest.TestCase):
         version_ids = stored.delivered_message_ids
         posts_before = h.posts()
 
-        # §18 (2.5): категории правки уже на экране после доставки.
-        await h.callback(_callback(h, "aw_photos"))
+        # 2.5.2 §2: после публикации служебного экрана нет — коллекция фото
+        # доставленного анонса открывается управлением самого анонса.
+        await h.callback(h.control_callback("photos"))
         await h.photo("late-1")
         # H3: фото к доставленному анонсу применяется сразу, без «Применить».
         self.assertFalse(_callbacks(h, "aw_apply"))

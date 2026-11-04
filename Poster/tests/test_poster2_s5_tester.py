@@ -375,7 +375,11 @@ class HumorScenarioTests(unittest.TestCase):
             await h.callback(_button(h, "aw_qskip"))
             screens.append(h.screen_text())
             await h.callback(_button(h, "aw_photo_none"))
-            screens.append(h.screen_text())
+            # 2.5.2 §2: после публикации служебного экрана в чате нет —
+            # успех проверяется по управлению самого анонса (`anp_`), а не
+            # по тексту экрана, которого больше не существует.
+            self.assertIsNone(h.screen_message_id(), "служебный экран закрыт")
+            self.assertIsNotNone(h.control_callback("data"))
 
         self.assertTrue(all(screens))
         for text in screens:

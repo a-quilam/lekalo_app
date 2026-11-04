@@ -45,6 +45,7 @@ try:
         scenario_test,
     )
     from tests.test_stage25_delivery_instances import (
+        _active_instances,
         _final_markup,
         _only_active,
     )
@@ -189,6 +190,7 @@ class ForeignDeliveredTests(unittest.TestCase):
         # Автор меняет значение: правка применяется сразу и обновляет
         # активный экземпляр НА МЕСТЕ (§28) — второго сообщения и архивного
         # снимка при том же составе медиа не появляется.
+        await h.callback(_instance_button(h, first, controls.ACTION_DATA))
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
@@ -291,7 +293,6 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
         draft, _bricks = await _delivered(h)
         active = _only_active(h, draft.id)
         posts_before = h.posts()
-        sends_before = len([c for c in h.screens() if c["type"] == "message"])
         edit = _instance_button(h, active, controls.ACTION_DATA)
 
         await h.callback(edit)
@@ -303,12 +304,13 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
         self.assertTrue(_callbacks(h, "aw_photos"))
         self.assertTrue(_callbacks(h, "main_menu"))
         self.assertFalse(_callbacks(h, "aw_edit"))
+        screens_before = len([c for c in h.screens() if c["type"] == "message"])
         await h.callback(edit)
 
         self.assertEqual(h.screen_text(), first_text, "экран не задвоился")
         self.assertEqual(
             len([c for c in h.screens() if c["type"] == "message"]),
-            sends_before,
+            screens_before,
             "второго сообщения экрана нет",
         )
         self.assertEqual(h.posts(), posts_before)
@@ -327,15 +329,22 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
         for _attempt in range(2):
             await h.callback(_instance_button(h, active, controls.ACTION_DATA))
             await h.callback(_instance_button(h, active, controls.ACTION_PHOTOS))
-            await h.callback(_instance_button(h, active, controls.ACTION_DATA))
-            await h.callback(_instance_button(h, active, controls.ACTION_MENU))
-            self.assertIn("Что хотите сделать?", h.screen_text())
+            self.assertIn("Фотографии анонса", h.screen_text())
+            await h.callback(_callback(h, "aw_edit"))
+            self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
+
+        # 2.5.2 §2: «🏠 В меню» архивирует экземпляр, поэтому выход — один
+        # раз в конце, уже после проверки повторных открытий.
+        await h.callback(_instance_button(h, active, controls.ACTION_MENU))
+        self.assertIn("Что хотите сделать?", h.screen_text())
 
         self.assertEqual(h.posts(), posts_before)
         stored = _details(h, draft.id)
         self.assertEqual(tuple(stored.delivered_message_ids), version_ids)
         self.assertEqual(stored.publication_status, "sent")
-        self.assertEqual(_only_active(h, draft.id).id, active.id, "экземпляр тот же")
+        self.assertEqual(
+            _active_instances(h, draft.id), [], "экземпляр архивирован выходом в меню"
+        )
         self.assertFalse(_callbacks(h, "aw_apply"))
 
     @scenario_test

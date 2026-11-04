@@ -279,13 +279,9 @@ class AlbumAndRestartTests(unittest.TestCase):
         )
         self.assertEqual(_photos_sent(h), [], "хвоста из одного фото здесь нет")
 
-        screen_id = h.screen_message_id()
-        self.assertIsNotNone(screen_id)
-        self.assertGreater(
-            screen_id,
-            max(sent.delivered_message_ids),
-            "служебный экран должен идти ниже анонса",
-        )
+        # 2.5.2 §2: служебного экрана нет — управление у самой медиагруппы.
+        self.assertIsNone(h.screen_message_id())
+        self.assertIsNotNone(h.control_callback("data"), "нет управления альбомом")
         for message_id in uploads:
             self.assertIn(message_id, h.deleted_ids())
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
@@ -394,8 +390,9 @@ class RetryAfterMidGroupTests(unittest.TestCase):
             live_ids <= set(h.deleted_ids()),
             "прошлый блок заменён только после успеха новой версии",
         )
-        # §18 (2.5): итогового экрана нет — на экране рабочий редактор.
-        self.assertIn("✏️ Изменить анонс", h.screen_text())
+        # 2.5.2 §2: служебного экрана нет — управление у самой медиагруппы.
+        self.assertIsNone(h.screen_message_id())
+        self.assertIsNotNone(h.control_callback("data"), "нет управления альбомом")
 
 
 @unittest.skipIf(

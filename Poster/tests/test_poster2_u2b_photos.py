@@ -51,8 +51,19 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 
 PHOTO_STEP_TITLE = "📷 Фотографии анонса"
-# §18 (2.5): экрана «✅ Анонс готов» нет; после доставки открыт редактор.
+# §18 (2.5): экрана «✅ Анонс готов» нет; после публикации служебного экрана
+# тоже нет — управление живёт на самом анонсе (2.5.2 §2).
 DELIVERED_EDIT_TITLE = "✏️ Изменить анонс"
+
+
+def _published(h) -> None:
+    """2.5.2 §2: после публикации служебного экрана редактирования нет."""
+    if h.screen_message_id() is not None:
+        raise AssertionError(f"Остался служебный экран: {h.screen_text()[:200]}")
+    if h.control_callback("data") is None:
+        raise AssertionError("Управление анонсом не привязано к сообщению")
+
+
 PHOTO_STEP_HINT = (
     "Пришлите фото или альбом. Всего можно добавить до "
     f"{MAX_ANNOUNCEMENT_PHOTOS} фото."
@@ -96,9 +107,17 @@ async def _to_photo_step(h, *, content: str | None = None, value: str = "Зна�
 
 
 async def _finish_without_photos(h) -> None:
+    """
+    «⏭ Пропустить» завершает анонс.
+
+    2.5.2 §2: служебного экрана после публикации нет — успех проверяется по
+    статусу черновика, а управление живёт на самом анонсе.
+    """
+    draft = _latest_draft(h)
     await h.callback(_callback(h, "aw_photo_none"))
-    if DELIVERED_EDIT_TITLE not in h.screen_text():
+    if _details(h, draft.id).publication_status != "sent":
         raise AssertionError(f"Анонс не доставлен: {h.screen_text()}")
+    _published(h)
 
 
 class PhotoStepViewTests(unittest.TestCase):
@@ -242,7 +261,7 @@ class PhotoStepWiringTests(unittest.TestCase):
         draft = _latest_draft(h)
 
         await h.callback(_callback(h, "aw_photo_none"))
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
+        _published(h)
         stored = _details(h, draft.id)
         self.assertEqual(stored.publication_status, "sent")
         self.assertEqual(stored.publication_photos, ())
@@ -269,7 +288,7 @@ class PhotoBatchFinalizeTests(unittest.TestCase):
 
         await h.photo("single-1")
 
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
+        _published(h)
         stored = _details(h, draft.id)
         self.assertEqual(stored.publication_status, "sent")
         self.assertEqual(stored.publication_photos, ("single-1",))
@@ -300,7 +319,7 @@ class PhotoBatchFinalizeTests(unittest.TestCase):
         self.assertEqual(len(groups), 1, "ровно одна медиагруппа на альбом")
         captions = [getattr(item, "caption", None) for item in groups[0]["media"]]
         self.assertEqual(captions, ["Значение", None])
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
+        _published(h)
 
     @scenario_test
     async def test_album_of_ten_finalizes_once(self, h) -> None:
@@ -450,7 +469,7 @@ class TextLimitTests(unittest.TestCase):
         stored = _details(h, draft.id)
         self.assertEqual(stored.publication_status, "sent")
         self.assertEqual(stored.publication_text, "Коротко")
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
+        _published(h)
 
 
 @unittest.skipIf(
@@ -509,7 +528,7 @@ class PhotoAlbumRestartTests(unittest.TestCase):
             [getattr(item, "media", None) for item in groups[0]["media"]],
             ["mid-0", "mid-1", "mid-2"],
         )
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
+        _published(h)
 
 
 def _delivered_photo_ids(h, details) -> tuple[str, ...]:
@@ -579,7 +598,7 @@ class LiveBlockPhotoCompositionTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
         await h.text("Коротко")
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
+        _published(h)
 
         stored = _details(h, draft.id)
         self.assertEqual(stored.publication_status, "sent")

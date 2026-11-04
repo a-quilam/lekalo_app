@@ -126,7 +126,9 @@ class ChatHygieneSecondAnnouncementTests(unittest.TestCase):
         first_result_ids = tuple(stored1.delivered_message_ids)
         self.assertTrue(first_result_ids)
         screen_after_first = h.screen_message_id()
-        self.assertIsNotNone(screen_after_first)
+        # 2.5.2 §2: после публикации служебного экрана нет — меню откроет
+        # новый экран, а управление первым анонсом останется на его сообщении.
+        self.assertIsNone(screen_after_first, "служебный экран не закрыт")
         # U5: текстовый анонс без фото доставляется промоушеном живого блока —
         # правки до этого момента относятся к самой доставке, а не к чужому
         # анонсу. Дальше готовый результат редактироваться не должен.
@@ -136,8 +138,8 @@ class ChatHygieneSecondAnnouncementTests(unittest.TestCase):
         await h.callback("main_menu")
         await h.callback("aw_start")
         self.assertIn("Мои анонсы", h.screen_text())
-        # Начали второй: экран ПЕРЕРИСОВЫВАЕТСЯ, а не создаёт новое сообщение.
-        self.assertEqual(h.screen_message_id(), screen_after_first)
+        menu_screen_id = h.screen_message_id()
+        self.assertIsNotNone(menu_screen_id, "меню не открылось")
 
         place_id, _alias = _seed_place(h, name="Второе место")
         template_id, _rev, _bricks2 = _seed_personal_template(
@@ -174,20 +176,17 @@ class ChatHygieneSecondAnnouncementTests(unittest.TestCase):
         for mid in second_result_ids:
             self.assertIn(mid, _live_ids(h))
 
-        # 3. Служебное сообщение по-прежнему ОДНО. Poster 2.0 S3 §4 требует,
-        # чтобы анонс был выше экрана; Telegram не переставляет сообщения,
-        # поэтому при первом показе анонса экран пересоздаётся ниже — старый
-        # удаляется, второго живого экрана не появляется.
+        # 3. Служебного экрана после публикации нет (2.5.2 §2): управление
+        # живёт на самом анонсе, а прежний экран закрыт. В чате не должно
+        # остаться ни одного живого служебного экрана.
         alive = _live_ids(h)
         alive_screens = _screen_send_ids(h) & alive
-        self.assertEqual(len(alive_screens), 1, f"живых экранов: {alive_screens}")
-        self.assertEqual(alive_screens, {h.screen_message_id()})
+        self.assertEqual(alive_screens, set(), f"живых экранов: {alive_screens}")
+        self.assertIsNone(h.screen_message_id(), "служебный экран не закрыт")
         self.assertNotIn(screen_after_first, alive, "старый экран остался в чате")
-        self.assertLess(
-            max(tuple(_details_ids(h, draft2.id)) or (0,)),
-            h.screen_message_id(),
-            "анонс второго черновика оказался ниже экрана",
-        )
+        self.assertNotIn(menu_screen_id, alive, "служебный экран меню остался в чате")
+        # Управление второго анонса привязано к его собственному сообщению.
+        self.assertIsNotNone(h.control_callback("data"))
 
         # 5. Никаких чужих сообщений третьим лицам: все отправки — в этот чат.
         self.assertEqual(_sends_outside_chat(h), [])

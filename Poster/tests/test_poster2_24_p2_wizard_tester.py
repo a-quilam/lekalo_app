@@ -57,7 +57,9 @@ try:
         DEFAULT_USER_ID,
         HARNESS_IMPORT_ERROR,
         Harness,
+        assert_delivered,
         call_text,
+        inline_buttons,
         scenario_test,
     )
     from tests.test_stage27b_announcement_ui import (
@@ -132,6 +134,26 @@ def _screen_rows(h: Harness) -> list[list[tuple[str, str | None]]]:
         [(button.text, button.callback_data) for button in row]
         for row in markup.inline_keyboard
     ]
+
+
+def _control_rows(h: Harness) -> list[list[tuple[str, str | None]]]:
+    """
+    Строки клавиатуры управления активным анонсом (`anp_`).
+
+    2.5.2 §2: после публикации служебного экрана нет, и управление живёт на
+    самом сообщении анонса (0–1 фото) или на панели медиагруппы.
+    """
+    for record in reversed(h.calls):
+        markup = record.get("reply_markup")
+        if markup is None:
+            continue
+        buttons = inline_buttons(markup)
+        if buttons and all(data and data.startswith("anp_") for _l, data in buttons):
+            return [
+                [(button.text, button.callback_data) for button in row]
+                for row in markup.inline_keyboard
+            ]
+    raise AssertionError("в чате нет клавиатуры управления анонсом")
 
 
 def _user_texts(h: Harness) -> list[str]:
@@ -285,17 +307,22 @@ def _specs(*rows: tuple[str, str, str, dict]) -> list[tuple[str, str, str, dict]
 
 async def _open_edit(h: Harness) -> None:
     """
-    Открывает экран правки доставленного анонса (если он ещё не открыт).
+    Открывает временный экран правки доставленного анонса.
 
-    2.5 (§18): после доставки категории правки уже на экране, поэтому
-    helper ничего не делает. Устаревшая кнопка «✏️ Изменить» тоже ведёт
-    на этот экран.
+    2.5.2 §2: сразу после публикации экрана в чате нет — управление живёт на
+    самом анонсе (`anp_`). Helper нажимает «📝 Данные» активного экземпляра,
+    а устаревшие кнопки (`aw_qmanage`/`aw_edit`) использует только там, где
+    экран уже открыт.
     """
     if _callbacks(h, "aw_qmanage"):
         return
-    data = _callbacks(h, "aw_edit")
-    if data:
-        await h.callback(data[0])
+    data = h.control_callback("data")
+    if data is not None:
+        await h.callback(data)
+        return
+    fallback = _callbacks(h, "aw_edit")
+    if fallback:
+        await h.callback(fallback[0])
 
 
 async def _open_extras(h: Harness) -> None:
@@ -367,9 +394,9 @@ async def _deliver(
         await h.callback(send[0])
     else:
         await _no_photos(h)
-    if not h.screen_text().startswith(DELIVERED_HEAD):
-        raise AssertionError(f"анонс не доставлен: {h.screen_text()[:300]!r}")
-    return _latest_draft(h), bricks
+    draft = _latest_draft(h)
+    assert_delivered(h, draft.id)
+    return draft, bricks
 
 
 # --- IV. Список доп. полей ---------------------------------------------------
@@ -1130,7 +1157,7 @@ class BackNavigationTests(unittest.TestCase):
 
     @scenario_test
     async def test_s17_delivered_screen_has_edit_categories_and_menu(self, h):
-        """§18 (2.5): после доставки — категории правки и «🏠 В меню»."""
+        """§18 (2.5): управление доставкой — на самом анонсе (`anp_`)."""
         await h.text("/start")
         await _deliver(
             h,
@@ -1138,9 +1165,10 @@ class BackNavigationTests(unittest.TestCase):
             content="A [main] B",
             extended=None,
         )
-        self.assertTrue(h.screen_text().startswith(EDIT_HEAD))
+        # 2.5.2 §2: служебного экрана после публикации нет.
+        self.assertIsNone(h.screen_message_id())
 
-        rows = _screen_rows(h)
+        rows = _control_rows(h)
         self.assertEqual(
             [label for label, _data in rows[0]],
             [LABEL_DELIVERED_DATA, LABEL_DELIVERED_PHOTOS],
@@ -1151,15 +1179,14 @@ class BackNavigationTests(unittest.TestCase):
             [LABEL_DELIVERED_MENU],
             "последняя строка — «🏠 В меню»",
         )
-        self.assertEqual(
-            rows[-1][0][1],
-            "main_menu",
-            "последняя кнопка — «🏠 В меню»",
+        self.assertTrue(
+            all(data and data.startswith("anp_menu:") for _label, data in rows[-1]),
+            f"последняя кнопка — управление выходом: {rows[-1]}",
         )
         self.assertEqual(
             [item for item in rows[-1] if _is_back(*item)],
             [],
-            "«Назад» в старый конструктор на экране доставки запрещён",
+            "«Назад» в старый конструктор на управлении анонсом запрещён",
         )
         self.assertFalse(_callbacks(h, "aw_edit"), "кнопки «✏️ Изменить» нет")
         self.assertFalse(_callbacks(h, "aw_apply"), "кнопки применения нет")

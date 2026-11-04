@@ -26,11 +26,14 @@ from __future__ import annotations
 import unittest
 
 try:
+    from announcement_instances import get_active_instance
     from announcement_store import get_announcement_draft
     from handlers.announcement_wizard import DELIVERED_EDIT_TEXT
     from tests.integration_harness import (
         DEFAULT_USER_ID,
         HARNESS_IMPORT_ERROR,
+        assert_delivered,
+        inline_buttons,
         is_screen_record,
         scenario_test,
     )
@@ -135,10 +138,45 @@ async def _delivered(
     await _choose_personal(h, template_id)
     await h.text(value)
     await _no_photos(h)
-    if not h.screen_text().startswith(DELIVERED_EDIT_TEXT.split("\n\n")[0]):
-        raise AssertionError(f"Анонс не доставлен: {h.screen_text()}")
     draft = _latest_draft(h)
+    assert_delivered(h, draft.id)
     return draft, bricks
+
+
+def _control_rows(h) -> list[list[tuple[str, str | None]]]:
+    """Строки клавиатуры управления активным экземпляром (`anp_`)."""
+    for record in reversed(h.calls):
+        markup = record.get("reply_markup")
+        buttons = inline_buttons(markup)
+        if buttons and all(data and data.startswith("anp_") for _l, data in buttons):
+            return [
+                [(button.text, button.callback_data) for button in row]
+                for row in markup.inline_keyboard
+            ]
+    raise AssertionError("в чате нет клавиатуры управления анонсом")
+
+
+def _control_datas(h) -> list[str]:
+    return [
+        data for row in _control_rows(h) for _label, data in row if data is not None
+    ]
+
+
+def _control_callback(h, action: str) -> str:
+    """`callback_data` кнопки управления активным анонсом."""
+    data = h.control_callback(action)
+    if data is None:
+        raise AssertionError(f"нет кнопки anp_{action} в чате")
+    return data
+
+
+def _only_active_id(h, draft_id: int) -> int:
+    """id единственного активного экземпляра черновика."""
+    with h.session_factory() as session:
+        instance = get_active_instance(session, int(draft_id))
+    if instance is None:
+        raise AssertionError(f"у черновика {draft_id} нет активного экземпляра")
+    return int(instance.id)
 
 
 @unittest.skipIf(
@@ -146,28 +184,35 @@ async def _delivered(
     f"интеграционное окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
 )
 class DeliveredScreenTests(unittest.TestCase):
-    """§18: после доставки — рабочий редактор, а не экран «Анонс готов»."""
+    """
+    2.5.2 §2: после доставки служебного экрана редактора в чате нет.
+
+    Единственное место управления — сам анонс (`anp_`); экран «✏️ Изменить
+    анонс» открывается только кнопкой «📝 Данные» как временный.
+    """
 
     @scenario_test
     async def test_final_screen_is_editor_with_edit_categories(self, h) -> None:
         await h.text("/start")
         draft, _bricks = await _delivered(h)
 
-        self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
-        self.assertNotIn("Анонс готов", h.screen_text())
-        self.assertNotIn("Сообщение выше можно скопировать", h.screen_text())
+        # Экрана редактирования в чате нет и экранного ref тоже.
+        self.assertIsNone(h.screen_message_id(), "служебный экран закрыт")
+        self.assertNotIn("Анонс готов", " ".join(h.screen_texts()))
+        self.assertNotIn("Сообщение выше можно скопировать", " ".join(h.screen_texts()))
 
-        rows = _keyboard_rows(h)
+        # Управление — на самом анонсе: данные, фото, доп. поля, меню.
+        rows = _control_rows(h)
         self.assertEqual([label for label, _data in rows[0]], EDIT_ROW, rows)
         self.assertEqual([label for label, _data in rows[-1]], [EDIT_MENU], rows)
         self.assertEqual(
-            [data for _label, data in rows[0]],
+            _control_datas(h)[:2],
             [
-                f"aw_qmanage:{draft.id}:{draft.revision}",
-                f"aw_photos:{draft.id}:{draft.revision}:0",
+                f"anp_data:{_only_active_id(h, draft.id)}",
+                f"anp_photos:{_only_active_id(h, draft.id)}",
             ],
         )
-        self.assertEqual(rows[-1][0][1], "main_menu")
+        self.assertEqual(rows[-1][0][1], f"anp_menu:{_only_active_id(h, draft.id)}")
         # Служебных сводок и кнопок прошлого экрана нет.
         for gone in ("aw_apply", "aw_preview", "aw_save", "aw_edit"):
             self.assertFalse(_callbacks(h, gone), f"лишняя кнопка {gone}")
@@ -179,30 +224,30 @@ class DeliveredScreenTests(unittest.TestCase):
         await h.text("/start")
         draft, _bricks = await _delivered(h)
 
-        self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
-        self.assertNotIn("Изменения пока не отправлены", h.screen_text())
+        self.assertNotIn("Изменения пока не отправлены", " ".join(h.screen_texts()))
 
         # Выход в меню: ложного «Назад» на экране правки нет.
         await h.callback("main_menu")
         self.assertIn("Что хотите сделать?", h.screen_text())
 
         # §29–30: повторное открытие из «Мои анонсы» публикует новый
-        # экземпляр; автор снова попадает в редактор, а не на итоговый экран.
+        # экземпляр; управление снова у самого анонса, а не у экрана.
         await h.text("/start")
         await h.callback("my_announcements")
         await h.callback(f"aw_open:{draft.id}")
-        self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
+        self.assertIsNone(h.screen_message_id(), "служебный экран закрыт")
+        self.assertIsNotNone(h.control_callback("data"))
         posts_after_reopen = h.posts()
         self.assertEqual(len(posts_after_reopen), 2, "новый экземпляр отправлен")
 
         # Правка значения применяется сразу, «неприменённых» изменений нет.
+        await h.callback(_control_callback(h, "data"))
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Новое значение")
-        self.assertNotIn("Изменения пока не отправлены", h.screen_text())
-        self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
+        self.assertNotIn("Изменения пока не отправлены", " ".join(h.screen_texts()))
         # §28: правка значения применяется к существующему сообщению на
         # месте — второй копии анонса в чате не появляется. Текст берём из
         # фактического содержимого сообщения: у анонса без фото пост — живой
@@ -248,7 +293,9 @@ class DeliveredEditScreenTests(unittest.TestCase):
         )
         posts_before = h.posts()
 
-        # §18 (2.5): экран категорий открыт сразу после доставки.
+        # 2.5.2 §2: сразу после доставки экрана нет — открываем его кнопкой
+        # «📝 Данные» (временный экран) и проверяем категории.
+        await h.callback(_control_callback(h, "data"))
         self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
 
         rows = _keyboard_rows(h)
@@ -296,6 +343,7 @@ class DeliveredEditScreenTests(unittest.TestCase):
             content="[main]",
             extended_content="[main]\n[extra_a]",
         )
+        await h.callback(_control_callback(h, "data"))
         self.assertIn(
             "🧩 Дополнительные поля",
             [label for label, _data in h.screen_buttons()],
@@ -348,6 +396,7 @@ class DeliveredEditScreenTests(unittest.TestCase):
             content="[main]",
             extended_content=None,
         )
+        await h.callback(_control_callback(h, "data"))
         self.assertNotIn(
             "🧩 Дополнительные поля",
             [label for label, _data in h.screen_buttons()],
@@ -357,17 +406,19 @@ class DeliveredEditScreenTests(unittest.TestCase):
     async def test_main_menu_replaces_the_fake_back_button(self, h) -> None:
         await h.text("/start")
         draft, _bricks = await _delivered(h)
+        active_id = _only_active_id(h, draft.id)
 
         # §18 (2.5): «✏️ Изменить» и «◀️ Назад» на экран завершения
-        # (aw_edit/aw_panel) в клавиатуре больше нет — автор сразу на
-        # категориях правки.
+        # (aw_edit/aw_panel) в клавиатуре больше нет.
         self.assertFalse(_callbacks(h, "aw_edit"))
         self.assertFalse(_callbacks(h, "aw_panel"))
-        self.assertTrue(_callbacks(h, "aw_qmanage"))
+        self.assertIsNotNone(h.control_callback("data"), "у анонса есть управление")
         await h.callback("main_menu")
         self.assertIn("Что хотите сделать?", h.screen_text())
         self.assertFalse(_callbacks(h, "aw_edit"))
         self.assertFalse(_callbacks(h, "aw_qmanage"))
+        # 2.5.2 §2: после выхода управление снято — кнопки анонса no-op.
+        self.assertNotIn(f"anp_data:{active_id}", h.live_control_callbacks())
 
     @scenario_test
     async def test_edit_categories_roundtrip_keeps_single_post(self, h) -> None:
@@ -375,8 +426,8 @@ class DeliveredEditScreenTests(unittest.TestCase):
         await _delivered(h)
         posts_before = len(h.posts())
 
-        # §18 (2.5): категории правки уже на экране после доставки.
-        self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
+        # 2.5.2 §2: категории правки открываются кнопкой «📝 Данные».
+        await h.callback(_control_callback(h, "data"))
         await h.callback(_callback(h, "aw_photos"))
         self.assertIn("Фотографии анонса", h.screen_text())
         # У доставленного анонса вложения уже стоят в чате выше: отдельного
@@ -389,7 +440,7 @@ class DeliveredEditScreenTests(unittest.TestCase):
     f"интеграционное окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
 )
 class DeliveredMenuTests(unittest.TestCase):
-    """«🏠 В меню»: пост цел, служебный экран один."""
+    """«🏠 В меню»: пост цел, управление снято, меню открыто."""
 
     @scenario_test
     async def test_menu_keeps_post_and_single_service_screen(self, h) -> None:
@@ -397,9 +448,9 @@ class DeliveredMenuTests(unittest.TestCase):
         draft, _bricks = await _delivered(h)
         post_ids = _present_post_ids(h)
         self.assertTrue(post_ids)
-        screen_id = h.screen_message_id()
-        self.assertIsNotNone(screen_id)
-        sends_before = len(_screen_sends(h))
+        # 2.5.2 §2: сразу после доставки служебного экрана в чате нет.
+        self.assertIsNone(h.screen_message_id())
+        active_id = _only_active_id(h, draft.id)
 
         await h.callback("main_menu")
 
@@ -410,9 +461,10 @@ class DeliveredMenuTests(unittest.TestCase):
             self.assertNotIn(message_id, h.deleted_ids())
         self.assertEqual(_present_post_ids(h), post_ids)
         self.assertEqual(len(h.posts()), 1)
-        # Второго служебного экрана не появилось: меню встало в тот же.
-        self.assertEqual(len(_screen_sends(h)), sends_before)
-        self.assertEqual(h.screen_message_id(), screen_id)
+        # Кнопки анонса сняты: управление закрыто выходом в меню.
+        for message_id in post_ids:
+            self.assertIsNone(_final_markup(h, message_id), "кнопки сняты")
+        self.assertNotIn(f"anp_data:{active_id}", h.live_control_callbacks())
 
         # Прошлый анонс не тронут и в БД.
         stored = _details(h, draft.id)
@@ -446,7 +498,12 @@ class DeliveredMenuTests(unittest.TestCase):
     f"интеграционное окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
 )
 class MessageOrderInvariantTests(unittest.TestCase):
-    """Все реальные посты выше служебного экрана — по фактическим id."""
+    """
+    Пост остаётся выше служебного экрана — по фактическим id.
+
+    2.5.2 §2: после публикации экрана нет, поэтому порядок проверяется
+    после выхода в меню (экран меню) или после открытия временного экрана.
+    """
 
     def _assert_order(self, h) -> None:
         post_ids = _present_post_ids(h)
@@ -467,16 +524,19 @@ class MessageOrderInvariantTests(unittest.TestCase):
     async def test_first_delivery_puts_screen_below_post(self, h) -> None:
         await h.text("/start")
         await _delivered(h)
+        # Сразу после доставки служебного экрана нет: управление у поста.
+        self.assertIsNone(h.screen_message_id())
+        await h.callback("main_menu")
         self._assert_order(h)
 
     @scenario_test
     async def test_replacement_version_keeps_screen_below_post(self, h) -> None:
-        """§26–28 (2.5): правка на месте — id тот же, порядок сообщений сохранён."""
+        """§26–28 (2.5): правка на месте — id тот же, дубля поста нет."""
         await h.text("/start")
         draft, _bricks = await _delivered(h)
         first_ids = _details(h, draft.id).delivered_message_ids
 
-        await _open_edit(h)
+        await h.callback(_control_callback(h, "data"))
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
@@ -509,13 +569,14 @@ class MessageOrderInvariantTests(unittest.TestCase):
                 _final_markup(h, message_id),
                 "правка на месте сохранила клавиатуру",
             )
-        self._assert_order(h)
+        # 2.5.2 §2: успешная правка закрыла временный экран.
+        self.assertIsNone(h.screen_message_id(), "временный экран правки закрыт")
 
-        # Возврат в меню и повторное открытие не ломают порядок и не плодят
-        # второе сообщение экрана.
-        sends_before = len(_screen_sends(h))
+        # Возврат в меню: пост остаётся выше служебного экрана меню, копий
+        # анонса не появилось.
+        posts_before_menu = h.posts()
         await h.callback("main_menu")
-        self.assertEqual(len(_screen_sends(h)), sends_before)
+        self.assertEqual(h.posts(), posts_before_menu)
         self._assert_order(h)
 
 
@@ -563,15 +624,17 @@ class DeliveredApplyTests(unittest.TestCase):
             version_ids,
             "активен новый экземпляр",
         )
-        self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
+        # 2.5.2 §2: служебного экрана нет — управление у нового экземпляра.
+        self.assertIsNone(h.screen_message_id(), "служебный экран закрыт")
+        self.assertIsNotNone(h.control_callback("data"), "управление у анонса")
 
     @scenario_test
     async def test_success_shows_editor_not_stale_notice(self, h) -> None:
         await h.text("/start")
         await _delivered(h)
-        # Обычный успех: экран — рабочий редактор, без «Данные изменились.».
-        self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
-        self.assertNotIn("Данные изменились.", h.screen_text())
+        # Обычный успех: экрана нет и никакого «Данные изменились.».
+        self.assertIsNone(h.screen_message_id())
+        self.assertNotIn("Данные изменились.", " ".join(h.screen_texts()))
         self.assertNotIn("Данные изменились.", h.answer_texts())
 
     @scenario_test
@@ -592,8 +655,8 @@ class DeliveredApplyTests(unittest.TestCase):
 
         await h.callback(stale_edit)
         self.assertIn("Данные изменились.", h.answer_texts()[-1])
-        # Экран остаётся рабочим редактором: устаревший callback не отправил
-        # вторую копию и не открыл чужую версию правки.
+        # Устаревший callback не отправил вторую копию и не открыл чужую
+        # версию правки: показан актуальный экран данных.
         self.assertIn(DELIVERED_EDIT_TEXT, h.screen_text())
         rows = _keyboard_rows(h)
         self.assertEqual([label for label, _data in rows[0]], EDIT_ROW, rows)

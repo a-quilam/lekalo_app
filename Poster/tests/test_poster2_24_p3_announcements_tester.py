@@ -86,8 +86,7 @@ MENU_ROWS = [
 LIST_HEAD = "📂 Мои анонсы"
 DRAFT_STATUS = "черновик"
 SENT_STATUS = "готовый анонс отправлен"
-# §18 (2.5): экрана «✅ Анонс готов» нет — после доставки открыт редактор.
-DELIVERED_HEAD = "✏️ Изменить анонс"
+# §18 (2.5): экрана «✅ Анонс готов» нет — после доставки управление у анонса.
 QUESTION_HEAD = "🧩 Вопрос"
 INTERNAL_FRAGMENT = "Что-то пошло не так"
 GONE_FRAGMENTS = ("больше не хранится", "не найден", "больше недоступ", "больше нет")
@@ -340,7 +339,10 @@ async def _publish_personal(h: Harness, template_id: int) -> None:
             f"кнопки: {h.screen_buttons()}"
         )
     await h.callback(data[0])
-    if not h.screen_text().startswith(DELIVERED_HEAD):
+    # 2.5.2 §2: служебного экрана после публикации нет — признак доставки
+    # берём из БД (последняя запись), а не из текста экрана.
+    sent = _sent_ids(h)
+    if not sent:
         raise AssertionError(
             f"анонс не доставлен: {h.screen_text()[:300]!r}; "
             f"ответы: {h.answer_texts()}"
@@ -523,17 +525,20 @@ class MyAnnouncementsTests(unittest.TestCase):
             f"фактически: {h.screen_text()[:300]!r}",
         )
 
-        # Открытие готового → новый экземпляр и рабочий экран редактора.
+        # Открытие готового → новый экземпляр, управление у самого анонса
+        # (2.5.2 §2: служебного экрана после публикации нет).
         await _open_list(h)
         sent_open = _entry_pair(h, sent_ids[0])[0][0][1]
         await h.callback(sent_open)
         _assert_no_internal(self, h, "открытие готового анонса из списка")
-        self.assertIn(
-            DELIVERED_HEAD,
-            h.screen_text(),
-            "открытие готового анонса должно вести в редактор анонса, "
-            "фактически: "
-            f"{h.screen_text()[:300]!r}",
+        self.assertIsNone(
+            h.screen_message_id(),
+            "служебного экрана после открытия готового анонса быть не должно",
+        )
+        self.assertIsNotNone(
+            h.control_callback("data"),
+            "управление открытым анонсом должно быть на самом сообщении, "
+            f"фактически: {h.screen_text()[:300]!r}",
         )
 
     @scenario_test

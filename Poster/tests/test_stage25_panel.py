@@ -44,6 +44,7 @@ try:
         inline_buttons,
         is_panel_record,
         is_post_message,
+        is_screen_record,
         scenario_test,
     )
     from tests.test_stage25_delivery_instances import (
@@ -285,16 +286,24 @@ class PanelRoutingTests(PanelTestMixin, unittest.TestCase):
             "панель и клавиатура сообщения используют одну раскладку",
         )
 
-        # «Данные» → «Фото» → «Данные» → «Доп. поля» → «Данные» → «В меню»:
-        # проверяется и прямая навигация, и возврат из каждого экрана, и
-        # нажатие вне диалога после «В меню».
-        for action in ("data", "photos", "data", "extras", "data", "menu", "data"):
+        # «Данные» → «Фото» → «Данные» → «Доп. поля» → «Данные»:
+        # проверяется и прямая навигация, и возврат из каждого экрана.
+        # «🏠 В меню» здесь не нажимается: выход архивирует экземпляр (§2),
+        # и после него эти же кнопки обязаны стать no-op — это отдельный
+        # тест `tests/test_stage252_single_control.py`.
+        for action in ("data", "photos", "data", "extras", "data"):
             await self._press(h, buttons, action)
 
         self.assertEqual(_only_active(h, draft.id).id, active.id, "экземпляр тот же")
 
     async def _press(self, h, buttons, action: str) -> None:
-        """Нажатие одной кнопки панели с проверкой ответа и состава чата."""
+        """
+        Нажатие одной кнопки панели с проверкой ответа и состава чата.
+
+        2.5.2 §2: служебных экранов у анонса нет, поэтому первый вход в
+        редактор («Данные»/«Фото»/«Доп. поля») создаёт ВРЕМЕННЫЙ экран —
+        это допустимо. Новых постов и лишних удалений быть не должно.
+        """
         data = _button_data(buttons, action)
         calls_before = len(h.calls)
         answers_before = len(h.answers())
@@ -308,6 +317,7 @@ class PanelRoutingTests(PanelTestMixin, unittest.TestCase):
             call
             for call in new_calls
             if call["type"] in {"message", "photo", "media_group"}
+            and not is_screen_record(call)
         ]
         self.assertEqual(created, [], f"{action}: лишние сообщения в чате")
         self.assertEqual(
@@ -469,6 +479,10 @@ class RestartPanelTests(PanelTestMixin, unittest.TestCase):
         deleted = set(h.deleted_ids())
         for call in new_calls:
             if call["type"] not in {"message", "photo", "media_group"}:
+                continue
+            if is_screen_record(call):
+                # 2.5.2 §2: экран редактора — временный и живёт до
+                # успешного сохранения/выхода в меню. Это не второй анонс.
                 continue
             self.assertFalse(
                 is_post_message(call), f"{action}: в чате появился новый пост"

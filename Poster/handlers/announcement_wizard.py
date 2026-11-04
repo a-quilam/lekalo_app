@@ -49,6 +49,7 @@ from telegram.ext import (
 import announcement_controls
 import delivery
 from announcement_instances import (
+    archive_instance,
     get_active_instance,
     register_instance,
     replace_instance,
@@ -79,6 +80,8 @@ from announcement_store import (
     clear_announcement_photos,
     confirm_announcement_place,
     delete_announcement,
+    extras_available,
+    extras_available_for_draft,
     get_announcement_draft,
     list_announcement_drafts,
     mark_announcement_publication_failed,
@@ -3160,12 +3163,38 @@ def _ensure_stage(
     return updated
 
 
-def _extras_candidates(details) -> list[int]:
-    """Кирпичики расширенного текста снимка, которые уже можно заполнить."""
-    snapshot = details.template_snapshot
-    if snapshot is None:
-        return []
-    return list(extra_candidate_brick_ids(snapshot))
+def _extras_available(details, telegram_user_id: int | None) -> bool:
+    """
+    Есть ли смысл показывать «🧩 Дополнительные поля» (Poster 2.5.2 §4).
+
+    Единый предикат для ВСЕХ точек показа кнопки: обзор (карточка шаблона),
+    экран ошибки обзора, компактный редактор доставленного анонса и панель
+    экземпляра (`panel_keyboard` получает уже посчитанный флаг). Само
+    правило живёт в `announcement_store.extras_available`; здесь — только
+    сессия для проверки доступности определений.
+    """
+    with SessionLocal() as session:
+        return extras_available(
+            session,
+            details,
+            actor_telegram_user_id=telegram_user_id,
+        )
+
+
+def _draft_extras_available(draft_id: int) -> bool:
+    """
+    Тот же предикат по id черновика — для управления готовым анонсом.
+
+    Панель и клавиатура экземпляра живут вне диалога (`anp_`), поэтому
+    детали черновика читаются из БД. Сбой чтения не должен отнимать
+    управление: возвращаем True, и кнопка остаётся как прежде.
+    """
+    try:
+        with SessionLocal() as session:
+            return extras_available_for_draft(session, int(draft_id))
+    except Exception as exc:  # noqa: BLE001 — управление важнее предиката
+        logger.info("Доп. поля анонса #%s не проверены: %s", draft_id, exc)
+        return True
 
 
 def _extras_with_definitions(details, telegram_user_id: int):
@@ -3882,7 +3911,11 @@ def _preview_block(preview: AnnouncementPreview) -> list[str]:
 
 
 def _preview_keyboard(
-    details, *, ready: bool = False, saved: bool = False
+    details,
+    *,
+    ready: bool = False,
+    saved: bool = False,
+    extras_available: bool = True,
 ) -> InlineKeyboardMarkup:
     draft_id = details.draft_id
     revision = details.revision
@@ -3912,14 +3945,17 @@ def _preview_keyboard(
             )
         ],
     )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                tr("buttons.wizard.dopolnitelnye_kirpichiki"),
-                callback_data=f"aw_extras:{draft_id}:{revision}",
-            )
-        ]
-    )
+    # Poster 2.5.2 §4: кнопка доп. полей условна и решается тем же предикатом,
+    # что и в компактном редакторе/панели — иначе экран добавления пуст.
+    if extras_available:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tr("buttons.wizard.dopolnitelnye_kirpichiki"),
+                    callback_data=f"aw_extras:{draft_id}:{revision}",
+                )
+            ]
+        )
     rows.append(
         [
             InlineKeyboardButton(
@@ -4056,7 +4092,12 @@ async def _render_preview(
         update,
         context,
         "\n".join(lines),
-        _preview_keyboard(preview.draft, ready=preview.ready, saved=saved),
+        _preview_keyboard(
+            preview.draft,
+            ready=preview.ready,
+            saved=saved,
+            extras_available=_extras_available(preview.draft, _user_id(update)),
+        ),
     )
     return AW_PREVIEW
 
@@ -4095,14 +4136,19 @@ async def _render_preview_error(
                 )
             ]
         )
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.wizard.dopolnitelnye_kirpichiki"),
-                    callback_data=(f"aw_extras:{details.draft_id}:{details.revision}"),
-                )
-            ]
-        )
+        # Poster 2.5.2 §4: тот же предикат, что и на экране обзора. Ошибка
+        # сборки не делает экран добавления непустым.
+        if _extras_available(details, _user_id(update)):
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.wizard.dopolnitelnye_kirpichiki"),
+                        callback_data=(
+                            f"aw_extras:{details.draft_id}:{details.revision}"
+                        ),
+                    )
+                ]
+            )
     rows.append(
         [
             InlineKeyboardButton(
@@ -5241,7 +5287,7 @@ async def _render_delivered_edit(
         text,
         _delivered_edit_keyboard(
             details,
-            extras_available=bool(_extras_candidates(details) or details.extras),
+            extras_available=_extras_available(details, _user_id(update)),
         ),
     )
     return AW_PREVIEW
@@ -5329,6 +5375,8 @@ async def _send_control_panel_safely(
     chat_id: int,
     instance_id: int,
     photos_count: int,
+    *,
+    extras_available: bool = True,
 ) -> int | None:
     """
     Отправляет единственную панель управления медиагруппой (spec §22).
@@ -5344,6 +5392,7 @@ async def _send_control_panel_safely(
                 chat_id,
                 instance_id,
                 photos_count=photos_count,
+                extras_available=extras_available,
             )
         )
     except Exception as exc:  # noqa: BLE001 — панель не валит доставку контента
@@ -5361,6 +5410,8 @@ async def _attach_instance_keyboard(
     instance_id: int,
     message_ids: Sequence[int],
     photos_count: int,
+    *,
+    extras_available: bool = True,
 ) -> None:
     """
     Прикрепляет клавиатуру управления к самому сообщению анонса (§20–21).
@@ -5382,7 +5433,9 @@ async def _attach_instance_keyboard(
                 chat_id=chat_id,
                 message_id=message_id,
                 reply_markup=announcement_controls.panel_keyboard(
-                    instance_id, photos_count=photos_count
+                    instance_id,
+                    photos_count=photos_count,
+                    extras_available=extras_available,
                 ),
             )
         )
@@ -5487,6 +5540,19 @@ async def _apply_in_place_change(
     text = preview.html or ""
     if photos and (text == PLACEHOLDER_TEXT or not delivery.visible_text(text)):
         text = ""
+    # Клавиатура управления передаётся в правку ЯВНО (§27): Bot API не
+    # документирует сохранение прежней клавиатуры у `editMessageText`/
+    # `editMessageCaption`, поэтому поведение не должно зависеть от его
+    # семантики. Для 0–1 фото кнопки приатачены к самому сообщению анонса —
+    # их и передаём; у альбома клавиатура живёт на отдельной панели, а
+    # элементы группы её не несут.
+    keyboard = None
+    if not delivery.needs_control_panel(len(photos)):
+        keyboard = announcement_controls.panel_keyboard(
+            instance.id,
+            photos_count=len(photos),
+            extras_available=_draft_extras_available(details.draft_id),
+        )
     edited = await _edit_active_instance_in_place(
         context.bot,
         chat_id,
@@ -5496,6 +5562,7 @@ async def _apply_in_place_change(
         previous_photos=previous_photos,
         previous_text=details.publication_text,
         fingerprint=fingerprint,
+        reply_markup=keyboard,
     )
     if not edited:
         return None
@@ -5546,6 +5613,7 @@ async def _edit_active_instance_in_place(
     previous_photos: Sequence[str],
     previous_text: str | None = None,
     fingerprint: str,
+    reply_markup=None,
 ) -> bool:
     """
     Обновляет АКТИВНЫЙ экземпляр правкой сообщения, без новой отправки (§28).
@@ -5566,6 +5634,11 @@ async def _edit_active_instance_in_place(
     Меняются только содержимое и отпечаток экземпляра: `generation` и
     `message_ids` не трогаются (триггер схемы их и не разрешает менять),
     архивных снимков не появляется, кнопки/панель остаются на месте.
+
+    `reply_markup` передаётся в правку содержимого явно: Bot API не
+    гарантирует сохранение прежней клавиатуры, поэтому вызывающий слой
+    передаёт актуальную клавиатуру управления (0–1 фото), а для альбома —
+    `None` (кнопки живут на отдельной панели).
 
     `True` — правка подтверждена Telegram (в том числе «message is not
     modified»). `False` — правка не удалась: вызывающий слой обязан оставить
@@ -5606,6 +5679,7 @@ async def _edit_active_instance_in_place(
                         text=caption,
                         parse_mode="HTML",
                         link_preview_options=delivery.FINAL_LINK_PREVIEW,
+                        reply_markup=reply_markup,
                     )
                 )
             else:
@@ -5617,6 +5691,7 @@ async def _edit_active_instance_in_place(
                         message_id=message_id,
                         caption=caption or None,
                         parse_mode="HTML" if caption else None,
+                        reply_markup=reply_markup,
                     )
                 )
         except Exception as exc:  # noqa: BLE001 — решение по типу ниже
@@ -5778,13 +5853,21 @@ async def _ensure_delivered_instance(
         # снимается управление, а панель медиагруппы убирается из чата.
         await _archive_instance_controls(bot, chat_id, previous)
     photos_count = len(photos)
+    # Poster 2.5.2 §4: панель/клавиатура экземпляра подчиняются тому же
+    # предикату, что и экраны редактора. Ошибка чтения не лишает управления:
+    # тогда кнопка доп. полей остаётся, как раньше.
+    show_extras = _draft_extras_available(draft_id)
     if delivery.needs_control_panel(photos_count):
         # Панель — отдельная операция строго после контента (§22). Уже
         # отправленную панель повтор не дублирует.
         if instance.has_panel:
             return instance
         panel_id = await _send_control_panel_safely(
-            bot, chat_id, instance.id, photos_count
+            bot,
+            chat_id,
+            instance.id,
+            photos_count,
+            extras_available=show_extras,
         )
         if panel_id is None:
             return instance
@@ -5798,9 +5881,49 @@ async def _ensure_delivered_instance(
         return instance
     if fresh:
         await _attach_instance_keyboard(
-            bot, chat_id, instance.id, instance.message_ids, photos_count
+            bot,
+            chat_id,
+            instance.id,
+            instance.message_ids,
+            photos_count,
+            extras_available=show_extras,
         )
     return instance
+
+
+async def _close_service_screen(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """
+    Закрывает временный служебный экран конструктора (Poster 2.5.2, §2).
+
+    У опубликованного анонса ОДНО место управления: сам пост (0–1 фото) или
+    его панель (2+ фото). Экран шага/редактора, с которого пришла отправка,
+    — временный интерфейс: после подтверждённой доставки он удаляется, а его
+    ref снимается, иначе в чате осталась бы вторая, уже нерабочая
+    клавиатура.
+
+    Вместе с экраном снимается resume-снимок: шаг фото ждал ввода, и без
+    этого следующий текст ушёл бы в черновик вместо подсказки меню. WIP при
+    этом не трогается — данные анонса остаются в БД. Удаление best-effort:
+    отказ Telegram не ломает уже доставленный анонс.
+    """
+    user_id = _user_id(update)
+    chat_id = ctx.chat(update).id
+    user_data = ctx.data(context)
+    _clear_resume(user_id, user_data, chat_id)
+    ref = screen.screen_ref(user_data)
+    if ref is None:
+        ref = screen.hydrate_screen_ref(user_data, user_id)
+    if ref is None:
+        return
+    user_data.pop("screen", None)
+    if int(ref.get("chat_id") or 0) == int(chat_id):
+        await screen.cleanup_messages(
+            context.bot, chat_id, [int(ref.get("message_id") or 0)]
+        )
+    screen.save_screen_ref(user_id, user_data, chat_id)
 
 
 async def _close_publication_without_screen(
@@ -5811,25 +5934,28 @@ async def _close_publication_without_screen(
     notice: str | None = None,
 ) -> int:
     """
-    Финал публикации БЕЗ экрана «✅ Анонс готов» (spec §18, задача C2b-2).
+    Финал публикации БЕЗ служебного экрана (spec §18, 2.5.2 §2).
 
     Готовый анонс уже стоит в чате цельным сообщением (или альбомом с
-    панелью), а его управление привязано к экземпляру (`anp_`). Итоговый
-    служебный экран удалён: автору незачем читать «Анонс готов» поверх
-    собственного поста.
+    панелью), а его управление привязано к экземпляру (`anp_`). Служебный
+    экран, с которого ушла публикация, закрывается: второе место управления
+    (экран «✏️ Изменить анонс») в чате не остаётся.
 
-    Диалог при этом не обрывается: конструктор возвращается в известное
-    рабочее состояние — компактный экран редактора (§26–27) с полями,
-    фотографиями, доп. полями и выходом в меню. Это тот же служебный
-    экран, который открывает `aw_edit`, поэтому правка доставленного
-    анонса остаётся доступной до появления обработчиков `anp_` (C3).
+    Диалог не обрывается: состояние `AW_PREVIEW` сохраняется, поэтому
+    нажатия `anp_` продолжают работать, а экран редактора открывается по
+    явной кнопке «📝 Данные» — это временный экран, который закрывается
+    после успешной правки (§2, сценарий 7).
 
     `notice` не попадает в текст экрана: результат доставки сообщается
-    коротким ответом на callback, а служебный экран остаётся предсказуемым.
+    коротким ответом на callback.
     """
     if notice:
         await _answer(update, notice[:200])
-    return await _render_delivered_edit(update, context, details)
+    ui = _ui(context)
+    _set_details(ui, details)
+    _clear_active(ui)
+    await _close_service_screen(update, context)
+    return AW_PREVIEW
 
 
 async def _run_announcement_publication(
@@ -6426,8 +6552,53 @@ async def _close_photo_batch(
     return state
 
 
+async def _archive_published_controls(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """
+    «🏠 В меню» завершает работу с опубликованным анонсом (2.5.2 §2).
+
+    Экземпляр активного черновика становится архивным, а его управление
+    снимается с фактического сообщения: клавиатура (`editMessageReplyMarkup`
+    без разметки) и отдельная панель медиагруппы. Сам анонс — текст и фото —
+    остаётся в чате как исторический снимок (§31) и НЕ удаляется.
+
+    Дальше старые кнопки не работают: `anp_`-обработчик видит архивный
+    экземпляр и отвечает коротким alert'ом без правок (§32). Повторное
+    открытие из «📂 Мои анонсы» создаёт новый экземпляр (§29–30).
+
+    Вызывается только на выходе в меню; ошибки best-effort: навигация не
+    должна ломаться из-за того, что Telegram не дал снять клавиатуру.
+    """
+    draft_id = _ui(context).get("draft_id")
+    if not draft_id:
+        return
+    chat_id = ctx.chat(update).id
+    instance = None
+    try:
+        with SessionLocal() as session:
+            current = get_active_instance(session, int(draft_id))
+            if current is None or int(current.chat_id) != int(chat_id):
+                return
+            if archive_instance(session, current.id):
+                instance = current
+    except Exception as exc:  # noqa: BLE001 — выход в меню не отменяется
+        logger.warning(
+            "Экземпляр анонса #%s не архивирован при выходе: %s", draft_id, exc
+        )
+        return
+    if instance is None:
+        return
+    await _archive_instance_controls(context.bot, chat_id, instance)
+
+
 async def _exit_to_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = _user_id(update)
+    # 2.5.2 §2: у опубликованного анонса одно место управления. Выход в меню
+    # закрывает управление экземпляром, иначе прежние кнопки остались бы в
+    # чате рядом с меню. Черновик при этом не меняется.
+    await _archive_published_controls(update, context)
     _clear_ui(context)
     # H1: явный выход закрывает приём ввода — обычный текст больше не
     # должен «оживлять» черновик.
@@ -6479,9 +6650,9 @@ async def handle_navigation_callback(
         return ConversationHandler.END
     if data == "bricks":
         _clear_ui(context)
-        from handlers.bricks import open_bricks
+        from handlers.bricks import HUB_ORIGIN_WIZARD, open_bricks
 
-        await open_bricks(update, context)
+        await open_bricks(update, context, origin=HUB_ORIGIN_WIZARD)
         return ConversationHandler.END
     if data == "templates":
         _clear_ui(context)
@@ -6759,9 +6930,12 @@ async def _handle_calendar_callback(
     Новые действия: `aw_calquick` (первый экран), `aw_calrange` (раскрытие
     семидневного диапазона), `aw_calmonths` (сетка 12 месяцев),
     `aw_calmonth` (дни месяца), `aw_calday` (выбор даты без подтверждения).
-    Старые `aw_calroot` / `aw_calweek` / `aw_calother` / `aw_calweekdays`
-    остались в чатах с прежними сообщениями: они не падают, а отвечают и
-    перенаправляют на новый первый экран.
+
+    Poster 2.5.2 (§8): отдельная совместимость со старыми экранами недель и
+    «другой даты» удалена — Poster не публиковался, сообщений с этими
+    кнопками в чатах нет. Неизвестное действие `aw_cal*` уходит в общий
+    безопасный путь `_stale`: ответ «кнопка устарела» и перерисовка
+    текущего экрана, без внутренней ошибки.
     """
     parts = _callback_parts(update)
     action = parts[0]
@@ -6784,13 +6958,6 @@ async def _handle_calendar_callback(
     if action == "aw_calquick":
         await _answer(update)
         return await _render_calendar_value(
-            update, context, details, field, index, source
-        )
-    if action in {"aw_calroot", "aw_calweek", "aw_calother", "aw_calweekdays"}:
-        # Совместимость со старыми сообщениями: экраны недель и «другой
-        # даты» удалены, поэтому кнопка безопасно возвращает к новому
-        # первому экрану с быстрыми датами.
-        return await _legacy_calendar_redirect(
             update, context, details, field, index, source
         )
     if action == "aw_calrange" and len(parts) == 5:
@@ -6842,19 +7009,6 @@ async def _handle_calendar_callback(
             update, context, details, field, index, source
         )
     return await _stale(update, context)
-
-
-async def _legacy_calendar_redirect(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    details,
-    field: AnnouncementFieldState,
-    index: int,
-    source: str,
-) -> int:
-    """Мягкий переход со старого экрана календаря на актуальный первый."""
-    await _answer(update, tr("alerts.wizard.kalendar_obnovlen"))
-    return await _render_calendar_value(update, context, details, field, index, source)
 
 
 async def handle_question_callback(

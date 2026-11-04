@@ -149,6 +149,21 @@ def _button(h, prefix: str, suffix: str | None = None) -> str:
     raise AssertionError(f"нет кнопки {prefix!r}{suffix or ''}: {h.screen_buttons()}")
 
 
+def _control_photos(h) -> str:
+    """
+    «🖼 Фото» управления анонсом.
+
+    2.5.2 §2: после публикации служебного экрана нет, поэтому вход в экран
+    фотографий — кнопка самого анонса (или его панели), а не экрана.
+    """
+    data = h.control_callback("photos")
+    if data is None:
+        raise AssertionError(
+            f"управление анонсом не найдено: экран {h.screen_text()[:200]!r}"
+        )
+    return data
+
+
 def _control_markup(h, instance):
     """
     Клавиатура управления экземпляром так, как её видит автор в чате.
@@ -363,7 +378,7 @@ class NoReadyScreenTests(unittest.TestCase):
         # 2) правка значения на месте
         await _edit_value(h, "Обновлено")
         # 3) смена структуры 0 → 1 фото
-        await h.callback(_button(h, "aw_photos"))
+        await h.callback(_control_photos(h))
         await h.photo("photo-0")
         active = _only_active(h, draft.id)
         self.assertEqual(len(active.message_ids), 1, "новая версия с одним фото")
@@ -373,11 +388,11 @@ class NoReadyScreenTests(unittest.TestCase):
             [text for text in texts if READY_SCREEN in text],
             "экран «Анонс готов» не должен отправляться",
         )
-        # После доставки автор остаётся на рабочих экранах редактора.
-        self.assertTrue(
-            any(text.startswith(EDIT_TITLE) for text in h.screen_texts()),
-            "ожидался экран редактора доставленного анонса",
-        )
+        # 2.5.2 §2: экрана «✏️ Изменить анонс» после доставки не появляется —
+        # управление живёт на самом анонсе. Остаётся только рабочий экран шага,
+        # с которого пользователь менял структуру.
+        self.assertNotIn(EDIT_TITLE, h.screen_text())
+        self.assertIsNotNone(h.control_callback("data"), "нет управления анонсом")
         self.assertNotIn(READY_SCREEN, h.screen_text())
 
 
@@ -523,7 +538,7 @@ class StructureChangeTests(unittest.TestCase):
         first = _only_active(h, draft.id)
         first_id = first.message_ids[0]
 
-        await h.callback(_button(h, "aw_photos"))
+        await h.callback(_control_photos(h))
         await h.photo("p0", media_group_id="album")
         await h.photo("p1", media_group_id="album")
         await asyncio.sleep(0.4)  # альбом закрывается по паузе приёма
@@ -562,7 +577,7 @@ class StructureChangeTests(unittest.TestCase):
         draft = await _delivered_without_photos(h)
         first = _only_active(h, draft.id)
         first_id = first.message_ids[0]
-        await h.callback(_button(h, "aw_photos"))
+        await h.callback(_control_photos(h))
         mark = len(h.calls)
 
         await h.photo("p0", media_group_id="alb")
@@ -616,7 +631,7 @@ class StructureChangeTests(unittest.TestCase):
         first = _only_active(h, draft.id)
         panel_id = first.panel_message_id
 
-        await h.callback(_button(h, "aw_photos"))
+        await h.callback(_control_photos(h))
         await h.callback(_button(h, "aw_photo_clear"))
         await h.callback(_button(h, "aw_photo_clear_yes"))
 
@@ -739,7 +754,7 @@ class PhotoScreenLayoutTests(unittest.TestCase):
     async def test_photo_screen_layouts_change_with_photo_count(self, h) -> None:
         await h.text("/start")
         await _delivered_with_photos(h, 3)
-        await h.callback(_button(h, "aw_photos"))
+        await h.callback(_control_photos(h))
         self.assertTrue(h.screen_text().startswith(PHOTOS_TITLE))
 
         # §37: три фото — добавление, удаление по две в строке, «удалить все».
@@ -783,7 +798,7 @@ class PhotoScreenLayoutTests(unittest.TestCase):
         draft = await _delivered_with_photos(h, 2)
         active = _only_active(h, draft.id)
         photos_before = _stored(h, draft.id).photos
-        await h.callback(_button(h, "aw_photos"))
+        await h.callback(_control_photos(h))
 
         # §37: массовое удаление — только с подтверждением.
         await h.callback(_button(h, "aw_photo_clear"))
@@ -792,7 +807,7 @@ class PhotoScreenLayoutTests(unittest.TestCase):
         )
         self.assertIn("Удалить все фото", h.screen_text(), "экран объясняет действие")
         # Отмена ничего не меняет: коллекция, анонс и кнопки на месте.
-        await h.callback(_button(h, "aw_photos"))
+        await h.callback(_control_photos(h))
         self.assertEqual(_stored(h, draft.id).photos, photos_before)
         self.assertEqual(_only_active(h, draft.id).id, active.id)
         self.assertEqual(_photo_labels(h)[0], [PHOTO_ADD])
@@ -825,7 +840,7 @@ class FailedDeliveryRetryTests(unittest.TestCase):
         first_id = first.message_ids[0]
 
         h.bot.fail_after["media_group"] = 0
-        await h.callback(_button(h, "aw_photos"))
+        await h.callback(_control_photos(h))
         await h.photo("photo-1")
         h.bot.fail_after.clear()
 
@@ -964,8 +979,20 @@ class ControlActionsParityTests(unittest.TestCase):
 
         screens = {}
         for action in controls.PANEL_ACTIONS:
+            if action == controls.ACTION_MENU:
+                # 2.5.2 §2: «🏠 В меню» архивирует экземпляр — проверяем его
+                # последним, иначе действующего экземпляра уже нет.
+                continue
             await h.callback(controls.panel_callback(action, active.id))
             screens[action] = h.screen_text().splitlines()[0]
+            self.assertEqual(
+                _only_active(h, draft.id).id,
+                active.id,
+                f"{action}: экземпляр не должен меняться",
+            )
+        # Кнопки рабочие: экземпляр жив до выхода в меню.
+        await h.callback(controls.panel_callback(controls.ACTION_MENU, active.id))
+        screens[controls.ACTION_MENU] = h.screen_text().splitlines()[0]
         self.assertEqual(
             screens,
             {
@@ -977,7 +1004,6 @@ class ControlActionsParityTests(unittest.TestCase):
             "каждое действие ведёт на свой экран",
         )
         self.assertEqual(len(set(screens.values())), 4, "экраны не дублируются")
-        self.assertEqual(_only_active(h, draft.id).id, active.id)
         self.assertNotIn(READY_SCREEN, " ".join(_outgoing_texts(h)))
 
 

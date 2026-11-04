@@ -543,12 +543,10 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
         self.assertIn("Значение", photos[0]["caption"] or "")
         # Прежний текстовый блок убран только после подтверждённой доставки.
         self.assertTrue(live_ids <= set(h.deleted_ids()))
-        # Порядок в чате: фото выше служебного экрана.
+        # 2.5.2 §2: служебного экрана нет — доставлен ровно один новый пост.
         new_ids = set(sent.delivered_message_ids)
         self.assertTrue(new_ids)
-        screen_id = h.screen_message_id()
-        self.assertIsNotNone(screen_id)
-        self.assertLess(max(new_ids), screen_id)
+        self.assertIsNotNone(_final_markup(h, max(new_ids)), "у поста нет управления")
 
     @scenario_test
     async def test_empty_text_with_photo_is_delivered_as_media(self, h) -> None:
@@ -603,7 +601,10 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
         # цельный экземпляр; прежний остаётся в чате архивным, дублей нет.
         self.assertEqual(len(h.posts()), posts_before + 1, "один новый экземпляр")
         self.assertEqual(h.posts()[0], h.posts()[-1], "текст экземпляра тот же")
-        self.assertIn("✏️ Изменить анонс", h.screen_text())
+        # 2.5.2 §2: экрана редактора нет — управление на самом анонсе.
+        self.assertIsNotNone(
+            h.control_callback("data"), "управление новым экземпляром не привязано"
+        )
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
 
     @scenario_test
@@ -644,7 +645,9 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
 
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
-        self.assertIn("✏️ Изменить анонс", h.screen_text())
+        # 2.5.2 §2: экрана нет, управление — на самом анонсе.
+        self.assertEqual(h.screen_message_id(), None)
+        self.assertIsNotNone(h.control_callback("data"))
         # Удаление не удалось — анонс всё равно доставлен, а старый блок
         # остался в чате: это известное ограничение, а не сбой доставки.
         self.assertEqual(sent.publication_photos, ("kept-photo",))
@@ -717,7 +720,13 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
     """
 
     def _assert_single_copy(self, h, draft_id: int, text: str = "Значение") -> int:
-        """Инвариант: одна копия текста, её id выше служебного экрана."""
+        """
+        Инвариант: одна копия текста, управление — на самом анонсе.
+
+        2.5.2 §2: служебного экрана завершения нет, поэтому «анонс выше
+        экрана» больше не проверяется: экземпляр один, а его кнопки сняты
+        или живут на доставленном сообщении.
+        """
         stored = _stored(h, draft_id)
         self.assertEqual(stored.publication_status, "sent")
         self.assertTrue(stored.delivered_message_ids)
@@ -725,10 +734,12 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         self.assertEqual(len(copies), 1, f"копий текста: {copies}")
         message_id = copies[0]
         self.assertIn(message_id, set(stored.delivered_message_ids))
-        screen_id = h.screen_message_id()
-        self.assertIsNotNone(screen_id, "экран завершения не показан")
-        assert screen_id is not None
-        self.assertLess(message_id, screen_id, "анонс должен быть выше экрана")
+        self.assertIsNone(
+            h.screen_message_id(), "служебного экрана после доставки быть не должно"
+        )
+        self.assertIsNotNone(
+            _final_markup(h, message_id), "у анонса нет клавиатуры управления"
+        )
         # Доставленной версией признан именно текст, который лежит в чате.
         self.assertEqual(_chat_texts(h)[message_id], stored.publication_text)
         return message_id
@@ -812,32 +823,26 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         self.assertEqual(tuple(stored.previous_message_ids), (first,))
         second = tuple(stored.delivered_message_ids)[0]
         self.assertNotEqual(second, first)
-        screen_id = h.screen_message_id()
-        self.assertIsNotNone(screen_id)
-        assert screen_id is not None
-        self.assertLess(second, screen_id, "новый анонс выше служебного экрана")
-        calls_before = len(h.calls)
+        # 2.5.2 §2: служебного экрана нет, управление — на новом экземпляре.
+        self.assertIsNone(h.screen_message_id())
+        self.assertIsNotNone(
+            h.control_callback("data"), "управление нового экземпляра не привязано"
+        )
 
         # Кнопки «Отправить» у уже доставленного анонса нет: повторный
         # callback отклоняется как устаревший и ничего не отправляет.
         self.assertFalse(
-            [
-                data
-                for _label, data in h.screen_buttons()
-                if data and data.startswith("aw_send")
-            ],
+            [data for data in h.live_control_callbacks() if data.startswith("aw_send")],
             "у доставленного анонса не должно быть кнопки отправки",
         )
         await h.callback(f"aw_send:{draft.id}:{draft.revision}")
 
         self.assertEqual(h.posts(), [stored.publication_text] * 2)
         self.assertEqual(tuple(_stored(h, draft.id).delivered_message_ids), (second,))
-        # Новые сообщения не появились — только правки экрана.
-        self.assertEqual(
-            [c["type"] for c in h.calls[calls_before:] if c["type"] == "message"],
-            [],
-            "повторное завершение отправило сообщение",
-        )
+        # Вторая копия анонса не отправлена; устаревший callback лишь
+        # отвечает «Данные изменились» и показывает актуальный экран.
+        self.assertEqual(len(h.posts()), 2, "повторное завершение отправило анонс")
+        self.assertIn("Данные изменились", h.answer_texts()[-1])
 
     @scenario_test
     async def test_edit_and_apply_replaces_the_copy_instead_of_promoting(
@@ -985,7 +990,9 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
 
         stored = _stored(h, draft.id)
         self.assertEqual(stored.publication_status, "sent")
-        self.assertIn("✏️ Изменить анонс", h.screen_text())
+        # 2.5.2 §2: экрана нет, управление — на самом анонсе.
+        self.assertIsNone(h.screen_message_id())
+        self.assertIsNotNone(h.control_callback("data"))
         self.assertTrue(stored.delivered_message_ids)
         self.assertEqual(len(h.posts()), 1)
 

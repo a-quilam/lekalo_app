@@ -107,6 +107,22 @@ def screen_sends(h: Harness) -> list[dict]:
     return [call for call in h.screens() if call["type"] == "message"]
 
 
+def panel_message_id(h: Harness) -> int | None:
+    """
+    `message_id` отдельной панели управления альбомом (2.5.2 §22).
+
+    У медиагруппы нет общей клавиатуры, поэтому управление живёт в панели;
+    экрана редактора после публикации нет, и «служебный низ» — именно она.
+    """
+    from tests.integration_harness import is_panel_record
+
+    panels = [call for call in h.calls if is_panel_record(call)]
+    if not panels:
+        return None
+    ids = h.bot.call_message_ids.get(id(panels[-1]), ())
+    return int(ids[0]) if ids else None
+
+
 def record_text(record: dict) -> str:
     """Текст записи FakeBot: kwargs["text"] либо первый позиционный аргумент."""
     text = record.get("text")
@@ -702,13 +718,17 @@ class ChatApplicationTests(R4TesterCase):
             )
         self.assertTrue(details.live_message_ids, "живой блок не отправлен")
         self.assertEqual(details.publication_photos, ("alb-0", "alb-1"))
-        screen = screen_id(h)
-        self.assertIsNotNone(screen, "служебный экран не отрисован")
-        assert screen is not None
+        # 2.5.2 §2: у альбома служебного экрана редактора нет — единственное
+        # место управления это отдельная панель. Она обязана быть ниже живого
+        # блока (иначе кнопки оказались бы над анонсом).
+        self.assertIsNone(screen_id(h), "служебный экран редактора не должен остаться")
+        panels = panel_message_id(h)
+        self.assertIsNotNone(panels, "панель управления альбомом не отправлена")
+        assert panels is not None
         self.assertLess(
             max(details.live_message_ids),
-            screen,
-            "служебный экран должен быть ниже живого блока",
+            panels,
+            "панель управления должна быть ниже живого блока",
         )
         # Альбом не создал второй служебный экран и не раздробил отправку.
         groups = [call for call in h.calls if call["type"] == "media_group"]
@@ -720,7 +740,7 @@ class ChatApplicationTests(R4TesterCase):
         renders = [
             call for call in h.screens() if "Фотографии анонса" in record_text(call)
         ]
-        self.assertEqual(len(renders), 1, "альбом создал лишний служебный экран")
+        self.assertEqual(renders, [], "альбом создал лишний служебный экран")
 
     @scenario_test
     async def test_restart_creates_no_duplicate_live_block(self, h: Harness) -> None:
@@ -750,10 +770,13 @@ class ChatApplicationTests(R4TesterCase):
                 draft_id=draft_id,
             )
         self.assertEqual(restored.live_message_ids, live_before)
+        # 2.5.2 §2: удалённые экраны чат не занимают. После рестарта и
+        # открытия «Мои анонсы» живым остаётся РОВНО один служебный экран —
+        # вопрос шага; меню и прежние экраны закрыты, а не накоплены.
         self.assertEqual(
             len(screen_sends(h)),
-            2,
-            "служебных экранов должно быть два: меню и вопрос",
+            1,
+            "живой служебный экран должен быть один",
         )
         live_edits = [
             call

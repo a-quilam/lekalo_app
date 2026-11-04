@@ -42,7 +42,6 @@ try:
     )
     from tests.test_stage27b_announcement_ui import (
         _callback,
-        _callbacks,
         _choose_personal,
         _latest_draft,
         _open_edit,
@@ -57,10 +56,6 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 
 PHOTO_STEP_TITLE = "📷 Фотографии анонса"
-# §18 (2.5): экрана «✅ Анонс готов.» больше нет. После доставки автор
-# остаётся на рабочем экране редактора анонса (§26–27), а управление живёт
-# у самого анонса.
-DELIVERED_TITLE = "✏️ Изменить анонс"
 ANNOUNCEMENT_TEXT = "Значение"
 
 
@@ -127,9 +122,25 @@ def _text_copies(h, text: str) -> list[int]:
 
 
 async def _draft_at_photo_step(h):
-    """Личный шаблон → ответ на единственный кирпичик → шаг фото."""
+    """
+    Личный шаблон → ответ на единственный кирпичик → шаг фото.
+
+    Poster 2.5.2 §4: кнопка «🧩 Дополнительные поля» показывается только
+    при реальных кандидатах, поэтому общий фикстур сеет расширенную версию
+    шаблона с доп. кирпичиком: экраны управления в этих тестах должны
+    проверять полный набор действий, а не зависеть от пустого extras.
+    Текст анонса при этом остаётся каноническим (`extras` не выбраны).
+    """
     place_id, _alias_id = _seed_place(h)
-    template_id, _revision, _bricks = _seed_personal_template(h)
+    template_id, _revision, _bricks = _seed_personal_template(
+        h,
+        specs=[
+            ("main", "Основное поле", "short_text", {}),
+            ("extra", "Доп. поле", "short_text", {}),
+        ],
+        content="[main]",
+        extended_content="[main]\n[extra]",
+    )
     await _start_to_template(h, place_id)
     await _choose_personal(h, template_id)
     await h.text(ANNOUNCEMENT_TEXT)
@@ -149,17 +160,30 @@ async def _delivered_with_photos(h, count: int):
             await h.photo(f"photo-{index}", media_group_id="album")
         # Альбом финализируется по паузе в приёме (как в настоящем Telegram).
         await asyncio.sleep(0.4)
-    if not h.screen_text().startswith(DELIVERED_TITLE):
-        raise AssertionError(f"Анонс не доставлен: {h.screen_text()}")
+    _assert_delivered(h, draft)
     return draft
 
 
 async def _delivered_without_photos(h):
     draft = await _draft_at_photo_step(h)
     await h.callback(_callback(h, "aw_photo_none"))
-    if not h.screen_text().startswith(DELIVERED_TITLE):
-        raise AssertionError(f"Анонс не доставлен: {h.screen_text()}")
+    _assert_delivered(h, draft)
     return draft
+
+
+def _assert_delivered(h, draft) -> None:
+    """
+    Анонс доставлен: `sent` в БД, служебного экрана в чате нет (2.5.2 §2).
+
+    После публикации единственное место управления — сам анонс (или его
+    панель), поэтому признаком успеха служит статус черновика, а не текст
+    экрана: экран шага закрывается.
+    """
+    stored = _stored(h, draft.id)
+    if stored.publication_status != "sent":
+        raise AssertionError(
+            f"Анонс не доставлен ({stored.publication_status}): {h.screen_text()}"
+        )
 
 
 # --- А. без фото -----------------------------------------------------------
@@ -209,7 +233,8 @@ class DeliveryWithoutPhotosTests(unittest.TestCase):
         self.assertEqual(active.generation, 1)
         self.assertTrue(active.fingerprint)
         # Конструктор завершён: шага фото больше нет, состояние — готовый анонс.
-        self.assertFalse(_callbacks(h, "aw_photo_none"))
+        # Служебный экран закрыт (§2): второго места управления в чате нет.
+        self.assertIsNone(h.screen_message_id(), "экран шага закрыт")
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
 
 

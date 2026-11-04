@@ -89,7 +89,12 @@ def parse_panel_callback(data: str | None) -> tuple[str, int] | None:
     return action, instance_id
 
 
-def panel_keyboard(instance_id: int, *, photos_count: int = 0) -> InlineKeyboardMarkup:
+def panel_keyboard(
+    instance_id: int,
+    *,
+    photos_count: int = 0,
+    extras_available: bool = True,
+) -> InlineKeyboardMarkup:
     """
     Клавиатура управления экземпляром: ровно действия редактора (§18/§27).
 
@@ -97,33 +102,42 @@ def panel_keyboard(instance_id: int, *, photos_count: int = 0) -> InlineKeyboard
     правки и есть управление, а выход в меню завершает работу с анонсом.
     Порядок повторяет экран правки, к которому привык автор: данные и фото
     в одной строке, дополнительные поля — ниже.
+
+    `extras_available` — результат общего предиката
+    (`announcement_store.extras_available`): у шаблона без расширенной
+    версии/кандидатов кнопка «🧩 Дополнительные поля» не показывается,
+    иначе она открывала бы пустой экран (Poster 2.5.2 §4).
     """
-    return InlineKeyboardMarkup(
+    rows: list[list[InlineKeyboardButton]] = [
         [
-            [
-                InlineKeyboardButton(
-                    tr("buttons.finished.data"),
-                    callback_data=panel_callback(ACTION_DATA, instance_id),
-                ),
-                InlineKeyboardButton(
-                    tr("buttons.finished.photos", count=photos_count),
-                    callback_data=panel_callback(ACTION_PHOTOS, instance_id),
-                ),
-            ],
+            InlineKeyboardButton(
+                tr("buttons.finished.data"),
+                callback_data=panel_callback(ACTION_DATA, instance_id),
+            ),
+            InlineKeyboardButton(
+                tr("buttons.finished.photos", count=photos_count),
+                callback_data=panel_callback(ACTION_PHOTOS, instance_id),
+            ),
+        ]
+    ]
+    if extras_available:
+        rows.append(
             [
                 InlineKeyboardButton(
                     tr("buttons.finished.extras_edit"),
                     callback_data=panel_callback(ACTION_EXTRAS, instance_id),
                 )
-            ],
-            [
-                InlineKeyboardButton(
-                    tr("buttons.finished.main_menu"),
-                    callback_data=panel_callback(ACTION_MENU, instance_id),
-                )
-            ],
+            ]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                tr("buttons.finished.main_menu"),
+                callback_data=panel_callback(ACTION_MENU, instance_id),
+            )
         ]
     )
+    return InlineKeyboardMarkup(rows)
 
 
 def panel_text() -> str:
@@ -142,6 +156,7 @@ async def send_panel(
     instance_id: int,
     *,
     photos_count: int = 0,
+    extras_available: bool = True,
 ) -> int | None:
     """
     Отправляет ОДНУ панель управления для медиагруппы; возвращает её id.
@@ -155,7 +170,11 @@ async def send_panel(
         chat_id=chat_id,
         text=panel_text(),
         parse_mode="HTML",
-        reply_markup=panel_keyboard(instance_id, photos_count=photos_count),
+        reply_markup=panel_keyboard(
+            instance_id,
+            photos_count=photos_count,
+            extras_available=extras_available,
+        ),
         link_preview_options=PANEL_LINK_PREVIEW,
     )
     message_id = getattr(message, "message_id", None)

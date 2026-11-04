@@ -171,8 +171,13 @@ class OwnerScenarioTests(_Case):
         self.assertIn(("◀️ НАЗАД-ПРИЁМКА", "aw_photo_back:1:5"), h.screen_buttons())
 
         await h.callback(_callback(h, "aw_photo_none"))
-        # §18: итогового экрана нет — открывается редактор доставленного
-        # анонса, а результат доставки уходит ответом на callback.
+        # 2.5.2 §2: после доставки служебного экрана в чате нет — управление
+        # живёт на самом анонсе (`anp_`). Временный редактор открывается
+        # кнопкой «📝 Данные», и его заголовок тоже берётся из каталога.
+        data_control = h.control_callback("data")
+        self.assertIsNotNone(data_control, "у анонса нет кнопки «Данные»")
+        assert data_control is not None
+        await h.callback(data_control)
         self.assertTrue(
             h.screen_text().startswith("✏️ ПРАВКА-ПРИЁМКА"), h.screen_text()
         )
@@ -574,17 +579,21 @@ class CompletenessTests(_Case):
         await h.text("Значение")
         await h.callback(_callback(h, "aw_photo_none"))
 
-        # §18: экран «Анонс готов» удалён — редактор доставленного анонса
-        # открывается сразу после финального шага, отдельного `aw_edit` нет.
+        # 2.5.2 §2: после доставки служебного экрана нет — управление живёт
+        # на самом анонсе (`anp_`), поэтому подпись «Меню» проверяется на
+        # временном редакторе, который открывает кнопка «📝 Данные», и на
+        # экране фотографий, куда ведёт «🖼 Фото» того же анонса.
+        data_control = h.control_callback("data")
+        self.assertIsNotNone(data_control, "у анонса нет кнопки «Данные»")
+        assert data_control is not None
+        await h.callback(data_control)
         edit_labels = [label for label, _data in h.screen_buttons()]
         self.assertIn("МЕНЮ-КАТАЛОГ", edit_labels)
 
-        photos = [
-            data
-            for _label, data in h.screen_buttons()
-            if data and data.startswith("aw_photos:")
-        ]
-        await h.callback(photos[0])
+        photos_control = h.control_callback("photos")
+        self.assertIsNotNone(photos_control, "у анонса нет кнопки «Фото»")
+        assert photos_control is not None
+        await h.callback(photos_control)
         collected = [label for label, _data in h.screen_buttons()]
         self.assertIn("НАЗАД-КАТАЛОГ", collected)
         self.assertNotIn("МЕНЮ-КАТАЛОГ", collected)
