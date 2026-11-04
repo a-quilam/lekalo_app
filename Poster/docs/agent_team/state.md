@@ -1,5 +1,182 @@
 # State — Poster
 
+## 2026-11-04 — 2.5.2: Reviewer APPROVED; make check зелёный; коммиты готовы
+
+- Reviewer: APPROVED, BLOCKER/IMPORTANT нет. MINOR (отложены, осознанные):
+  fail-open `_draft_extras_available` (кнопка видна при сбое БД, экран покажет
+  ошибку), `delete_message(chat_id, 0)` best-effort шум, двойная загрузка
+  editable в handle_delete_yes.
+- Граница этапа: `make check PYTHON=.venv/bin/python` — exit 0 (ruff+black ok;
+  mypy 228 файлов 0 ошибок; Ran 2652 tests OK).
+- Коммиты (тематические): 9f3e811 анонсы (§2), 89bdad9 кирпичики (§3.1),
+  a130e71 доп. поля (§4), ccf2c68 шаблоны+tg_html (§5), 05952c2 conditional
+  (§6–7), d5ed469 легаси (§8), 10d1539 приёмка (21 сценарий). state.md —
+  последний (docs-коммит перед push или вместе с релизным чек-пойнтом).
+- NEXT: push origin main → CI; релизный цикл: проверка прав менеджера → stop
+  poster-bot → make db-maintain-clean → миграции/integrity → start → polling
+  → финальный чек-пойнт.
+
+## 2026-11-04 — 2.5.2: приёмка (Tester) закрыта; F1 закрыт
+
+- Tester: `tests/test_stage252_acceptance_tester.py` — 26/26 PASS по 21 сценарию
+  §9 (блоки А–Д + снимки). FINDINGS закрыты:
+  - F1 (продукт): правка доставленного анонса передавала edit_message_text/
+    caption БЕЗ reply_markup → фиксировано: `_apply_in_place_change` явно
+    формирует и передаёт клавиатуру (0–1 фото — panel_keyboard по инстансу;
+    2+ — None, панель отдельная) в `_edit_active_instance_in_place`;
+    тесты в test_stage252_single_control (9 OK) с `since=mark`.
+  - F2 (harness): `inline_buttons` защищён от None/ReplyKeyboardRemove.
+  - F3 (тесты Tester'а): 6 падений исправлены (маршруты tp_hub/tp_open,
+    последняя кнопка навигации, SECTION_CONTENT, None-guard'ы).
+    test_21: «дефект снимка» НЕ подтвердился — паритет живого/снимкового
+    рендера 4/4 (правило было в extended-секции при рендере из content).
+- Проверки: приёмка 26 OK; целевой набор 115 OK; полный discover 2652 OK;
+  mypy весь проект 228 файлов — 0 ошибок; ruff/black — чисто.
+- Метрики приёмки: Tester 1 вызов (лимит steps достигнут, 26 тестов написаны),
+  Developer 3 вызова закрытия (F1/F2+F3, mypy) — 0 повторных ревизий.
+- NEXT: Reviewer сводного diff (HIGH); make check на границе; коммиты; релизный
+  цикл (stop → db-maintain-clean → старт → polling).
+
+## 2026-11-04 — 2.5.2: T6 закрыт (легаси-очистка §8)
+
+- Удалено: legacy-путь `frozen=0` в `announcement_store._conditional_snapshot_texts`
+  (рендер всегда по template_snapshot_conditional_parts; колонка+миграция 28
+  оставлены — минимизация миграционной активности); календарные редиректы
+  `aw_calroot/aw_calweek/aw_calother/aw_calweekdays` + `_legacy_calendar_redirect`
+  (неизвестные aw_cal* → общий stale); мёртвый ключ `alerts.wizard.kalendar_obnovlen`.
+- Оставлено как живое (проверено grep+тестами): `aw_panel` (aw_preview →
+  «◀️ К управлению» → delivered-edit), `create_post`/`restore_wip`
+  (ветки stale-ответов, покрыты приёмкой S5 и test_poster2_legacy_removal),
+  `proposal_select_brick`/`bp_source`.
+- Тесты: legacy-календарь переименован в «неизвестные callback безопасны»
+  (инварианты сохранены); acceptance-тест снимка проверяет, что frozen=0 не
+  влияет на рендер.
+- Проверки: полный discover 2625 OK; ui_texts keys=1168 errors=0;
+  ruff/black/mypy — чисто.
+- NEXT: независимая приёмка (21 сценарий §9) Tester'ом; Reviewer сводного diff;
+  make check на границе; коммиты; релизный цикл.
+
+## 2026-11-04 — 2.5.2: T5 закрыт (условные части: extended-only + новый UI)
+
+- Продукт: `handlers/templates.py` — предикат `conditional_parts_available`
+  (только `extended_content is not None`, без origin), кнопка `tp_cond` только
+  у расширенных. `handlers/template_conditional.py` переписан: компактный
+  список правил, пагинация 5/стр (`◀️ | 1 / 3 | ▶️`, средняя инертна, 1 стр —
+  навигации нет), режимы line/sep/custom с примерами, человекочитаемый список,
+  правка/удаление, старые callback-форматы принимаются; повторный кирпичик =
+  одно правило (`replace_conditional_rules`, атомарная замена,
+  `_active_spans_by_brick`). ui_texts `templates.cond.*` синхронно (keys=1169).
+  `help_rich.py` раздел 6 переписан (три режима, extended-only, ключевые слова
+  сохранены).
+- Тесты: test_stage25_conditional_ui (19: simple без tp_cond, пагинация,
+  режимы, одно правило на вхождения, нет номеров/диапазонов/сырых фрагментов,
+  stale/права/рестарт); acceptance_d обновлён, §42–§45 сохранены; замороженные
+  снимки не сломаны (50 OK).
+- Проверки: целевые наборы OK; полный discover 2625 OK; ruff/black/mypy —
+  чисто.
+- NEXT: T6 (легаси-очистка §8: frozen=0-путь, aw_cal*, aw_panel,
+  create_post/restore_wip — проверив живые ссылки), приёмка 21 сценарий,
+  релиз.
+
+## 2026-11-04 — 2.5.2: T4 закрыт (редактор шаблона)
+
+- Продукт: `utils/tg_html.py` — root cause дефекта 5: UnicodeDecodeError в
+  `entities_to_template_markup` на entity, разрезавшей UTF-16 суррогатную пару
+  (эмодзи). Фикс: `_character_bounds`/`_aligned_slices`/`_copy_entity`; entity
+  расширяется до целого символа, некорректируемая отбрасывается с warning,
+  ввод не роняется. Роутинг `outside_dialog_hint` не менялся (гипотеза
+  опровергнута repro-тестом).
+- Карточка шаблона: «✏️ Текст» → «✏️ Правка шаблона», «✏️ Расширенный» →
+  «✏️ Правка расширенного шаблона» (yaml+DEFAULTS синхронно); «👁
+  Предпросмотр» удалена целиком (route `tp_preview`, `PHASE_PREVIEW`,
+  `_preview_content`, `handle_preview`, `"preview"` в `_BROWSE_PHASES`, 6
+  мёртвых ключей ui_texts, пустой раздел yaml).
+- Тесты: новый `tests/test_stage252_template_editor.py` (11 тестов: границы
+  эмодзи, первое сообщение принято сразу, форматирование/ссылки/`{{…}}`,
+  simple/extended независимы); test_poster2_h3_ux раскладка карточки обновлена;
+  устаревший preview-тест удалён.
+- Проверки: целевые наборы до 235 OK; полный discover 2620 OK;
+  `python -m utils.ui_texts` ok keys=1174 errors=0; ruff/black/mypy — чисто.
+- NEXT: T5 (условные части, HIGH), T6 (легаси), приёмка 21 сценарий, релиз.
+
+## 2026-11-04 — 2.5.2: T3 закрыт (видимость «Доп. полей»)
+
+- Продукт: `announcement_store.py` — единый предикат `extras_available` /
+  `extra_selectable` / `extras_available_for_draft` (extended существует +
+  кандидаты = extended−content + selectable, либо уже выбранные extras).
+  `announcement_wizard.py`: адаптеры `_extras_available`/`_draft_extras_available`;
+  условная кнопка в `_preview_keyboard`, `_render_preview_error`,
+  `_render_delivered_edit`, флаг → `panel_keyboard`.
+  `announcement_controls.py`: `panel_keyboard`/`send_panel` принимают
+  `extras_available` (дефолт True при сбое чтения — не отнимать управление).
+- Тесты: новый `tests/test_stage252_extras_visibility.py` (9 тестов, все
+  ветки a–г + архивный кандидат + панель); фикстур `_draft_at_photo_step`
+  дополнен расширенной версией.
+- Проверки: целевые 86 OK; extras/UI-цепочка 277 OK; полный discover 2610 OK;
+  ruff/black/mypy — чисто.
+- NEXT: T4 (редактор шаблона), T5 (условные части), T6 (легаси), приёмка, релиз.
+
+## 2026-11-04 — 2.5.2: T2 закрыт (кирпичики: «Назад» на источник)
+
+- Продукт: `handlers/bricks.py` — origin-механизм личного хаба (`hub_origin`
+  в brick_sessions, переживает рестарт): `manage`/`wizard`/фолбэк; `◀️ Назад`
+  (`bk_back`, текст `buttons.nav.back`) в хабе; все переходы «в хаб» через
+  `_reset_hub` (источник не затирается); `_exit_hub_to_origin`: wizard →
+  `restore_wizard_or_menu`, иначе «Управление». `main_menu.py`: `manage_bricks`
+  пишет origin; общий `restore_wizard_or_menu()` (help + хаб). Визард:
+  `handle_navigation_callback` data=="bricks" → origin=wizard.
+- Решения: `adm_bricks*`/`tp_bricks` не тронуты (свои списки со своим
+  «Назад»); `/bricks` и `help_back(source=bricks)` без origin → фолбэк
+  «Управление» (снимок резюме снят намеренно, H1-поведение сохранено).
+- Тесты: новый `tests/test_stage252_bricks_back.py` (10 сценариев: рестарт,
+  круговые обходы, фолбэки, «🏠 В меню»).
+- Проверки: stage252_bricks_back 10 OK; целевой набор T2 191 OK; смежный 182 OK;
+  расширенный 292 OK; black/ruff/mypy по изменённым файлам — чисто.
+- NEXT: T3 (видимость «Доп. полей»), T4, T5, T6, приёмка, релиз.
+
+## 2026-11-04 — 2.5.2: T1 закрыт (единая модель опубликованного анонса)
+
+- Продукт: `handlers/announcement_wizard.py` — `_close_service_screen`;
+  `_close_publication_without_screen` без рендера delivered-edit (0–1 фото —
+  один sendMessage/sendPhoto с клавиатурой, панели нет; 2+ — sendMediaGroup +
+  одна panel_keyboard); `_archive_published_controls` в `_exit_to_main_menu`
+  (архив инстанса, снятие клавиатуры с фактического сообщения, закрытие панели
+  медиагруппы, очистка диалога). Повторное открытие из «Мои анонсы» — новый
+  инстанс; устаревшие callback'и — no-op. Удалён неиспользуемый импорт
+  `get_instance`.
+- Тесты: новый `tests/test_stage252_single_control.py` (8 тестов); общий
+  контракт обновлён по 20 файлам через хелперы `assert_delivered`/
+  `control_callback`/`live_control_callbacks` в `integration_harness.py`;
+  смысловые проверки не ослаблены (статус sent + anp_кнопка вместо текста
+  экрана).
+- Проверки: полный unittest discover — Ran 2591 OK (0 failures, 0 errors);
+  ruff/black/mypy — чисто. YAML-«ошибка» — штатный вывод теста битого каталога.
+- Метрики T1: 4 вызова Developer (1 session, 3 продолжения по лимиту steps;
+  один раз достигнут лимит повторов одной сессии — продолжено новой сессией),
+  0 Tester/Reviewer (MEDIUM), ~1 permission-конфликт нет.
+- NEXT: T2 (кирпичики «Назад»), T3 (видимость «Доп. полей»), T4 (редактор
+  шаблона), T5 (условные части), T6 (легаси), приёмка 21 сценарий, релиз.
+
+## 2026-11-04 — Poster 2.5.2 (корректирующий релиз): план
+
+- База: HEAD `4a61ca5` (2.5.1 выпущен, дерево чистое), 10 UX-регрессий.
+- Декомпозиция: T1 единая модель опубликованного анонса (§2, сценарии 1–7, 21);
+  T2 «Назад» из кирпичиков (§3.1, сц. 11); T3 видимость «Доп. полей» (§4, сц. 8–10);
+  T4 редактор шаблона: переименования, удаление предпросмотра, первое сообщение (§5, сц. 12–14);
+  T5 условные части: only-extended + новый UI (§6–7, сц. 15–20); T6 легаси-очистка (§8);
+  Tester: независимая приёмка 21 сценарий; Reviewer: сводный diff; релизный цикл.
+- Факты разведки (не переисследовать): дубль контроля в `_close_publication_without_screen`
+  (рендер `_render_delivered_edit` при уже приатаченной `panel_keyboard`);
+  `_exit_to_main_menu` не снимает клавиатуру с инстанса; extras-кнопка безусловна в
+  `_render_template_screen`/`_preview_error`/`panel_keyboard`; hub кирпичиков без «Назад»
+  и origin; первый текст в расширенном редакторе теряется (роутинг vs `outside_dialog_hint`,
+  root cause не доказан — нужен repro-тест); карточные кнопки из ui_texts (`tekst`,
+  `rasshirennyy`, `predprosmotr`/`tp_preview`); conditional UI 1509 строк — контент+расширенный,
+  вхождения, контекст ±30, без пагинации; легаси: `frozen=0`-путь, `aw_cal*`, `aw_panel`,
+  `create_post`/`restore_wip`.
+- Приёмка: §9 — 21 сценарий, независимая проверка Tester'ом. Полный make check — на границе.
+- Релиз: коммиты → push → CI → stop → db-maintain-clean → старт → polling → state.md.
+
 ## 2026-11-04 09:15 MSK — Poster 2.5.1: релиз ЗАВЕРШЁН (poster-manager)
 
 - HEAD fab5dff, main = origin/main, рабочее дерево чистое. Код не менялся,
