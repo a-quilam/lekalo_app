@@ -1,5 +1,26 @@
 # State — Poster
 
+## 2026-11-04 09:15 MSK — Poster 2.5.1: релиз ЗАВЕРШЁН (poster-manager)
+
+- HEAD fab5dff, main = origin/main, рабочее дерево чистое. Код не менялся,
+  `make check` не повторялся.
+- Очистка рабочей БД (`make db-maintain-clean`, 06:14 UTC / 09:14 MSK):
+  - бэкап: `post_bot.db.backup-20261104T061434180368Z-p1047181` (проверен);
+  - прежняя база: `post_bot.db.replaced-20261104T061434577762Z`;
+  - миграции 1–28, системных кирпичиков 10, все пользовательские счётчики 0,
+    integrity_after ok, smoke init_db ok.
+- Независимая верификация `make db-maintain-report`: счётчики нулевые,
+  бэкап `post_bot.db.backup-20261104T061441961248Z-p1047201` (проверен).
+- Служба `poster-bot.service` запущена 09:14:47 MSK: active (running),
+  PID 1047214, «Application started», NRestarts=0; через 20 с ошибок,
+  Traceback и конфликтов getUpdates нет.
+- Остаток за владельцем (ручной сценарий): открыть «Помощь» в Telegram,
+  убедиться, что Rich Message отображается, вернуться кнопкой «Назад» в
+  исходный экран. Rich Message подтверждён только контрактными тестами,
+  не живым API.
+- Показатели этапа: 0 субагентов, 0 повторов, 1 permission.rejected
+  (прямой ls бэкапов — заменён на glob), время ~5 мин.
+
 ## 2026-11-04 — Poster 2.5.1: релиз выполнен (коммиты, CI ✓, деплой)
 
 - Коммиты (push 30d81e1..c1a292c main -> main, CI run 41727205774 — success
