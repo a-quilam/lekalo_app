@@ -579,7 +579,11 @@ class LiveBlockPhotoCompositionTests(unittest.TestCase):
         await _to_photo_step(h, content="[main]", value=self.LONG_VALUE)
         draft = _latest_draft(h)
         await h.photo("F-1")
-        self.assertIn("не помещается", h.screen_text(), "ожидался проблемный экран")
+        # 2.5.3 §7: превышение лимита — короткая ошибка, экрана восстановления
+        # нет; фото остаётся в черновике.
+        self.assertIn(
+            "Не отправлено: текст не помещается", h.screen_text(), "нет отказа"
+        )
         self.assertIsNone(_details(h, draft.id).publication_status)
 
         # Мои анонсы → открыть → Фотографии; снимок приходит обычным
@@ -596,10 +600,11 @@ class LiveBlockPhotoCompositionTests(unittest.TestCase):
         )
         self.assertIsNone(_details(h, draft.id).publication_status)
 
-        # Сокращение текста собирает анонс заново (автофинал).
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        # Сокращение текста доводит до шага фото: автофинала больше нет.
+        await h.callback(_callback(h, "aw_photo_back"))
         await h.text("Коротко")
+        self.assertIn(PHOTO_STEP_TITLE, h.screen_text(), "ожидался шаг фото")
+        await h.callback(_callback(h, "aw_photo_none"))
         _published(h)
 
         stored = _details(h, draft.id)

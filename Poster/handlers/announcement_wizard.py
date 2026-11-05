@@ -125,7 +125,6 @@ from place_store import (
 from template_compiler import (
     PLACEHOLDER_TEXT,
     TemplateCompileError,
-    announcement_text_limit,
     check_announcement_length,
 )
 from template_store import (
@@ -2565,6 +2564,26 @@ async def _back_from_photo_step(
     return await _render_question(update, context, details, fields, len(fields) - 1)
 
 
+async def _drop_accepted_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    field_key: str,
+) -> None:
+    """
+    Удаляет ввод пользователя после ПОДТВЕРЖДЁННОГО сохранения (2.5.3 §7).
+
+    Раньше ввод удалялся сразу после записи значения, ещё до проверки длины
+    и доставки: при превышении лимита сообщение с длинным текстом исчезало,
+    хотя экран обещал обратное. Теперь вызывающий слой зовёт это только
+    тогда, когда данные уже в БД, а доставка (если она нужна) подтверждена.
+    """
+    user_data = ctx.data(context)
+    stale = screen.forget_failed_inputs(user_data, field_key)
+    if stale:
+        await screen.cleanup_messages(context.bot, ctx.chat(update).id, stale)
+    await screen.drop_user_input(update, context)
+
+
 async def _save_question_value(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -2611,17 +2630,10 @@ async def _save_question_value(
     field_edit_instance = _field_edit_instance(ui)
     _set_details(ui, updated)
     _clear_active(ui)
-    if drop_input:
-        user_data = ctx.data(context)
-        stale = screen.forget_failed_inputs(user_data, f"aw:{field.brick_id}")
-        if stale:
-            await screen.cleanup_messages(context.bot, ctx.chat(update).id, stale)
-        await screen.drop_user_input(update, context)
-    # S4 §5.2 п.5: сокращение после проблемного экрана сразу пересобирает
-    # анонс и применяет уже сохранённую фотографию без повторного вопроса.
-    resumed = await _resume_after_shortening(update, context, updated)
-    if resumed is not None:
-        return resumed
+    if drop_input and not updated.publication_sent:
+        # Черновик ещё не доставлен: значение сохранено в БД, ввод можно
+        # убирать — это не потеря.
+        await _drop_accepted_input(update, context, f"aw:{field.brick_id}")
     if updated.publication_sent:
         # H3 (требование B): правка готового анонса применяется сразу.
         # Отдельной кнопки «Применить изменения» нет, поэтому после
@@ -2630,8 +2642,29 @@ async def _save_question_value(
         applied = await _apply_immediately(update, context, updated)
         if applied is None:
             # Причину уже показал `_finish_and_deliver` (лимит, ошибка
-            # сборки, отправка): перекрывать её нельзя.
+            # сборки, отправка): перекрывать её нельзя. Ввод остаётся в
+            # чате — доставка не подтверждена (2.5.3 §7). Если причина —
+            # превышение лимита, автор видит КОРОТКУЮ ошибку и может
+            # сократить текст сразу: вопрос остаётся открытым.
+            refusal = _length_check(update, updated)
+            if refusal is not None:
+                fields = _askable_fields(_load_fields(user_id, updated.draft_id))
+                found = _find_field(fields, field.brick_id)
+                if found is not None:
+                    return await _render_question(
+                        update,
+                        context,
+                        updated,
+                        fields,
+                        found[0],
+                        editing=True,
+                        error=_length_refusal_text(refusal),
+                    )
+                await _answer(update, _length_refusal_text(refusal), alert=True)
             return AW_PREVIEW
+        if drop_input:
+            # Ввод удаляется только после ПОДТВЕРЖДЁННОЙ доставки.
+            await _drop_accepted_input(update, context, f"aw:{field.brick_id}")
         await _answer(
             update,
             tr(
@@ -4094,12 +4127,9 @@ async def _save_extra_value(
         )
     ui = _ui(context)
     _set_details(ui, updated)
-    if drop_input:
-        user_data = ctx.data(context)
-        stale = screen.forget_failed_inputs(user_data, f"aw:{extra.brick_id}")
-        if stale:
-            await screen.cleanup_messages(context.bot, ctx.chat(update).id, stale)
-        await screen.drop_user_input(update, context)
+    if drop_input and not updated.publication_sent:
+        # Черновик ещё не доставлен: значение в БД, ввод убирать безопасно.
+        await _drop_accepted_input(update, context, f"aw:{extra.brick_id}")
     current_extra = next(
         (item for item in updated.extras if item.extra_id == extra.extra_id),
         None,
@@ -4117,16 +4147,25 @@ async def _save_extra_value(
             update, context, updated, current_extra, notice=notice
         )
     _clear_active(ui)
-    # S4 §5.2 п.5: сокращение дополнительного кирпичика тоже сразу
-    # пересобирает анонс с уже сохранённым фото.
-    resumed = await _resume_after_shortening(update, context, updated)
-    if resumed is not None:
-        return resumed
     if updated.publication_sent:
         # H3: правка доставленного анонса применяется сразу — кнопки
         # «Применить изменения» больше нет.
-        await _apply_immediately(update, context, updated)
-        updated = _reload_details(update, updated)
+        applied = await _apply_immediately(update, context, updated)
+        fresh = _reload_details(update, updated)
+        if applied is None:
+            # Доставка не подтверждена (лимит/ошибка): причину уже показал
+            # `_finish_and_deliver`, а ввод остаётся в чате (2.5.3 §7).
+            refusal = _length_check(update, fresh)
+            notice_failed = (
+                _length_refusal_text(refusal)
+                if refusal is not None
+                else APPLY_FAILED_TEXT
+            )
+            return await _render_extras(update, context, fresh, notice=notice_failed)
+        if drop_input:
+            # Ввод удаляется только после ПОДТВЕРЖДЁННОЙ доставки.
+            await _drop_accepted_input(update, context, f"aw:{extra.brick_id}")
+        updated = fresh
         notice = notice or tr(
             "wizard.save_extra_value.znachenie_sohraneno_anons_obnovlen"
         )
@@ -4520,6 +4559,14 @@ async def _render_preview(
     _set_details(ui, preview.draft)
     lines = _preview_summary_lines(preview, _user_id(update))
     lines.extend(_preview_block(preview))
+    # 2.5.3 §7: превышение лимита — состояние черновика, а не флаг в
+    # `user_data`. Оно пересчитывается из БД, поэтому короткая пометка видна
+    # и после рестарта службы: «не отправлено: текст не помещается».
+    length = check_announcement_length(
+        preview.html, has_photos=bool(preview.draft.photos)
+    )
+    if length.over:
+        lines.insert(2, _length_refusal_text(length))
     # S3 п.11: шутка пустого анонса — только в нижнем служебном экране,
     # никогда внутри самого текста анонса выше.
     if not preview.visible_text and not preview.draft.photos:
@@ -4602,150 +4649,77 @@ async def _render_preview_error(
     return AW_PREVIEW
 
 
-async def _render_length_problem(
+def _length_refusal_text(check) -> str:
+    """КОРОТКАЯ ошибка превышения лимита (2.5.3 §7)."""
+    return tr(
+        "wizard.length_refusal.not_pomeschaetsya",
+        length=check.length,
+        limit=check.limit,
+    )
+
+
+def _length_check(update: Update, details, *, user_id: int | None = None):
+    """
+    Проверяет лимит готового текста по данным БД (`None` — не измерить).
+
+    Состояние «текст не помещается» вычисляется заново из черновика, а не
+    хранится флагом в `user_data`: после рестарта службы оно остаётся верным.
+    """
+    try:
+        with SessionLocal() as session:
+            preview = build_announcement_preview(
+                session,
+                actor_telegram_user_id=(
+                    user_id if user_id is not None else _user_id(update)
+                ),
+                draft_id=details.draft_id,
+                today=app_today(),
+            )
+    except (AnnouncementError, TemplateError, TemplateCompileError, BrickError):
+        return None
+    check = check_announcement_length(
+        preview.html, has_photos=bool(preview.draft.photos)
+    )
+    return check if check.over else None
+
+
+async def _render_length_refusal(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
     preview,
     check,
 ) -> int:
     """
-    Проблемный экран превышения лимита текста (S4 §5.2).
+    Отказ от публикации при превышении лимита: короткая ошибка (2.5.3 §7).
 
-    Данные и фото НЕ меняются: значения кирпичиков уже сохранены с CAS,
-    `file_id` лежат в черновике, сообщение пользователя, вызвавшее
-    превышение, не удаляется. Экран показывает фактическую длину, лимит,
-    превышение и самые длинные кирпичики с прямой правкой, чтобы автор мог
-    сократить текст сам — автосокращения и разрезания поста нет.
+    Данные и фото НЕ меняются и не удаляются: значения кирпичиков сохранены
+    с CAS, `file_id` лежат в черновике, сообщение пользователя остаётся в
+    чате. Большого экрана восстановления, автосокращения и разрезания поста
+    нет: причина — одна строка, а вернуться к правке можно обычными
+    кнопками (список полей/шаг фото).
     """
     details = preview.draft
     ui = _ui(context)
     _set_details(ui, details)
+    text = _length_refusal_text(check)
+    if getattr(update, "callback_query", None) is not None:
+        # Нажатие кнопки: короткий ответ, экран в чате не появляется.
+        await _answer(update, text, alert=True)
+        return AW_PREVIEW
+    if details.publication_sent:
+        # Правка доставленного анонса: прежняя версия осталась рабочей.
+        # Экран не рисуем — короткую причину покажет вызывающий слой
+        # (вопрос правки/доп. поля), а ввод остаётся в чате.
+        logger.info("Анонс #%s не обновлён: %s", details.draft_id, _short(text, 200))
+        return AW_PREVIEW
     _clear_active(ui)
-    # Флаг «ждём сокращения»: после сохранения любого кирпичика анонс
-    # пересобирается и ожидавшее фото применяется автоматически, без
-    # повторного вопроса и без повторной отправки снимка.
-    ui["length_problem"] = {
-        "draft_id": details.draft_id,
-        "revision": details.revision,
-        "has_photos": check.has_photos,
-    }
-    longest = _longest_fields(preview, limit=3)
-    lines = [
-        tr("wizard.render_length_problem.anons_pomeschaetsya_soobschenie"),
-        "",
-        tr(
-            "wizard.render_length_problem.dlina_simvolov_prevyshenie",
-            length=check.length,
-            limit=check.limit,
-            excess=check.excess,
-        ),
-        (
-            tr(
-                "wizard.render_length_problem.s_fotografiyami_tekst_idet",
-                limit=check.limit,
-            )
-            if check.has_photos
-            else tr(
-                "wizard.render_length_problem.bez_fotografiy_dopustimo_simvolov",
-                limit=check.limit,
-            )
-        ),
-        "",
-        tr("wizard.render_length_problem.dannye_fotografii_sohraneny_vashe"),
-    ]
-    if longest:
-        lines.extend(["", tr("wizard.render_length_problem.samye_dlinnye_kirpichiki")])
-        for field, length in longest:
-            lines.append(
-                tr_safe(
-                    "wizard.render_length_problem.simv",
-                    title=_h(_short(brick_title_display(field.title, field.code), 60)),
-                    length=length,
-                )
-            )
-    lines.extend(
-        [
-            "",
-            tr(
-                "wizard.render_length_problem.avtosokrascheniya_net_tekst",
-                announcement_text_limit=announcement_text_limit(has_photos=False),
-            ),
-        ]
+    return await wizard_photos.render_photo_step(
+        update,
+        context,
+        details,
+        notice=text,
+        announcement_is_empty=_announcement_is_empty(update, details),
     )
-    rows: list[list[InlineKeyboardButton]] = []
-    for field, length in longest:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    _short(
-                        f"✏️ {brick_title_display(field.title, field.code)} "
-                        f"— {length}",
-                        60,
-                    ),
-                    callback_data=(
-                        f"aw_qgoto:{details.draft_id}:"
-                        f"{details.revision}:{field.brick_id}"
-                    ),
-                )
-            ]
-        )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                tr("buttons.wizard.izmenit_drugoy_kirpichik"),
-                callback_data=(f"aw_qmanage:{details.draft_id}:{details.revision}"),
-            )
-        ]
-    )
-    if check.has_photos:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.wizard.bez_fotografiy"),
-                    callback_data=(
-                        f"aw_photo_drop:{details.draft_id}:{details.revision}"
-                    ),
-                )
-            ]
-        )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                tr("buttons.admin.glavnoe_menyu"), callback_data="main_menu"
-            )
-        ]
-    )
-    await _render(update, context, "\n".join(lines), InlineKeyboardMarkup(rows))
-    return AW_PREVIEW
-
-
-def _longest_fields(preview, *, limit: int) -> list[tuple[AnnouncementFieldState, int]]:
-    """
-    Самые длинные заполненные кирпичики снимка — кандидаты на сокращение.
-
-    Длина считается по видимому тексту значения (`_field_value_text`), а не
-    по HTML: автор видит в списке те же символы, что и Telegram.
-    """
-    measured: list[tuple[AnnouncementFieldState, int]] = []
-    for field in preview.fields:
-        if field.status not in {FIELD_STATUS_VALID, FIELD_STATUS_KNOWN}:
-            continue
-        length = len(_field_value_text(field))
-        if length <= 0:
-            continue
-        measured.append((field, length))
-    measured.sort(key=lambda item: (-item[1], item[0].brick_id))
-    return measured[:limit]
-
-
-def _length_problem_pending(context: ContextTypes.DEFAULT_TYPE, details) -> bool:
-    """Ждёт ли этот черновик сокращения текста (S4 §5.2 п.5)."""
-    if details is None:
-        return False
-    flag = _ui(context).get("length_problem")
-    if not isinstance(flag, dict):
-        return False
-    return int(flag.get("draft_id") or 0) == int(details.draft_id)
 
 
 def _reload_details(update: Update, details):
@@ -4783,25 +4757,6 @@ async def _apply_immediately(
     if _has_pending_changes(update, fresh):
         return None
     return fresh
-
-
-async def _resume_after_shortening(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-    details,
-) -> int | None:
-    """
-    После правки кирпичика в проблемном сценарии собирает анонс заново.
-
-    Возвращает None, если превышения не было: обычный поток вопросов не
-    меняется. Ожидавшее фото уже сохранено в черновике, поэтому повторно
-    присылать его не нужно — финализация берёт его из БД. Если текст всё
-    ещё длинный, `_finish_and_deliver` снова покажет проблемный экран.
-    """
-    if not _length_problem_pending(context, details):
-        return None
-    _ui(context).pop("length_problem", None)
-    return await _finish_and_deliver(update, context, details)
 
 
 async def _resume_current(
@@ -5666,14 +5621,15 @@ async def _finish_and_deliver(
                 reason=reason,
             ),
         )
-    # S4 §5.2: лимит проверяется ДО доставки. Превышение не лечится
-    # автосокращением и не режется на части: показывается проблемный экран,
-    # данные и фото остаются в черновике.
+    # S4 §5.2 / §7 (2.5.3): лимит проверяется ДО доставки по данным из БД.
+    # Превышение не лечится автосокращением и не режется на части: текст и
+    # фото остаются в черновике, а автор видит КОРОТКУЮ ошибку. Большого
+    # экрана восстановления больше нет.
     length = check_announcement_length(
         preview.html, has_photos=bool(preview.draft.photos)
     )
     if length.over:
-        return await _render_length_problem(update, context, preview, length)
+        return await _render_length_refusal(update, context, preview, length)
     current = _delivery_fingerprint(preview.html, preview.draft.photos)
     if details.publication_status == PUBLICATION_STATUS_SENT:
         if (
@@ -8202,42 +8158,6 @@ async def handle_preview_callback(
             context,
             details,
             notice=tr("wizard.handle_preview_callback.anons_ostanetsya_bez_vlozheniy"),
-        )
-    if action == "aw_photo_drop" and len(parts) == 3:
-        # Проблемный экран §5.2 п.4: отказ от фотографий возвращает лимит
-        # 4096 и НЕ теряет текст. Это подтверждённый отказ, поэтому фото
-        # убираются из черновика — иначе доставка снова упёрлась бы в 1024.
-        # Вернуть снимки можно через «Фотографии».
-        if not all(item.isdigit() for item in parts[1:]):
-            return await _stale(update, context)
-        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
-        if guarded is None:
-            return await _stale(update, context)
-        _ui_data, details = guarded
-        if _edit_blocked(details):
-            await _answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
-            return await _render_publish_status(update, context, details)
-        try:
-            with SessionLocal() as session:
-                updated = clear_announcement_photos(
-                    session,
-                    actor_telegram_user_id=_user_id(update),
-                    draft_id=details.draft_id,
-                    expected_revision=details.revision,
-                )
-        except AnnouncementError as exc:
-            await _answer(update, str(exc), alert=True)
-            return await _render_publish_status(update, context, details)
-        _set_details(_ui(context), updated)
-        _ui(context).pop("length_problem", None)
-        await _answer(update, tr("alerts.wizard.limit_snova_4096_simvolov"))
-        return await _finish_and_deliver(
-            update,
-            context,
-            updated,
-            notice=(
-                tr("wizard.handle_preview_callback.otpravlyaem_bez_fotografiy_limi")
-            ),
         )
     if action == "aw_photo_add" and len(parts) == 3:
         guarded = _guided()

@@ -654,7 +654,8 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
         h.bot.errors_by_type.pop("delete_message", None)
 
     @scenario_test
-    async def test_length_problem_screen_keeps_data_and_input(self, h) -> None:
+    async def test_refusal_keeps_data_and_input(self, h) -> None:
+        """2.5.3 §7: превышение лимита — короткая ошибка, данные и ввод целы."""
         from tests.test_stage27c_announcement_ui import _callback
 
         await h.text("/start")
@@ -663,32 +664,35 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
         draft = await _to_photo_step(h, content="[main]", value=long_value)
         photo_update = await h.photo("over-limit-photo")
 
+        # Одна строка про лимит вместо прежнего экрана восстановления.
         screen = h.screen_text()
-        self.assertIn("не помещается", screen)
+        self.assertIn("Не отправлено: текст не помещается", screen)
         self.assertIn("при лимите 1024", screen)
-        self.assertIn("Самые длинные поля", screen)
+        self.assertNotIn("Самые длинные поля", screen)
         labels = [label for label, _data in h.screen_buttons()]
-        self.assertTrue(any("Изменить другое поле" in label for label in labels))
-        self.assertTrue(any("Без фотографий" in label for label in labels))
+        self.assertFalse(any("Изменить другое поле" in label for label in labels))
+        self.assertFalse(any("Без фотографий" in label for label in labels))
         # Данные и фото сохранены, ввод не удалён.
         stored = _stored(h, draft.id)
         self.assertEqual(stored.photos, ("over-limit-photo",))
         self.assertIsNone(stored.publication_status)
         self.assertNotIn(photo_update.message.message_id, h.deleted_ids())
 
-        # Сокращение кирпичика применяет ожидавшее фото автоматически.
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        # Сокращение кирпичика доводит до шага фото: автофинала больше нет.
+        await h.callback(_callback(h, "aw_photo_back"))
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Короткий анонс")
+        self.assertIn("Фотографии анонса", h.screen_text())
+        await h.callback(_callback(h, "aw_photo_none"))
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
         self.assertEqual(sent.publication_photos, ("over-limit-photo",))
 
     @scenario_test
-    async def test_no_photos_from_problem_screen_restores_4096(self, h) -> None:
-        from tests.test_stage27c_announcement_ui import _callback, _post_types
+    async def test_removing_photo_restores_4096_limit(self, h) -> None:
+        """2.5.3 §7: без фото тот же текст проходит по лимиту 4096."""
+        from tests.test_stage27c_announcement_ui import _callback
 
         await h.text("/start")
         long_value = "Длинный текст анонса " * 150
@@ -696,12 +700,30 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
         await h.photo("dropped-photo")
         self.assertIn("при лимите 1024", h.screen_text())
 
-        await h.callback(_callback(h, "aw_photo_drop"))
+        # Удаление снимка — обычным путём: обзор черновика → «Фотографии».
+        await h.callback("main_menu")
+        await h.callback("my_announcements")
+        await h.callback(f"aw_open:{draft.id}")
+        await h.callback(_callback(h, "aw_photos"))
+        await h.callback(_callback(h, "aw_photo_del"))
+        self.assertEqual(_stored(h, draft.id).photos, ())
+        await h.callback(_callback(h, "aw_preview"))
+        await h.callback(_callback(h, "aw_send"))
+
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
         self.assertEqual(sent.publication_photos, ())
         self.assertEqual(sent.photos, ())
-        self.assertEqual(_post_types(h, {"photo", "media_group"}), [])
+        # Живой блок шага фото — не доставленный пост: проверяются только
+        # сообщения, на которые ссылается черновик.
+        delivered = set(sent.delivered_message_ids)
+        published_media = [
+            call
+            for call in h.calls
+            if call["type"] in {"photo", "media_group"}
+            and set(h.bot.call_message_ids.get(id(call), ())) & delivered
+        ]
+        self.assertEqual(published_media, [], "анонс ушёл без вложений")
         self.assertGreater(len((h.posts()[-1] or "")), 1024)
         self.assertEqual(h.posts()[-1], sent.publication_text)
 
