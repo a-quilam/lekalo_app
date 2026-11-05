@@ -1,6 +1,51 @@
 # State — Poster
 
-## 2026-11-05 — Poster 2.5.3: E4 закрыт (длинный текст) (poster-manager)
+## 2026-11-05 — Poster 2.5.3: E5 закрыт, приёмка и ревизия пройдены (poster-manager)
+
+HEAD e0c827e. Полный список коммитов релиза (f8fd26d..HEAD):
+42ab56c, 2d35182 (E1), 7fedaaa, 2ab2e62 (E2), 4d36131 (E3), bb470d0 (E4),
+2841241 (R1–R3 + гигиена), e08f964 (приёмка J–L/E4-confirm), e0c827e (mypy).
+push не сделан — следующий шаг.
+
+E5 ЗАКРЫТ:
+- R1 fail-closed `_draft_extras_available`; R2 guard message_id<=0
+  (screen.cleanup_messages, wizard_live._delete_old, _archive_instance_controls);
+  R3 одиночная загрузка шаблона в `_delete_personal_template` (возвращает
+  (outcome, details), handle_delete_yes без повторных чтений — тест-счётчик);
+- гигиена: mypy чист по всему проекту (235 файлов, было 7 ошибок), black чист,
+  `wizard.photos.limit` без упоминания несуществующего раздела;
+- тесты R1–R3: tests/test_stage253_minors_e2.py — 6 тестов, зелёные;
+- HTTP 502 при первом вызове E5: Developer успел внести R1–R3 и гигиену до
+  сбоя; состояние восстановлено по git diff, работа продолжена без отката.
+
+Приёмка 2.5.3 (tests/test_stage253_acceptance_final.py, 8 тестов, зелёные):
+- J: выход в меню/повторное открытие — удаление клавиатур прежнего экземпляра,
+  один новый экземпляр, старые callback безопасны;
+- K: поля площадки не редактируются списком, поддельные aw_qgoto не меняют БД,
+  правовая проверка админ-маршрута;
+- E4-confirm: 1500 символов в опубликованном анонсе с 1 фото → неопубликованная
+  правка в БД, пост/фото не тронуты, переживает рестарт, исправление → ровно
+  одна новая версия (in-place, без лишних публикаций);
+- L: полный сквозной путь /start → ... → рестарт → восстановление.
+
+Reviewer: APPROVED. MINOR-1 (@SKIP) закрыт мной: SKIP = skipIf(INTEGRATION_ERROR)
+— env-guard, тесты выполняются. MINOR-2 (мёртвый фолбэк aw_edit в
+_photo_mode_keyboard при instance is None — недостижим, безопасен) отложен в
+гигиену следующего релиза.
+
+Граница этапа: make check PYTHON=.venv/bin/python → EXIT=0 (ruff, black
+235 файлов, mypy 235 файлов, 2712 тестов OK skipped=1, ui_texts ok 1150).
+
+Показатели 2.5.3: вызовы Dev 11 / Tester 4 / Reviewer 1; повторы из-за steps:
+Tester 3, Dev 4; HTTP 502 — 1 (восстановлено без потерь); permission.rejected 2
+(edit state.md — ожидаемо для роли manager, edit внешнего каталога — обошёл
+работой из Poster/); дефектов продукта найдено и закрыто 6
+(E2-1, E2-2, D3, устаревший тест places, E4 drop_user_input, мёртвые ключи).
+
+Релизный цикл (следующий шаг): push → CI → (после зелёного CI) stop
+poster-bot.service → make db-maintain-clean → start → проверка polling →
+итоговый отчёт владельцу.
+
 
 HEAD bb470d0 (E1: 42ab56c, 2d35182; E2: 7fedaaa, 2ab2e62; E3: 4d36131;
 E4: bb470d0). push не сделан.
