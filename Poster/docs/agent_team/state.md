@@ -1,6 +1,164 @@
 # State — Poster
 
-## 2026-11-04 21:00 MSK — Poster 2.5.2: релиз ЗАВЕРШЁН (poster-manager)
+## 2026-11-05 — Poster 2.5.3: E4 закрыт (длинный текст) (poster-manager)
+
+HEAD bb470d0 (E1: 42ab56c, 2d35182; E2: 7fedaaa, 2ab2e62; E3: 4d36131;
+E4: bb470d0). push не сделан.
+
+E4 — «Длинный текст» ЗАКРЫТ (§7):
+- превышение: короткая ошибка в `_finish_and_deliver` (alert для callback,
+  notice для фото-пути), статус превышения вычисляется из БД (preview +
+  check_announcement_length), флаг user_data `length_problem` удалён;
+- `_render_length_problem`, `_longest_fields`, `_length_problem_pending`,
+  `_resume_after_shortening`, `aw_photo_drop` удалены; мёртвые ключи каталога
+  сняты (bez_fotografiy, limit_snova_4096, render_length_problem.* и др.);
+- ввод не теряется: `drop_user_input` в `_save_question_value`/`_save_extra_value`
+  только после подтверждённой доставки (как в `_close_photo_batch`);
+- приёмка: tests/test_stage253_long_text_e2.py — 6 тестов G/H/I (сохранение,
+  рестарт, отсутствие старого маршрута, поддельный aw_photo_drop → stale);
+- переведены test_poster2_delivery (2 теста), test_poster2_u2b_photos (1);
+- полный набор 2698 OK (skipped=1); ruff/black/mypy по изменённым файлам чисты;
+  ui_texts ok (1150 ключей). Ошибки «no such table brick_sessions/admin_sessions»
+  и «синтаксис YAML» в хвосте — ожидаемый вывод CLI-тестов (намеренно битые
+  фикстуры), набор OK.
+
+Дальше: E5 (последний): R1 `_draft_extras_available` fail-open→fail-closed,
+R2 `delete_message` message_id≤0, R3 двойная загрузка editable в
+handle_delete_yes; тесты J–L; гигиена mypy (7 pre-existing ошибок в тестах —
+make types не пройдёт; black на test_stage251_snapshot_rules_migration.py);
+косметика `wizard.photos.limit` («раздел 📷 Фотографии» больше не существует);
+полный make check; приёмка; релиз: push/CI → stop службы → make db-maintain-clean
+→ start → polling → отчёт владельцу.
+
+Показатели 2.5.3: вызовы Dev 8 / Tester 2 / Reviewer 0; повторы (steps):
+Tester 2, Dev 3; дефектов найдено 5; permission.rejected 0.
+
+
+HEAD 4d36131 (E1: 42ab56c, 2d35182; E2: 7fedaaa, 2ab2e62; E3: 4d36131).
+push не сделан.
+
+E3 — «Фото без кнопки добавления» ЗАКРЫТ (контракт подтверждён владельцем):
+- handlers: `_render_photo_mode`/`_show_photos`/`_photo_mode_keyboard` —
+  управление на самом анонсе (editMessageReplyMarkup при 0–1 фото) или одной
+  панели медиагруппы (2+); кнопка «📥 Добавить фото» удалена из кода и
+  каталога (`buttons.wizard.dobavit_foto`, ключ `wizard.render_photos.
+  izmeneniya_primenyayutsya_srazu`); `aw_photo_add` остался легаси-маршрутом
+  для недоставленных черновиков; «Назад» — `anf_back:{instance_id}`; пояснения
+  0–1 фото — через answerCallbackQuery (не плодить места управления);
+- тексты: `wizard.photos.mode_empty` «📷 Пришлите фото», `mode_more`
+  «📷 Можно прислать ещё» (yaml + DEFAULTS);
+- приёмка: tests/test_stage253_photos_e2.py — 11 тестов (8 классов):
+  раскладки 0/1/2+, нет дублирующих сообщений, альбом одной партией, удаление
+  одного/всех, «Назад»→anp_, рестарт, noop. Зелёные.
+- Устаревшие тесты переведены на живые кнопки (14 файлов), полный набор
+  2692 OK (skipped=1); ruff/black чисты; mypy: 7 pre-existing ошибок на HEAD
+  (гигиена, отдельная задача — см. ниже).
+
+FINDINGS на потом (вне E3):
+- mypy на HEAD красный (7 ошибок в тестах) — `make types` не пройдёт;
+  гигиена перед релизом E5.
+- `wizard.photos.limit` упоминает «раздел 📷 Фотографии», которого больше нет —
+  косметика каталога, поправить в E5.
+
+Дальше: E4 (длинный текст: draft/published, pending-правка в БД с миграцией,
+валидация caption ≤1024 после entities, короткая ошибка, сохранение ввода,
+удаление сломанного маршрута §7; тесты G–I; сценарий 7.1 до фикса). Затем E5
+(R1–R3, J–L, полный make check, приёмка, релиз: push/CI → stop → db-maintain-
+clean → start → polling → отчёт).
+
+Показатели 2.5.3: вызовы Dev 6 / Tester 2 / Reviewer 0; повторы Tester 2,
+Dev 2 (steps); дефектов найдено 5 (E2-1, E2-2, D3, устаревший тест, D3-
+дедупликация); permission.rejected 0.
+
+
+HEAD 2ab2e62 (E1: 42ab56c, 2d35182; E2: 7fedaaa, 2ab2e62). push не сделан.
+
+E2 — «Текстовые поля на самом анонсе» ЗАКРЫТ:
+- 7fedaaa: список полей в клавиатуре анонса, экран «✏️ Изменить анонс» удалён,
+  «📝 Данные»→«📝 Текстовые поля», tr_plain, поля площадки исключены.
+- 2ab2e62 (фиксы по находкам Tester):
+  - E2-1: страница списка полей пишется в nav-стек (NAV_FIELDS entry.page) и
+    используется в `_nav_render`;
+  - E2-2 (критично): подделанный `aw_qgoto`/`aw_qback`/`aw_qskip`/resume-снимок
+    с brick_id поля площадки отклоняется (`_delivered_text_question_allowed`),
+    значение справочника не записывается; проверка ДО `_ensure_stage`;
+  - D3: `_nav_enter(root=True)` для списка полей доставленного анонса —
+    возврат «Назад» из последнего вопроса возвращает на страницу списка;
+  - обновлён устаревший тест test_stage19b (экран «✏️ Изменить анонс» удалён).
+- Приёмка: tests/test_stage253_acceptance_e2.py — 9 тестов D1–D5, K1–K3, зелёные.
+- Тест дефекта 3 (двойной callback_answer) — не подтвердился как дефект
+  (K1/K2 проходят; поведение stale/alert корректно).
+
+Урок: Tester упирался в steps на разведке 4 раза — задание на приёмку теперь
+даётся только после закрытия всех продуктовых дефектов, с готовыми пробами.
+
+Дальше: E3 (фото: убрать «📥 Добавить фото», 0/1/2+ на анонсе, альбом одной
+партией; тесты E–F). Затем E4, E5 (R1–R3, J–L, make check, релиз).
+Замечания линтера вне задачи (проверить на границе этапа): black хочет
+переформатировать test_stage251_snapshot_rules_migration.py; mypy: 4 файла
+тестов (integration_harness:1130, u4a_texts:516, stage25_panel:349,
+stage253_text_fields_e2:151). Задание E2 это не трогало.
+
+Показатели 2.5.3 (заполняется по ходу): вызовы Dev 3 / Tester 2 / Reviewer 0;
+повторы Tester 2 (steps), дефектов найдено 4 (E2-1, E2-2, D3, устаревший тест);
+permission.rejected 0.
+
+## —— (архив) — E2: фиксы дефектов (продолжение E3-записи выше)
+
+E2 — «Текстовые поля на самом анонсе» ЗАКРЫТ:
+- 7fedaaa: список полей в клавиатуре анонса, экран «✏️ Изменить анонс» удалён,
+  «📝 Данные»→«📝 Текстовые поля», tr_plain, поля площадки исключены.
+- 2ab2e62: E2-1 (страница списка в nav-стеке), E2-2 (подделка aw_qgoto
+  отклоняется, `_delivered_text_question_allowed`), D3 (`_nav_enter(root=True)`),
+  приёмка tests/test_stage253_acceptance_e2.py — 9 тестов D1–D5/K1–K3, зелёные.
+- Урок: приёмку Tester давать только после закрытия всех продуктовых дефектов,
+  с готовыми пробами (иначе steps уходит на разведку).
+
+Архив причин (разведка HEAD f8fd26d):
+
+1. Условные части (§3): `handlers/template_conditional.py` `_entries()` собирает
+   кирпичики из ОБОИХ секций (`_section_texts` возвращает content+extended);
+   `_bricks_content` дублирует список в тексте и клавиатуре без пагинации.
+   Правильно: entries только из extended_content; список без дублей в тексте;
+   пагинация 5/стр; названия экранов §3.7; удаление кирпичика → удаление правила.
+2. Кнопки площадок (§4): `handlers/places.py` `_hub_content` (строки 331–338:
+   search/add на отдельных строках) и `_manage_content` (1417–1422).
+3. «Изменить анонс» (§5): `anp_data` → `_render_delivered_edit` создаёт
+   отдельное служебное сообщение (`_ensure_service_screen_below` + `_render`);
+   переименовать «📝 Данные»→«📝 Текстовые поля»; список полей — редактированием
+   клавиатуры самого анонса; поля площадки исключить из `_question_fields_for`.
+4. Фото (§6): `_render_photos` — отдельный экран «📷 Фотографии анонса» с
+   кнопкой «📥 Добавить фото». Правильно: фото-режим на самом анонсе/панели,
+   «📷 Пришлите фото» информационная, «📷 Можно прислать ещё | 🗑 Удалить фото»,
+   удаление кнопки «Добавить фото» везде.
+5. Длинный текст (§7): `_render_length_problem` (announcement_wizard.py:4163) —
+   старый экран восстановления («Описание — 800», «Без фотографий»,
+   aw_qmanage-циклы). Правильно: принять текст в черновик, не публиковать,
+   короткое сообщение об ошибке, черновик/published разделены, переживает рестарт
+   (БД, не user_data). Сломанный маршрут удалить.
+6. Reviewer MINOR: `_draft_extras_available` fail-open=True (announcement_wizard.py:3184);
+   `delete_message` без проверки message_id>0 (screen.cleanup_messages:236,
+   wizard_live._delete_old:290, announcement_wizard.py:940/5256);
+   двойная загрузка editable в handle_delete_yes (templates.py:2421, повторное
+   get_personal_template в ветках stale/blocked).
+
+План этапов (одна функция за вызов, Developer → целевые тесты; Tester/Reviewer
+по риск-уровню):
+- E1: условные части extended-only + пагинация + удаление правил при удалении
+  кирпичика + названия экранов (тесты A–C). HIGH.
+- E2: текстовые поля на самом анонсе, «📝 Текстовые поля», исключение полей
+  площадки, кнопки списка площадок в одну строку (тесты D, K). MEDIUM-HIGH.
+- E3: фото-режим без кнопки добавления, 0/1/2+, медиагруппы (тесты E–F). HIGH.
+- E4: неопубликованные правки, валидация длины, удаление сломанного маршрута,
+  переживание рестарта (тесты G–I). HIGH.
+- E5: Reviewer MINOR (R1–R3), тесты J–L, негативные/граничные §11, полный
+  make check, приёмка, коммиты/CI, релизный цикл (stop → db-maintain-clean →
+  start → polling), отчёт.
+
+Показатели 2.5.3 (заполняется по ходу): вызовы Dev/Tester/Reviewer 0/0/0,
+повторы 0, permission.rejected 0.
+
+
 
 - Push: `4a61ca5..0adc8c7` (8 коммитов: §2–§8 + приёмка + docs), CI
   41878651191 — success (20 min).

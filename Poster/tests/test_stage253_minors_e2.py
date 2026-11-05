@@ -32,7 +32,14 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
+
+if TYPE_CHECKING:
+    # Только для типов: FakeBot заменяет Bot по duck-typing (см.
+    # tests/integration_harness.py), поэтому явный каст к Bot — на месте
+    # вызова функций с аннотацией "Bot", а не ослабление проверки.
+    from telegram import Bot
 
 try:
     import announcement_controls as controls
@@ -238,7 +245,7 @@ class NonPositiveMessageIdTests(unittest.TestCase):
 
         async def run() -> list[dict]:
             bot = FakeBot()
-            await wizard_live._delete_old(bot, 777, (0, -5, 5555))
+            await wizard_live._delete_old(cast("Bot", bot), 777, (0, -5, 5555))
             return [call for call in bot.calls if call["type"] == "delete_message"]
 
         deletes = asyncio.run(run())
