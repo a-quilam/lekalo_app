@@ -146,8 +146,10 @@ class DoubleCallbackTests(unittest.TestCase):
         after = _details(h, draft_id)
         self.assertEqual(after.delivered_message_ids, version_ids)
         self.assertIn("Данные изменились", h.answer_texts()[-1])
-        # §18 (2.5): итогового экрана нет — на экране рабочий редактор.
-        self.assertIn("✏️ Изменить анонс", h.screen_text())
+        # 2.5.3 §5: служебного экрана нет — устаревшая кнопка открывает
+        # список полей на самом анонсе.
+        self.assertEqual(h.screen_text(), "", "служебного экрана нет")
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
 
     @scenario_test
     async def test_forged_skip_with_unknown_draft_is_rejected(self, h) -> None:

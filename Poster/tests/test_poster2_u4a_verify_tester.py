@@ -107,9 +107,11 @@ class OwnerScenarioTests(_Case):
                     "help.rich.title": "СПРАВКА-ПРИЁМКА",
                     "wizard.photos.title": "📷 СНИМКИ-ПРИЁМКА",
                     "wizard.photos.hint": "Пришлите до {limit} картинок.",
-                    # C2b-2: экрана «Анонс готов» нет — после доставки
-                    # открывается компактный редактор (§26–27).
-                    "wizard.finished.edit_text": "✏️ ПРАВКА-ПРИЁМКА",
+                    # C2b-2 / 2.5.3 §5: экрана «Анонс готов» и экрана
+                    # «✏️ Изменить анонс» нет — после доставки правка идёт
+                    # через список полей на самом анонсе.
+                    "wizard.fields.title": "📝 ПОЛЯ-ПРИЁМКА",
+                    "wizard.fields.hint": "Выберите поле-приёмка.",
                     "buttons.finished.data": "📝 ДАННЫЕ-ПРИЁМКА",
                     "bricks.hub.title_html": "🧩 <b>КИРПИЧИ-ПРИЁМКА</b>",
                     "places.all.empty": "📚 ПУСТО-ПРИЁМКА",
@@ -171,22 +173,20 @@ class OwnerScenarioTests(_Case):
         self.assertIn(("◀️ НАЗАД-ПРИЁМКА", "aw_photo_back:1:5"), h.screen_buttons())
 
         await h.callback(_callback(h, "aw_photo_none"))
-        # 2.5.2 §2: после доставки служебного экрана в чате нет — управление
-        # живёт на самом анонсе (`anp_`). Временный редактор открывается
-        # кнопкой «📝 Данные», и его заголовок тоже берётся из каталога.
+        # 2.5.2 §2 / 2.5.3 §5: после доставки служебного экрана в чате нет —
+        # управление живёт на самом анонсе (`anp_`). «📝 ДАННЫЕ-ПРИЁМКА» —
+        # подпись из каталога; нажатие открывает список полей вместо
+        # клавиатуры анонса.
         data_control = h.control_callback("data")
-        self.assertIsNotNone(data_control, "у анонса нет кнопки «Данные»")
+        self.assertIsNotNone(data_control, "у анонса нет кнопки полей")
         assert data_control is not None
+        self.assertEqual(
+            h.live_label(data_control), "📝 ДАННЫЕ-ПРИЁМКА", h.live_buttons()
+        )
         await h.callback(data_control)
         self.assertTrue(
-            h.screen_text().startswith("✏️ ПРАВКА-ПРИЁМКА"), h.screen_text()
-        )
-        self.assertTrue(
-            any(
-                label == "📝 ДАННЫЕ-ПРИЁМКА" and data and data.startswith("aw_qmanage:")
-                for label, data in h.screen_buttons()
-            ),
-            h.screen_buttons(),
+            h.live_callbacks("anf_sel:"),
+            f"список полей не открыт: {h.live_buttons()}",
         )
 
     def test_fresh_process_reads_catalog_without_python_change(self) -> None:
@@ -579,15 +579,18 @@ class CompletenessTests(_Case):
         await h.text("Значение")
         await h.callback(_callback(h, "aw_photo_none"))
 
-        # 2.5.2 §2: после доставки служебного экрана нет — управление живёт
-        # на самом анонсе (`anp_`), поэтому подпись «Меню» проверяется на
-        # временном редакторе, который открывает кнопка «📝 Данные», и на
-        # экране фотографий, куда ведёт «🖼 Фото» того же анонса.
+        # 2.5.2 §2 / 2.5.3 §5: после доставки служебного экрана нет —
+        # управление живёт на самом анонсе (`anp_`), а «📝 Текстовые поля»
+        # заменяют его клавиатуру списком полей. Подпись «Меню» проверяется
+        # после возврата «◀️ Назад», где управление снова видно.
         data_control = h.control_callback("data")
-        self.assertIsNotNone(data_control, "у анонса нет кнопки «Данные»")
+        self.assertIsNotNone(data_control, "у анонса нет кнопки полей")
         assert data_control is not None
         await h.callback(data_control)
-        edit_labels = [label for label, _data in h.screen_buttons()]
+        backs = h.live_callbacks("anf_back:")
+        self.assertTrue(backs, f"список полей не открыт: {h.live_buttons()}")
+        await h.callback(backs[0])
+        edit_labels = [label for label, _data in h.live_buttons()]
         self.assertIn("МЕНЮ-КАТАЛОГ", edit_labels)
 
         photos_control = h.control_callback("photos")

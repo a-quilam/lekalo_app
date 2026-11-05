@@ -340,11 +340,12 @@ class ScreenHtmlEscapingTests(unittest.TestCase):
     async def test_extra_brick_title_is_escaped_in_section_and_prompt(self, h):
         """Экраны выбора секции и ввода значения показывают тег как текст."""
         brick_id = await self._add_html_titled_extra(h)
-        from tests.test_stage27b_announcement_ui import _callback, _open_edit
+        from tests.test_stage27b_announcement_ui import _open_control, _open_edit
 
-        # U2b: после доставки доп. кирпичики открываются с экрана «Изменить».
+        # U2b/2.5.3 §5: после доставки «📝 Текстовые поля» заменяют клавиатуру
+        # анонса, поэтому доп. поля открываются после возврата «◀️ Назад».
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_extras"))
+        await _open_control(h, "extras")
         # Poster 2.4 (P2): кирпичик открывается прямо из списка.
         data = [d for d in _callbacks(h, "aw_exedit") if d.endswith(f":{brick_id}")]
         if not data:
@@ -420,18 +421,25 @@ class ScreenHtmlEscapingTests(unittest.TestCase):
         self.assertNotIn("<b>ответ</b>", stored.publication_text)
         # И в списке полей: заголовок в кнопке — простой текст кнопки
         # (без HTML-парсинга), вопрос показывает значение как текст.
-        from tests.test_stage27b_announcement_ui import _callback, _open_edit
+        from tests.test_stage27b_announcement_ui import _open_edit
 
+        # 2.5.3 §5: список текстовых полей живёт на управлении анонса, а не
+        # на отдельном экране; поле открывается живой кнопкой `anf_sel:`.
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        button_labels = [label for label, _data in h.screen_buttons()]
+        fields = h.live_callbacks("anf_sel:")
+        self.assertTrue(fields, "список полей не открыт")
+        field_labels = [
+            label
+            for label, data in h.live_buttons()
+            if data and data.startswith("anf_sel:")
+        ]
+        # Подпись inline-кнопки — plain-текст: продукт не экранирует данные
+        # в подписи (см. `tr_plain`), поэтому заголовок сверяется напрямую.
         self.assertTrue(
-            any("Поле <u>с тегом</u>" in label for label in button_labels),
+            any("Поле <u>с тегом</u>" in label for label in field_labels),
             "заголовок поля не найден в кнопках",
         )
-        edit_data = _callbacks(h, "aw_qgoto")
-        self.assertTrue(edit_data)
-        await h.callback(edit_data[0])
+        await h.callback(fields[0])
         raw3 = h.screen()["text"]
         self.assertIn("Текущее значение: &lt;b&gt;ответ&lt;/b&gt;", raw3)
         self.assertNotIn("<b>ответ</b>", raw3)

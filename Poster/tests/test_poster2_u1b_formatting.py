@@ -47,7 +47,9 @@ try:
         _choose_personal,
         _latest_draft,
         _no_photos,
+        _open_control,
         _open_edit,
+        _open_field_question,
         _reopen_question,
         _seed_personal_template,
         _seed_place,
@@ -222,8 +224,9 @@ class FormattingScreenTests(unittest.TestCase):
         # U2b: категории правки живут на экране «Изменить».
         await _open_edit(h)
 
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        # 2.5.3 §5: у доставленного анонса правка идёт сразу через список
+        # полей — служебного экрана «✏️ Изменить анонс» больше нет.
+        await _open_field_question(h)
         # Poster 2.4 (P2): кнопки «✏️ Изменить ответ» больше нет — экран
         # вопроса сам показывает текущее значение и принимает новый ввод.
         self.assertIn("Текущее значение: <u>Старое</u>", h.screen()["text"])
@@ -259,7 +262,7 @@ class FormattingScreenTests(unittest.TestCase):
         await _no_photos(h)
         await _open_edit(h)
 
-        await h.callback(_callback(h, "aw_extras"))
+        await _open_control(h, "extras")
         # Poster 2.4 (P2): незаполненный доп. кирпичик открывается сразу из
         # списка (кнопки «➕ Добавить поле» больше нет).
         await h.callback(_callback(h, "aw_exedit", f":{bricks['extra']}"))
@@ -299,7 +302,8 @@ class FormattingPersistenceTests(unittest.TestCase):
         self.assertIn("<b>До</b> рестарта", _live_text(h))
         # U2b: после рестарта анонс доставлен, категории правки — на экране
         # «Изменить».
-        await _open_edit(h)
+        # U2b: после рестарта черновик переоткрыт на экране обзора —
+        # категории правки там прежние (`aw_qmanage` → `aw_qgoto`).
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
         self.assertIn("Текущее значение: <b>До</b> рестарта", h.screen()["text"])

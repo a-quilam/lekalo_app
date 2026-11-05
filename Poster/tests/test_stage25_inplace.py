@@ -47,7 +47,8 @@ try:
     from tests.test_stage27b_announcement_ui import (
         _callback,
         _latest_draft,
-        _open_edit,
+        _open_control,
+        _open_field_question,
     )
 
     INTEGRATION_IMPORT_ERROR = HARNESS_IMPORT_ERROR
@@ -55,7 +56,6 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
     INTEGRATION_IMPORT_ERROR = str(exc)
 
 
-DELIVERED_TITLE = "✏️ Изменить анонс"
 PHOTO_STEP_TITLE = "📷 Фотографии анонса"
 UPDATED_TEXT = "Обновлённое"
 
@@ -64,10 +64,8 @@ UPDATED_TEXT = "Обновлённое"
 
 
 async def _change_value(h, text: str = UPDATED_TEXT) -> None:
-    """Экран правки → «Данные» → пункт поля → новый текст."""
-    await _open_edit(h)
-    await h.callback(_callback(h, "aw_qmanage"))
-    await h.callback(_callback(h, "aw_qgoto"))
+    """Список полей → пункт поля → новый текст (2.5.3 §5)."""
+    await _open_field_question(h)
     await h.text(text)
 
 
@@ -94,6 +92,18 @@ def _edits_of(h, message_id: int, kind: str = "edit_message") -> list[dict]:
 
 def _panel_records(h) -> list[dict]:
     return [call for call in h.calls if is_panel_record(call)]
+
+
+def _panel_sends(h) -> list[dict]:
+    """
+    Вызовы, СОЗДАВШИЕ панель управления (§22).
+
+    2.5.3 §5: список текстовых полей правит текст панели
+    (`editMessageText`), поэтому `is_panel_record` видит и правки. Проверки
+    «панель не задублирована» считают именно отправки: правка панели —
+    ожидаемая работа с ней, а не вторая панель.
+    """
+    return [call for call in _panel_records(h) if call["type"] == "message"]
 
 
 def _deleted(h, message_id: int) -> bool:
@@ -227,7 +237,7 @@ class InPlaceAlbumTests(unittest.TestCase):
         self.assertEqual(len(_content_calls(h, "media_group")), groups_before)
         self.assertEqual(len(h.posts()), 1, "второй альбом не отправлен")
         self.assertFalse(_deleted(h, panel_id), "панель активного не удаляется")
-        self.assertEqual(len(_panel_records(h)), 1, "вторая панель не отправлена")
+        self.assertEqual(len(_panel_sends(h)), 1, "вторая панель не отправлена")
         self.assertIn(UPDATED_TEXT, h.bot.content_text(h.chat_id, first_id) or "")
 
 
@@ -296,12 +306,12 @@ class PhotoCountChangeTests(unittest.TestCase):
         Открывает коллекцию фото доставленного анонса.
 
         2.5.2 §2: после публикации служебного экрана в чате нет, поэтому
-        навигация идёт только через управление экземпляром: «📝 Данные» →
-        «🖼 Фото». Текст прошлого экрана в журнале Harness не признак
+        навигация идёт только через управление экземпляром: «🖼 Фото».
+        Открытый список полей (2.5.3 §5) сначала возвращает управление
+        «◀️ Назад». Текст прошлого экрана в журнале Harness не признак
         открытого экрана — сообщение уже удалено.
         """
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_photos"))
+        await _open_control(h, "photos")
         if PHOTO_STEP_TITLE not in h.screen_text():
             raise AssertionError(f"Не коллекция фото: {h.screen_text()}")
 
@@ -367,7 +377,7 @@ class PhotoCountChangeTests(unittest.TestCase):
             [getattr(item, "media", None) for item in groups[0]["media"]],
             ["photo-0", "photo-1"],
         )
-        panels = _panel_records(h)
+        panels = _panel_sends(h)
         self.assertEqual(len(panels), 1, "ровно одна панель")
         panel_ids = h.bot.call_message_ids[id(panels[0])]
         self.assertEqual(len(panel_ids), 1)
@@ -443,8 +453,7 @@ class PhotoCountChangeTests(unittest.TestCase):
         self.assertIsNotNone(panel_id)
         groups_before = len(_content_calls(h, "media_group"))
 
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_photos"))
+        await _open_control(h, "photos")
         await h.callback(_callback(h, "aw_photo_clear"))
         await h.callback(_callback(h, "aw_photo_clear_yes"))
 
@@ -508,8 +517,7 @@ class StructureChangeFailureTests(unittest.TestCase):
     async def _add_photo_unchecked(self, h, file_id: str) -> None:
         """Добавляет фото в доставленный анонс (сбой доставки гасит ошибка)."""
         if PHOTO_STEP_TITLE not in h.screen_text():
-            await _open_edit(h)
-            await h.callback(_callback(h, "aw_photos"))
+            await _open_control(h, "photos")
         await h.photo(file_id)
 
 

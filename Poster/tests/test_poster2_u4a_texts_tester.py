@@ -169,8 +169,9 @@ class RetiredLiteralTests(unittest.TestCase):
             "handlers/admin.py": "admin.conflict.notification_html",
             "errors.py": "errors.internal",
             "utils/screen.py": "screen.legacy_keyboard_reset",
-            # §18 (2.5): экрана «Анонс готов» нет — каталог задаёт текст редактора.
-            "handlers/announcement_wizard.py": "wizard.finished.edit_text",
+            # §18 (2.5) / 2.5.3 §5: экрана «Анонс готов» нет — каталог задаёт
+            # тексты списка текстовых полей.
+            "handlers/announcement_wizard.py": "wizard.fields.title",
             "handlers/templates.py": "errors.stale.templates",
         }
         for relative, key in expected.items():
@@ -272,16 +273,11 @@ class OwnerScenarioTests(_CatalogCase):
         )
         report = ui_texts.reload_texts(self.path)
         self.assertTrue(report.ok, report.errors)
-        from handlers import announcement_wizard
+        # 2.5.3 §5: категории правки — это управление самого анонса
+        # (`anp_`), а не отдельный экран редактора.
+        import announcement_controls as controls
 
-        class Details:
-            draft_id = 5
-            revision = 2
-            photos = ()
-
-        markup = announcement_wizard._delivered_edit_keyboard(
-            Details(), extras_available=False
-        )
+        markup = controls.panel_keyboard(5, photos_count=0, extras_available=False)
         labels = [button.text for row in markup.inline_keyboard for button in row]
         self.assertEqual(labels, ["📝 Правка", "🖼 Снимки (0)", "🏠 Домой"])
 

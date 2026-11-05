@@ -47,6 +47,7 @@ try:
         is_screen_record,
         scenario_test,
     )
+    from tests.test_stage25_acceptance_c import _assert_field_list
     from tests.test_stage25_delivery_instances import (
         ANNOUNCEMENT_TEXT,
         _delivered_with_photos,
@@ -64,7 +65,9 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 
 # Заголовки экранов, к которым ведут действия панели (§18/§26–27/§34).
-DELIVERED_EDIT_TITLE = "✏️ Изменить анонс"
+# 2.5.3 §5: экрана «✏️ Изменить анонс» больше нет — «📝 Текстовые поля»
+# открывают список полей на самом управлении анонса.
+FIELDS_TITLE = "📝 Текстовые поля"
 PHOTOS_TITLE = "📷 Фотографии анонса"
 EXTRAS_TITLE = "🧩 Дополнительные поля"
 MAIN_MENU_TITLE = "Здравствуйте! 👋"
@@ -72,15 +75,17 @@ MAIN_MENU_TITLE = "Здравствуйте! 👋"
 # §27: набор действий ОДИН и тот же у клавиатуры сообщения и у панели
 # медиагруппы. Счётчик фото в подписи кнопки — единственное отличие.
 EXPECTED_PANEL_ACTIONS = (
-    ("📝 Данные", "anp_data"),
+    ("📝 Текстовые поля", "anp_data"),
     ("🖼 Фото (n)", "anp_photos"),
     ("🧩 Дополнительные поля", "anp_extras"),
     ("🏠 В меню", "anp_menu"),
 )
 
 # Экран и состояние диалога после действия панели (§24/§30–33).
+# `None` — отдельного экрана нет: список полей живёт на управлении анонса
+# (2.5.3 §5), поэтому проверяется живая клавиатура чата.
 PANEL_EXPECTATIONS = {
-    "data": (DELIVERED_EDIT_TITLE, AW_PREVIEW),
+    "data": (None, AW_PREVIEW),
     "photos": (PHOTOS_TITLE, AW_PREVIEW),
     "extras": (EXTRAS_TITLE, AW_EXTRAS),
     "menu": (MAIN_MENU_TITLE, None),
@@ -301,8 +306,10 @@ class PanelRoutingTests(PanelTestMixin, unittest.TestCase):
         Нажатие одной кнопки панели с проверкой ответа и состава чата.
 
         2.5.2 §2: служебных экранов у анонса нет, поэтому первый вход в
-        редактор («Данные»/«Фото»/«Доп. поля») создаёт ВРЕМЕННЫЙ экран —
-        это допустимо. Новых постов и лишних удалений быть не должно.
+        редактор («Фото»/«Доп. поля») создаёт ВРЕМЕННЫЙ экран — это
+        допустимо. Новых постов и лишних удалений быть не должно. 2.5.3 §5:
+        «📝 Текстовые поля» вообще не создают сообщений — список живёт на
+        клавиатуре анонса или в тексте его единственной панели.
         """
         data = _button_data(buttons, action)
         calls_before = len(h.calls)
@@ -318,11 +325,30 @@ class PanelRoutingTests(PanelTestMixin, unittest.TestCase):
             for call in new_calls
             if call["type"] in {"message", "photo", "media_group"}
             and not is_screen_record(call)
+            and not is_panel_record(call)
         ]
         self.assertEqual(created, [], f"{action}: лишние сообщения в чате")
-        self.assertEqual(
-            h.deleted_ids(), deleted_before, f"{action}: лишние удаления сообщений"
-        )
+        # 2.5.3 §5: возврат к списку полей закрывает временный экран
+        # («Фото»/«Доп. поля»), иначе в чате осталась бы вторая клавиатура.
+        # Удаляться могут только служебные экраны — не анонс и не панель.
+        newly_deleted = set(h.deleted_ids()) - set(deleted_before)
+        for message_id in newly_deleted:
+            creator = next(
+                (
+                    call
+                    for call in h.calls
+                    if int(message_id)
+                    in {int(mid) for mid in h.bot.call_message_ids.get(id(call), ())}
+                ),
+                None,
+            )
+            self.assertIsNotNone(
+                creator, f"{action}: удалено чужое сообщение {message_id}"
+            )
+            self.assertTrue(
+                is_screen_record(creator),
+                f"{action}: удалено не служебное сообщение ({message_id})",
+            )
         self.assertEqual(h.posts(), posts_before, f"{action}: анонс переиздан")
 
         new_answers = h.answers()[answers_before:]
@@ -331,10 +357,16 @@ class PanelRoutingTests(PanelTestMixin, unittest.TestCase):
         self.assertFalse(new_answers[0].get("text"), f"{action}: текст не нужен")
 
         title, state = PANEL_EXPECTATIONS[action]
-        self.assertTrue(
-            h.screen_text().startswith(title),
-            f"{action}: ожидался экран {title!r}, получено {h.screen_text()[:80]!r}",
-        )
+        if title is None:
+            # 2.5.3 §5: список текстовых полей — на самом управлении анонса.
+            _assert_field_list(h)
+            self.assertEqual(h.screen_text(), "", "служебный экран не создаётся")
+        else:
+            self.assertTrue(
+                h.screen_text().startswith(title),
+                f"{action}: ожидался экран {title!r}, "
+                f"получено {h.screen_text()[:80]!r}",
+            )
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), state)
 
     @scenario_test
@@ -494,10 +526,17 @@ class RestartPanelTests(PanelTestMixin, unittest.TestCase):
             )
 
         title, state = PANEL_EXPECTATIONS[action]
-        self.assertTrue(
-            h.screen_text().startswith(title),
-            f"{action}: ожидался экран {title!r}, получено {h.screen_text()[:80]!r}",
-        )
+        if title is None:
+            # 2.5.3 §5: список текстовых полей — на самом управлении анонса,
+            # отдельного экрана после рестарта тоже не создаётся.
+            _assert_field_list(h)
+            self.assertEqual(h.screen_text(), "", "служебный экран не создаётся")
+        else:
+            self.assertTrue(
+                h.screen_text().startswith(title),
+                f"{action}: ожидался экран {title!r}, "
+                f"получено {h.screen_text()[:80]!r}",
+            )
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), state)
 
     @scenario_test

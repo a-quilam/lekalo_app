@@ -44,7 +44,9 @@ try:
         _draft_by_id,
         _latest_draft,
         _no_photos,
+        _open_control,
         _open_edit,
+        _open_field_question,
         _seed_personal_template,
         _seed_place,
         _start_to_template,
@@ -112,17 +114,10 @@ async def _open_photos(h) -> None:
     Открывает коллекцию фото доставленного анонса.
 
     2.5.2 §2: после публикации служебного экрана в чате нет — управление
-    живёт на самом анонсе (`anp_photos`). Прежний путь через экран
-    редактора (`aw_photos`) остаётся запасным для случаев, когда экран уже
-    открыт.
+    живёт на самом анонсе (`anp_photos`). Если открыт список текстовых полей
+    (2.5.3 §5), сначала возвращаем управление «◀️ Назад».
     """
-    control = h.control_callback("photos")
-    if control is not None:
-        await h.callback(control)
-    else:
-        if not _callbacks(h, "aw_photos"):
-            await _open_edit(h)
-        await h.callback(_callback(h, "aw_photos"))
+    await _open_control(h, "photos")
     if "Фотографии анонса" not in h.screen_text():
         raise AssertionError(f"Не экран фотографий: {h.screen_text()}")
 
@@ -552,9 +547,7 @@ class AnnouncementAutoDeliveryFailureTests(unittest.TestCase):
     async def test_foreign_callback_cannot_deliver(self, h) -> None:
         await h.text("/start")
         draft, _bricks = await _personal_delivered(h)
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Чужое изменение")
@@ -654,9 +647,7 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         message_id = first_ids[0]
 
         # Меняем значение через управление полями.
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Обновлённое")
@@ -697,9 +688,7 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
 
         # Ещё одна правка правит то же самое сообщение, а не создаёт третью
         # версию в чате.
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Третье")
@@ -725,9 +714,7 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         h.bot.errors_by_type["delete_message"] = BadRequest(
             "Message can't be deleted for everyone"
         )
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Новая версия")
@@ -782,7 +769,7 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
         first_ids = tuple(_stored(h, draft.id).delivered_message_ids)
         message_id = first_ids[0]
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_extras"))
+        await _open_control(h, "extras")
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_EXTRAS)
 
         # Poster 2.4 (P2): список сразу содержит доп. кирпичики расширенного

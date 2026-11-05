@@ -175,6 +175,17 @@ def panel_records(h) -> list[dict]:
     return [call for call in h.calls if is_panel_record(call)]
 
 
+def panel_sends(h) -> list[dict]:
+    """
+    Вызовы, СОЗДАВШИЕ панель управления (§22).
+
+    2.5.3 §5: список текстовых полей правит текст панели (`editMessageText`),
+    поэтому `panel_records` видит и правки. Проверка «панель не
+    продублирована» считает именно отправки: правка — ожидаемая работа.
+    """
+    return [call for call in panel_records(h) if call["type"] == "message"]
+
+
 def panel_id(h) -> int | None:
     records = panel_records(h)
     if not records:
@@ -208,6 +219,14 @@ def screen_data(h, prefix: str) -> str:
     if not found:
         raise AssertionError(f"нет callback {prefix}: {h.screen_buttons()}")
     return found[0]
+
+
+def _field_callback(h) -> str:
+    """`callback_data` первого поля списка «📝 Текстовые поля» (2.5.3 §5)."""
+    fields = h.live_callbacks("anf_sel:")
+    if not fields:
+        raise AssertionError(f"нет списка полей: {h.live_buttons()}")
+    return fields[0]
 
 
 def main_menu_shown(h) -> bool:
@@ -365,18 +384,20 @@ class SingleControlTests(unittest.TestCase):
     async def test_4_successful_edit_persist_inplace_close_control_kept(
         self, h
     ) -> None:
-        """Сц. 4: сохранение → БД, правка на месте, экран закрыт, управление живо."""
+        """Сц. 4: сохранение → БД, правка на месте, вопрос закрыт, управление живо."""
         await h.text("/start")
         draft = await _delivered_without_photos(h)
         active = _only_active(h, draft.id)
         message_id = active.message_ids[0]
 
+        # 2.5.3 §5: «📝 Текстовые поля» — список на самом анонсе; отдельного
+        # экрана нет, выбор поля даёт ровно один временный вопрос.
         await h.callback(control_data(h, controls.ACTION_DATA))
+        self.assertIsNone(h.screen_message_id(), "служебного экрана нет")
+        field_data = _field_callback(h)
+        await h.callback(field_data)
         screen_id = h.screen_message_id()
-        self.assertIsNotNone(screen_id, "временный экран редактора не открыт")
-
-        await h.callback(screen_data(h, "aw_qmanage"))
-        await h.callback(screen_data(h, "aw_qgoto"))
+        self.assertIsNotNone(screen_id, "временный вопрос не открыт")
         await h.text("Обновлено")
 
         self.assertEqual(
@@ -385,7 +406,7 @@ class SingleControlTests(unittest.TestCase):
         self.assertEqual(
             h.bot.content_text(h.chat_id, message_id), "Обновлено", "правка не на месте"
         )
-        self.assertIn(int(screen_id), h.deleted_ids(), "временный экран не закрыт")
+        self.assertIn(int(screen_id), h.deleted_ids(), "временный вопрос не закрыт")
         self.assertEqual(h.posts(), ["Обновлено"], "создана вторая версия анонса")
         callbacks = callbacks_of(h, message_id)
         self.assertTrue(
@@ -404,9 +425,10 @@ class SingleControlTests(unittest.TestCase):
         panel = active.panel_message_id
         caption_id = active.message_ids[0]
 
+        # 2.5.3 §5: у медиагруппы список полей — правка текста панели; выбор
+        # поля даёт тот же единственный временный вопрос.
         await h.callback(control_data(h, controls.ACTION_DATA))
-        await h.callback(screen_data(h, "aw_qmanage"))
-        await h.callback(screen_data(h, "aw_qgoto"))
+        await h.callback(_field_callback(h))
         await h.text("Обновлено")
 
         self.assertEqual(h.bot.content_text(h.chat_id, caption_id), "Обновлено")
@@ -415,7 +437,7 @@ class SingleControlTests(unittest.TestCase):
             1,
             "альбом переиздан",
         )
-        self.assertEqual(len(panel_records(h)), 1, "панель продублирована")
+        self.assertEqual(len(panel_sends(h)), 1, "панель продублирована")
         self.assertTrue(
             all(item.startswith("anp_") for item in callbacks_of(h, int(panel)))
         )
@@ -439,9 +461,8 @@ class SingleControlTests(unittest.TestCase):
         message_id = active.message_ids[0]
 
         await h.callback(control_data(h, controls.ACTION_DATA))
+        await h.callback(_field_callback(h))
         screen_id = h.screen_message_id()
-        await h.callback(screen_data(h, "aw_qmanage"))
-        await h.callback(screen_data(h, "aw_qgoto"))
         await h.text("не число")
 
         self.assertNotIn(
@@ -481,14 +502,18 @@ class SingleControlTests(unittest.TestCase):
 
     @scenario_test
     async def test_6b_menu_from_editor_strips_keyboard(self, h) -> None:
-        """Сц. 6 (экран редактора): управление снято с фактического сообщения."""
+        """Сц. 6 (из списка полей): управление снято с фактического сообщения."""
         await h.text("/start")
         draft = await _delivered_without_photos(h)
         active = _only_active(h, draft.id)
         message_id = active.message_ids[0]
 
+        # 2.5.3 §5: вместо экрана «✏️ Изменить анонс» — список текстовых
+        # полей на управлении анонса. Меню доступно после «◀️ Назад».
         await h.callback(control_data(h, controls.ACTION_DATA))
-        self.assertTrue(h.screen_text().startswith(EDIT_TITLE), h.screen_text()[:80])
+        self.assertIsNone(h.screen_message_id(), "служебного экрана нет")
+        self.assertTrue(h.live_callbacks("anf_back:"), "список полей не открыт")
+        await h.callback(h.live_callbacks("anf_back:")[0])
         await h.callback("main_menu")
 
         self.assertIsNone(markup_of(h, message_id), "клавиатура анонса осталась")

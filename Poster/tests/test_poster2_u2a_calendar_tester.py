@@ -185,6 +185,7 @@ class ExtraBrickCalendarTests(unittest.TestCase):
             from tests.test_stage27b_announcement_ui import (
                 _choose_personal,
                 _no_photos,
+                _open_control,
                 _open_edit,
                 _seed_personal_template,
                 _seed_place,
@@ -214,7 +215,7 @@ class ExtraBrickCalendarTests(unittest.TestCase):
             # Список открывается сразу полным набором: кнопки «Добавить поле»
             # (`aw_exadd`) больше нет, кирпичик открывается своим `aw_exedit`.
             await _open_edit(h)
-            await h.callback(_first(h, "aw_extras"))
+            await _open_control(h, "extras")
             suffix = f":{bricks['extra']}"
             found = [
                 value

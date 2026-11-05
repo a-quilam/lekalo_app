@@ -498,29 +498,28 @@ class CatalogScreenTests(_TempCatalog):
 
     @scenario_test
     async def test_finished_screen_text_comes_from_catalog(self, h: Harness) -> None:
-        """§18 (2.5): экрана «Анонс готов» нет — каталог задаёт текст редактора."""
+        """§18 (2.5) / 2.5.3 §5: каталог задаёт тексты списка полей."""
         from handlers import announcement_wizard
 
         self.write_catalog(
             **{
-                "wizard.finished.edit_text": "✏️ Правка-каталог\n\nВыберите категорию",
+                "wizard.fields.title": "📝 Поля-каталог",
+                "wizard.fields.hint": "Выберите поле-каталог.",
                 "buttons.finished.data": "📝 Данные-каталог",
             }
         )
         ui_texts.reload_texts(self.path)
-        self.assertEqual(
-            ui_texts.tr("wizard.finished.edit_text"),
-            "✏️ Правка-каталог\n\nВыберите категорию",
-        )
+        self.assertEqual(ui_texts.tr("wizard.fields.title"), "📝 Поля-каталог")
         self.assertEqual(ui_texts.tr("buttons.finished.data"), "📝 Данные-каталог")
-        # Константы модуля — те же строки каталога (дефолты при загрузке).
+        # Тело списка полей собирается из строк каталога, а не из литералов.
         self.assertEqual(
-            announcement_wizard.DELIVERED_EDIT_TEXT,
-            ui_texts.DEFAULTS["wizard.finished.edit_text"],
+            announcement_wizard._field_list_text([object()]),
+            "📝 Поля-каталог\n\nВыберите поле-каталог.",
         )
         # Ключей удалённого экрана завершения в каталоге больше нет.
         self.assertNotIn("wizard.finished.text", ui_texts.DEFAULTS)
         self.assertNotIn("wizard.finished.pending", ui_texts.DEFAULTS)
+        self.assertNotIn("wizard.finished.edit_text", ui_texts.DEFAULTS)
 
     @scenario_test
     async def test_error_notice_text_comes_from_catalog(self, h: Harness) -> None:
@@ -636,10 +635,17 @@ class DeadKeyScreenTests(_TempCatalog):
         # 2.5.2 §2: после доставки служебного экрана нет — категории правки
         # открываются кнопкой «📝 Данные» на самом анонсе.
         data_control = h.control_callback("data")
-        self.assertIsNotNone(data_control, "у анонса нет кнопки «Данные»")
+        self.assertIsNotNone(data_control, "у анонса нет кнопки полей")
         assert data_control is not None
         await h.callback(data_control)
-        self.assertIn("МЕНЮ-КАТАЛОГ", [label for label, _ in h.screen_buttons()])
+        # 2.5.3 §5: список полей скрывает `anp_`; возврат «◀️ Назад»
+        # показывает управление анонса с подписями из каталога.
+        backs = h.live_callbacks("anf_back:")
+        self.assertTrue(backs, f"список полей не открыт: {h.live_buttons()}")
+        await h.callback(backs[0])
+        self.assertIn(
+            "МЕНЮ-КАТАЛОГ", [label for label, _ in h.live_buttons()], h.live_buttons()
+        )
 
         # Экран правки фотографий — тот же ключ заголовка, что шаг фото.
         # §34–37: на экране фото выход — «◀️ Назад», а не «В меню»;

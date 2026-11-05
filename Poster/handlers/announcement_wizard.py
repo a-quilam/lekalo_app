@@ -51,6 +51,7 @@ import delivery
 from announcement_instances import (
     archive_instance,
     get_active_instance,
+    get_instance,
     register_instance,
     replace_instance,
     set_panel_message,
@@ -104,10 +105,12 @@ from announcement_wizard import (
 )
 from brick_store import BrickError
 from brick_types import (
+    BRICK_SOURCE_PLACE,
     BRICK_TYPE_CHOICE,
     BRICK_TYPE_DATE,
     BRICK_TYPE_NUMBER,
     BRICK_TYPE_TIME,
+    SYSTEM_BRICKS,
     BrickValueResult,
     BrickValueStatus,
     brick_title_display,
@@ -143,7 +146,7 @@ from utils import tg_context as ctx
 from utils.parsers import app_today
 from utils.place_labels import place_title
 from utils.tg_html import capture_message_text, escape_html
-from utils.ui_texts import tr, tr_safe
+from utils.ui_texts import tr, tr_plain, tr_safe
 
 # Poster 2.0 S3 п.1: вид вопроса/календаря вынесен в `wizard_questions`,
 # поведение прежнее. Имена с подчёркиванием сохранены как локальные
@@ -248,6 +251,11 @@ def _fresh_ui() -> dict[str, Any]:
         "active_brick_id": None,
         "active_source": None,
         "editing": False,
+        # 2.5.3 §5: временный вопрос открыт из списка текстовых полей
+        # доставленного анонса. Вопрос ровно один, после сохранения экран
+        # закрывается, а управление возвращается анонсу.
+        "field_edit": False,
+        "field_instance_id": None,
         "photos_page": 0,
         "photo_add": False,
         # H1: шаг фото ждёт ввода — сохраняется в resume-снимке.
@@ -290,6 +298,11 @@ def _clear_active(ui: dict[str, Any]) -> None:
     # H1: шаг фото — тоже режим ввода. Снимается на любом экране без ввода,
     # иначе снимок «ждём фото» пережил бы переход к обзору.
     ui["photo_step"] = False
+    # 2.5.3 §5: временный вопрос из списка текстовых полей — тоже режим
+    # ввода. Флаг снимается на любом экране без ввода, иначе следующая
+    # правка значения ушла бы в чужой сценарий закрытия вопроса.
+    ui.pop("field_edit", None)
+    ui.pop("field_instance_id", None)
 
 
 # —— Poster 2.4 P2b: навигационный стек конструктора (требование V) ————————
@@ -312,7 +325,7 @@ NAV_EXTRAS = "extras"
 NAV_EXTRA_VALUE = "extra_value"
 NAV_PHOTOS = "photos"
 NAV_PREVIEW = "preview"
-NAV_DELIVERED_EDIT = "delivered_edit"
+NAV_FIELDS = "fields"
 
 
 def _nav_stack(ui: dict[str, Any]) -> list[dict[str, Any]]:
@@ -503,8 +516,14 @@ async def _nav_render(
         return await _render_photos(
             update, context, details, page=page if isinstance(page, int) else None
         )
-    if screen_name == NAV_DELIVERED_EDIT:
-        return await _render_delivered_edit(update, context, details)
+    if screen_name == NAV_FIELDS:
+        instance_id = entry.get("instance_id")
+        return await _render_field_list(
+            update,
+            context,
+            details,
+            instance_id=instance_id if isinstance(instance_id, int) else None,
+        )
     if screen_name == NAV_PREVIEW:
         return await _render_preview(update, context, details)
     if screen_name == NAV_HOME:
@@ -2185,6 +2204,37 @@ def _askable_fields(
     return [field for field in fields if field.status != FIELD_STATUS_KNOWN]
 
 
+# Poster 2.5.3 §5: коды системных кирпичиков площадки. Их значение приходит
+# из карточки площадки и в редакторе текстовых полей не спрашивается: автор
+# не должен «переписывать» место/адрес/ссылку/город в анонсе — это данные
+# справочника. Пропуск по одному `FIELD_STATUS_KNOWN` недостаточен: пустое
+# значение площадки получает статус MISSING и иначе попало бы в список.
+PLACE_FIELD_CODES = frozenset(
+    definition.code
+    for definition in SYSTEM_BRICKS
+    if definition.source == BRICK_SOURCE_PLACE
+)
+
+
+def _is_text_field(field: AnnouncementFieldState) -> bool:
+    """
+    Поле доступно в списке «📝 Текстовые поля» доставленного анонса.
+
+    Исключаются поля площадки (место, адрес, ссылка, город): их значения
+    берутся из справочника (§5). Личный шаблон площадки не имеет, поэтому
+    его поля остаются доступными как есть — фильтр по коду ничего не
+    отбрасывает.
+    """
+    return field.code not in PLACE_FIELD_CODES
+
+
+def _text_fields(
+    fields: tuple[AnnouncementFieldState, ...],
+) -> list[AnnouncementFieldState]:
+    """Поля редактора доставленного анонса: без переданных площадкой."""
+    return [field for field in _askable_fields(fields) if _is_text_field(field)]
+
+
 def _first_missing_index(fields: list[AnnouncementFieldState]) -> int:
     for index, field in enumerate(fields):
         if field.status == FIELD_STATUS_MISSING:
@@ -2445,10 +2495,11 @@ async def _after_questions(
         await _answer(update, str(exc), alert=True)
         return await _resume_current(update, context, notice=str(exc))
     if updated.publication_sent:
-        # Анонс уже доставлен. Экран «✅ Анонс готов» удалён (spec §18):
+        # Анонс уже доставлен. Экрана «✅ Анонс готов» нет (spec §18):
         # автор возвращается к управлению готовым анонсом, а правка
-        # применяется сразу, без промежуточной кнопки.
-        return await _render_delivered_edit(update, context, updated, notice=notice)
+        # применяется сразу, без промежуточной кнопки. Вход в редактор —
+        # список текстовых полей (§5, 2.5.3), второго экрана нет.
+        return await _render_field_list(update, context, updated)
     return await wizard_photos.render_photo_step(
         update,
         context,
@@ -2520,6 +2571,7 @@ async def _save_question_value(
         )
 
     ui = _ui(context)
+    field_edit_instance = _field_edit_instance(ui)
     _set_details(ui, updated)
     _clear_active(ui)
     if drop_input:
@@ -2550,6 +2602,19 @@ async def _save_question_value(
                 title=_short(brick_title_display(field.title, field.code), 50),
             ),
         )
+        if field_edit_instance is not None:
+            # §5 (2.5.3): выбор поля из списка «📝 Текстовые поля» даёт один
+            # временный вопрос. Значение сохранено и применено — вопрос
+            # закрывается, управление возвращается анонсу; экрана
+            # «Применить изменения»/«Обзор» в этом сценарии нет.
+            ui.pop("field_edit", None)
+            await _close_service_screen(update, context)
+            await _show_announcement_controls(
+                context,
+                ctx.chat(update).id,
+                applied,
+                instance=_instance_for(applied, field_edit_instance),
+            )
         return AW_PREVIEW
     return await _advance_question(
         update,
@@ -2638,6 +2703,337 @@ async def _render_question_manager(
     body = f"{notice}\n\n{text}" if notice else text
     await _render(update, context, body, InlineKeyboardMarkup(rows))
     return AW_QUESTIONS
+
+
+# —— Poster 2.5.3 §5: текстовые поля доставленного анонса ——————————————
+#
+# Список полей НЕ живёт отдельным экраном: у 0–1 фото он заменяет клавиатуру
+# самого анонса (`editMessageReplyMarkup`, текст и подпись не меняются), у
+# медиагруппы — текст её единственной панели (`editMessageText`). Второго
+# сообщения с копией текста и второй панели не появляется.
+#
+# Выбор поля даёт РОВНО ОДИН временный вопрос (обычный экран конструктора).
+# После успешного сохранения вопрос закрывается, правка применяется сразу, а
+# управление возвращается анонсу. Кнопки «Применить изменения»/«Обзор» в
+# этом сценарии не нужны.
+
+
+def _field_list_text(fields: list[AnnouncementFieldState]) -> str:
+    """Тело списка полей: заголовок и одна подсказка, без перечня полей."""
+    lines = [tr("wizard.fields.title"), ""]
+    lines.append(tr("wizard.fields.hint") if fields else tr("wizard.fields.empty"))
+    return "\n".join(lines)
+
+
+def _field_list_keyboard(
+    fields: list[AnnouncementFieldState],
+    instance_id: int,
+    page: int = 0,
+) -> InlineKeyboardMarkup:
+    """
+    Клавиатура списка текстовых полей (5 на страницу, как остальные списки).
+
+    У поля — та же подпись, что в «Полях анонса»: «1. Название — статус».
+    «◀️ Назад» возвращает управление анонсу, а не выдумывает новый экран.
+    """
+    page_slice = pagination.page_items(fields, page)
+    rows: list[list[InlineKeyboardButton]] = []
+    for number, field in enumerate(page_slice.items, start=page_slice.offset + 1):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    _short(
+                        # Подпись кнопки — plain-текст Telegram: `tr_plain`
+                        # не экранирует название кирпичика (`<u>` остаётся
+                        # тегом в названии, а не `&lt;u&gt;` на кнопке).
+                        tr_plain(
+                            "wizard.fields.button",
+                            number=number,
+                            title=brick_title_display(field.title, field.code),
+                            status=_field_status_text(field),
+                        ),
+                        60,
+                    ),
+                    callback_data=announcement_controls.field_callback(
+                        announcement_controls.FIELD_ACTION_SELECT,
+                        instance_id,
+                        field.brick_id,
+                    ),
+                )
+            ]
+        )
+    nav = pagination.nav_buttons(
+        page_slice.page,
+        page_slice.total_pages,
+        (
+            f"{announcement_controls.FIELD_CALLBACK_PREFIX}"
+            f"{announcement_controls.FIELD_ACTION_PAGE}:{instance_id}"
+        ),
+    )
+    if nav:
+        rows.append(
+            [InlineKeyboardButton(label, callback_data=data) for label, data in nav]
+        )
+    rows.append(
+        [
+            InlineKeyboardButton(
+                tr("buttons.nav.back"),
+                callback_data=announcement_controls.field_callback(
+                    announcement_controls.FIELD_ACTION_BACK, instance_id
+                ),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def _field_page(offset: int) -> int:
+    """Номер страницы по смещению из callback (протокол списков Poster)."""
+    size = pagination.PAGE_SIZE
+    return max(0, int(offset) // size) if size > 0 else 0
+
+
+def _instance_for(details, instance_id: int | None = None):
+    """
+    Экземпляр для списка полей: заданный (сверяется с черновиком) или активный.
+
+    `None` — экземпляра нет, он архивный или принадлежит другому черновику:
+    вызывающий слой показывает безопасный экран, а не открывает редактор.
+    """
+    try:
+        with SessionLocal() as session:
+            if instance_id is None:
+                return get_active_instance(session, int(details.draft_id))
+            instance = get_instance(session, int(instance_id))
+    except Exception as exc:  # noqa: BLE001 — без экземпляра нет редактора
+        logger.info("Экземпляр анонса #%s не прочитан: %s", instance_id, exc)
+        return None
+    if instance is None or instance.is_archived:
+        return None
+    if int(instance.draft_id) != int(details.draft_id):
+        return None
+    return instance
+
+
+def _field_edit_instance(ui: dict[str, Any]) -> int | None:
+    """
+    id экземпляра, чей текстовый вопрос сейчас открыт (2.5.3 §5).
+
+    `None` — вопрос открыт обычным путём конструктора, а не из списка
+    «📝 Текстовые поля»: тогда после сохранения работает прежний поток
+    (следующий вопрос или шаг фото). Иначе значение принадлежит
+    доставленному анонсу, и после применения экран вопроса закрывается.
+    """
+    if not ui.get("field_edit"):
+        return None
+    instance_id = ui.get("field_instance_id")
+    return int(instance_id) if isinstance(instance_id, int) else None
+
+
+def _control_keyboard(details, instance) -> InlineKeyboardMarkup:
+    """Клавиатура управления экземпляром с актуальным числом фото."""
+    photos = len(details.publication_photos)
+    return announcement_controls.panel_keyboard(
+        instance.id,
+        photos_count=photos,
+        extras_available=_draft_extras_available(details.draft_id),
+    )
+
+
+async def _show_announcement_controls(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    details,
+    *,
+    instance=None,
+) -> None:
+    """
+    Возвращает управление анонсу: клавиатуру сообщения или текст панели.
+
+    Используется «◀️ Назад» из списка полей и завершением правки: в чате
+    снова остаётся ровно одно место управления (§18/§22). Ошибка Telegram
+    не ломает сценарий — анонс уже в чате, а кнопки восстановит повтор.
+    """
+    instance = instance if instance is not None else _instance_for(details)
+    if instance is None:
+        return
+    keyboard = _control_keyboard(details, instance)
+    if delivery.needs_control_panel(len(details.publication_photos)):
+        panel_id = instance.panel_message_id
+        if panel_id is None:
+            return
+        try:
+            await delivery.call_telegram(
+                lambda: context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=int(panel_id),
+                    text=announcement_controls.panel_text(),
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                    link_preview_options=announcement_controls.PANEL_LINK_PREVIEW,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — панель уже в чате
+            logger.info(
+                "Панель экземпляра #%s не вернулась к управлению: %s",
+                instance.id,
+                exc,
+            )
+        return
+    message_id = delivery.caption_message_id(instance.message_ids)
+    if message_id is None:
+        return
+    try:
+        await delivery.call_telegram(
+            lambda: context.bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=int(message_id),
+                reply_markup=keyboard,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — кнопки уже на анонсе
+        logger.info(
+            "Клавиатура управления экземпляра #%s не восстановлена: %s",
+            instance.id,
+            exc,
+        )
+
+
+async def _apply_field_list(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    instance,
+    *,
+    page: int = 0,
+) -> bool:
+    """
+    Показывает список полей НА существующем управлении анонса.
+
+    Для 2+ фото это текст единственной панели (`editMessageText`), иначе —
+    только клавиатура сообщения анонса (`editMessageReplyMarkup`): текст и
+    подпись не трогаются, второго сообщения не появляется.
+
+    `False` — поля не прочитались (например, кирпичик ушёл в архив): это не
+    повод ронять экран, но и обещать редактор нельзя. Вызывающий слой
+    возвращает управление анонсу, а причину уже показал свой обработчик.
+    """
+    try:
+        fields = _text_fields(_load_fields(_user_id(update), details.draft_id))
+    except AnnouncementError as exc:
+        logger.info("Поля анонса #%s не прочитаны: %s", details.draft_id, exc)
+        await _show_announcement_controls(
+            context, ctx.chat(update).id, details, instance=instance
+        )
+        return False
+    chat_id = ctx.chat(update).id
+    keyboard = _field_list_keyboard(fields, instance.id, page)
+    if delivery.needs_control_panel(len(details.publication_photos)):
+        panel_id = instance.panel_message_id
+        if panel_id is None:
+            return True
+        try:
+            await delivery.call_telegram(
+                lambda: context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=int(panel_id),
+                    text=_field_list_text(fields),
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                    link_preview_options=announcement_controls.PANEL_LINK_PREVIEW,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — панель уже в чате
+            logger.info("Список полей не показан в панели #%s: %s", instance.id, exc)
+        return True
+    message_id = delivery.caption_message_id(instance.message_ids)
+    if message_id is None:
+        return True
+    try:
+        await delivery.call_telegram(
+            lambda: context.bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=int(message_id),
+                reply_markup=keyboard,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — клавиатура анонса не критична
+        logger.info("Список полей не показан у анонса #%s: %s", instance.id, exc)
+    return True
+
+
+async def _render_field_list(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    *,
+    instance_id: int | None = None,
+    page: int = 0,
+) -> int:
+    """
+    Список текстовых полей доставленного анонса (§5, 2.5.3).
+
+    Экран не создаётся: список заменяет управление существующего анонса.
+    Временный экран конструктора, с которого пришли, закрывается, чтобы в
+    чате не осталось второй клавиатуры.
+
+    Активного экземпляра нет (анонс переиздан или запись удалена) — правка
+    недоступна: короткое пояснение и «Мои анонсы» вместо выдуманного
+    редактора. Возврат в обзор здесь запрещён: он снова привёл бы сюда.
+    """
+    ui = _ui(context)
+    _set_details(ui, details)
+    _clear_active(ui)
+    instance = _instance_for(details, instance_id)
+    if instance is None:
+        await _answer(update, announcement_controls.STALE_INSTANCE_TEXT, alert=True)
+        return await _render_home(update, context)
+    ui["field_instance_id"] = instance.id
+    _nav_enter(ui, NAV_FIELDS)
+    stack = _nav_stack(ui)
+    if stack:
+        # Возврат «Назад» с пути знает, чей это список: id экземпляра, а не
+        # черновик из user_data (после рестарта он тоже восстанавливается).
+        stack[-1]["instance_id"] = instance.id
+    await _close_service_screen(update, context)
+    await _apply_field_list(update, context, details, instance, page=page)
+    return AW_PREVIEW
+
+
+async def _open_field_question(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    instance,
+    brick_id: int,
+) -> int:
+    """
+    Открывает РОВНО ОДИН временный вопрос по выбранному полю (§5).
+
+    Используется обычный экран вопроса конструктора: активный кирпичик и
+    источник `question` выставляются им же, поэтому ввод текста, календарь,
+    время и выбор идут прежними маршрутами. Перед вопросом управление
+    возвращается анонсу — список полей не остаётся висеть в чате.
+    """
+    if _edit_blocked(details):
+        await _answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
+        return AW_PREVIEW
+    fields = await _question_fields_for(update, context, details)
+    found = _find_field(fields, int(brick_id))
+    if found is None:
+        return await _stale(update, context)
+    index, field = found
+    if not _is_text_field(field):
+        # Поле площадки в редакторе не спрашивается (§5): устаревшая кнопка
+        # старого списка получает короткий ответ, данные не меняются.
+        return await _stale(update, context)
+    _ui_data = _ui(context)
+    _ui_data["field_edit"] = True
+    _ui_data["field_instance_id"] = instance.id
+    await _show_announcement_controls(
+        context, ctx.chat(update).id, details, instance=instance
+    )
+    return await _render_question(update, context, details, fields, index)
 
 
 def _extra_field_state(details, definition) -> AnnouncementFieldState:
@@ -3434,7 +3830,7 @@ async def _back_from_extras(
     if rendered is not None:
         return rendered
     if details.publication_sent:
-        return await _render_delivered_edit(update, context, details)
+        return await _render_field_list(update, context, details)
     # Живой черновик: предыдущий шаг мастера (список открывают из вопросов
     # или шага фото), а не главное меню.
     return await _render_template_screen(update, context, details)
@@ -4052,9 +4448,12 @@ async def _render_preview(
                 else tr("wizard.render_preview.chernovik_sohranen_otpravlennyy")
             )
         # §18: промежуточного экрана «✅ Анонс готов» нет — управление
-        # живёт у самого анонса (кнопки `anp_`), а служебный экран при
-        # необходимости показывает компактный редактор.
-        return await _render_delivered_edit(update, context, details, notice=notice)
+        # живёт у самого анонса (кнопки `anp_`), а правка начинается со
+        # списка текстовых полей (§5, 2.5.3). Экран не создаётся: список
+        # заменяет клавиатуру анонса. Пояснение уходит коротким ответом.
+        if notice:
+            await _answer(update, notice)
+        return await _render_field_list(update, context, details)
     updated = details
     _nav_enter(ui, NAV_PREVIEW)
     try:
@@ -4706,7 +5105,7 @@ async def _render_publish_status(
 ) -> int:
     """Экран начатой/частичной/неудачной отправки без права правки."""
     if details.publication_status == PUBLICATION_STATUS_SENT:
-        return await _render_delivered_edit(update, context, details, notice=notice)
+        return await _render_field_list(update, context, details)
     if details.publication_status is None:
         return await _render_preview(update, context, details, notice=notice)
     ui = _ui(context)
@@ -5174,56 +5573,6 @@ async def _promote_live_post(
 # повтора отправки, который появляется после неудачной попытки.
 APPLY_FAILED_TEXT = tr("wizard.module.chernovik_sohranen_no_izmeneniya")
 
-# U2b: компактный экран редактирования готового анонса — только категории.
-DELIVERED_EDIT_TEXT = tr("wizard.finished.edit_text")
-
-
-def _delivered_edit_keyboard(
-    details, *, extras_available: bool = True
-) -> InlineKeyboardMarkup:
-    """
-    Компактный экран правки доставленного анонса (H3, требование B).
-
-    Изменения применяются сразу, поэтому кнопки «Применить изменения» здесь
-    нет. «Назад» тоже нет: экран живёт в состоянии AW_PREVIEW, и возврат на
-    экран завершения делается кнопкой «🏠 В главное меню» или повторной
-    правкой. «Обзор» и «Показать вложения» дублировали бы готовый пост.
-    """
-    draft_id = details.draft_id
-    revision = details.revision
-    rows: list[list[InlineKeyboardButton]] = [
-        [
-            InlineKeyboardButton(
-                tr("buttons.finished.data"),
-                callback_data=f"aw_qmanage:{draft_id}:{revision}",
-            ),
-            InlineKeyboardButton(
-                tr("buttons.finished.photos", count=len(details.photos)),
-                callback_data=f"aw_photos:{draft_id}:{revision}:0",
-            ),
-        ]
-    ]
-    # «🧱 Дополнительные поля» показывается, когда есть что добавить ИЛИ
-    # когда уже выбранные поля надо посмотреть/удалить: пустой список без
-    # выбранных полей — не действие, а тупик.
-    if extras_available:
-        rows.append(
-            [
-                InlineKeyboardButton(
-                    tr("buttons.finished.extras_edit"),
-                    callback_data=f"aw_extras:{draft_id}:{revision}",
-                )
-            ]
-        )
-    rows.append(
-        [
-            InlineKeyboardButton(
-                tr("buttons.finished.main_menu"), callback_data="main_menu"
-            )
-        ]
-    )
-    return InlineKeyboardMarkup(rows)
-
 
 async def _ensure_service_screen_below(
     update: Update,
@@ -5272,25 +5621,18 @@ async def _render_delivered_edit(
     *,
     notice: str | None = None,
 ) -> int:
-    """Компактный экран редактирования готового анонса."""
-    ui = _ui(context)
-    _set_details(ui, details)
-    _clear_active(ui)
-    _nav_enter(ui, NAV_DELIVERED_EDIT)
-    text = tr("wizard.finished.edit_text")
+    """
+    Устаревший вход в правку доставленного анонса (2.5.3 §5).
+
+    Отдельного экрана «✏️ Изменить анонс» больше нет: правка начинается со
+    списка текстовых полей. Активного экземпляра нет — кнопка устарела:
+    короткое пояснение и безопасный экран текущего этапа.
+    """
+    if _instance_for(details) is None:
+        return await _stale(update, context)
     if notice:
-        text = f"{notice}\n\n{text}"
-    await _ensure_service_screen_below(update, context, details.delivered_message_ids)
-    await _render(
-        update,
-        context,
-        text,
-        _delivered_edit_keyboard(
-            details,
-            extras_available=_extras_available(details, _user_id(update)),
-        ),
-    )
-    return AW_PREVIEW
+        await _answer(update, notice)
+    return await _render_field_list(update, context, details)
 
 
 def _publication_error_text(exc: BaseException) -> str:
@@ -7080,6 +7422,11 @@ async def handle_question_callback(
             return await _stale(update, context)
         _ui_data, details = guarded
         await _answer(update)
+        if details.publication_sent:
+            # 2.5.3 §5: у доставленного анонса «изменить поля» — это список
+            # текстовых полей на самом управлении, а не экран вопросов
+            # конструктора.
+            return await _render_field_list(update, context, details)
         return await _render_question_manager(update, context, details)
     if action == "aw_qgoto" and len(parts) == 4:
         if not all(item.isdigit() for item in parts[1:]):
@@ -7378,21 +7725,24 @@ async def handle_preview_callback(
         if details.publication_sent:
             # Анонс уже доставлен: «сохранить» здесь означает выйти, не
             # трогая отправленную версию. Этап и снимок не меняются.
-            await _answer(update, tr("alerts.wizard.sohraneno"))
             pending = _has_pending_changes(update, details)
-            return await _render_delivered_edit(
-                update,
-                context,
-                details,
-                notice=(
-                    # H3: кнопки «Применить изменения» больше нет — см.
-                    # `_render_preview`: правка применяется сразу, а
-                    # оставшиеся изменения означают сорвавшееся применение.
-                    APPLY_FAILED_TEXT
-                    if pending
-                    else tr("wizard.render_preview.chernovik_sohranen_otpravlennyy")
-                ),
+            notice = (
+                # H3: кнопки «Применить изменения» больше нет — см.
+                # `_render_preview`: правка применяется сразу, а
+                # оставшиеся изменения означают сорвавшееся применение.
+                APPLY_FAILED_TEXT
+                if pending
+                else tr("wizard.render_preview.chernovik_sohranen_otpravlennyy")
             )
+            if _instance_for(details) is None:
+                return await _stale(update, context)
+            # 2.5.3 §5: служебного экрана «✏️ Изменить анонс» нет — правка
+            # начинается со списка текстовых полей на самом управлении.
+            # Пояснение уходит ОДНИМ коротким ответом: второй ответ на тот же
+            # callback Telegram не покажет, а строка «Сохранено.» без него
+            # ничего не сообщает.
+            await _answer(update, notice)
+            return await _render_field_list(update, context, details)
         try:
             updated = _ensure_stage(update, context, details, WizardStage.PREVIEW)
         except AnnouncementError as exc:
@@ -7434,27 +7784,31 @@ async def handle_preview_callback(
         await _answer(update)
         return await _render_preview(update, context, details, preview_only=True)
     if action == "aw_edit" and len(parts) == 3:
-        # U2b: «✏️ Изменить» на экране завершения открывает компактный экран
-        # категорий правки, а не конструктор и не длинный служебный список.
+        # Прежний экран «✏️ Изменить анонс» удалён (2.5.3 §5): устаревшая
+        # кнопка ведёт туда же, куда актуальная — в список текстовых полей.
         guarded = _guided()
         if guarded is None:
             return await _stale(update, context)
         _ui_data, details = guarded
+        if _instance_for(details) is None:
+            return await _stale(update, context)
         if _edit_blocked(details):
             await _answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
             return await _render_publish_status(update, context, details)
         await _answer(update)
-        return await _render_delivered_edit(update, context, details)
+        return await _render_field_list(update, context, details)
     if action == "aw_panel" and len(parts) == 3:
         # callback прежних версий («◀️ Назад» на удалённый экран «Анонс
-        # готов»): устаревшая кнопка не открывает ничего нового, а ведёт в
-        # тот же рабочий экран редактора — по §18 итогового экрана нет.
+        # готов»): устаревшая кнопка ведёт в список текстовых полей, пока
+        # у анонса есть активный экземпляр; иначе — «устарело».
         guarded = _guided()
         if guarded is None:
             return await _stale(update, context)
         _ui_data, details = guarded
+        if _instance_for(details) is None:
+            return await _stale(update, context)
         await _answer(update)
-        return await _render_delivered_edit(update, context, details)
+        return await _render_field_list(update, context, details)
     if action == "aw_qmanage" and len(parts) == 3:
         guarded = _guided()
         if guarded is None:

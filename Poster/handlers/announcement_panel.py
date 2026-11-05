@@ -16,12 +16,15 @@ Poster 2.5, C3: управление готовым анонсом вне кон
 и БД: старая кнопка не восстанавливает прежнюю версию и не открывает чужой
 редактор.
 
-Действий ровно четыре (как и кнопок): «Данные» → компактный экран правки,
-«Фото» → коллекция вложений, «Доп. поля» → список доп. полей, «В меню» →
-главное меню. Экраны переиспользуются из конструктора: второй набор экранов
-для готового анонса не нужен. После действия состояние диалога выставляется
-явно (`remember_conversation_state`), иначе следующий `aw_`-callback попал
-бы в глобальный обработчик «кнопка устарела».
+Действий ровно четыре (как и кнопок): «Текстовые поля» → список полей на
+самом управлении, «Фото» → коллекция вложений, «Доп. поля» → список доп.
+полей, «В меню» → главное меню. Список полей (`anf_`) разбирается тем же
+модулем: проверки экземпляра у него те же, а экран — не отдельное сообщение,
+а клавиатура анонса или текст единственной панели. Экраны переиспользуются
+из конструктора: второй набор экранов для готового анонса не нужен. После
+действия состояние диалога выставляется явно
+(`remember_conversation_state`), иначе следующий `aw_`-callback попал бы
+в глобальный обработчик «кнопка устарела».
 """
 
 from __future__ import annotations
@@ -144,11 +147,74 @@ async def handle_panel_callback(
 
     wizard.remember_conversation_state(update, context, PANEL_STATES[action])
     if action == announcement_controls.ACTION_DATA:
-        await wizard._render_delivered_edit(update, context, details)
+        await wizard._render_field_list(
+            update, context, details, instance_id=instance.id
+        )
     elif action == announcement_controls.ACTION_PHOTOS:
         await wizard._render_photos(update, context, details)
     else:
         await wizard._enter_extras(update, context, details)
+
+
+async def handle_field_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    Кнопка списка текстовых полей доставленного анонса (`anf_`, §5).
+
+    Проверки те же, что у панели (§32): экземпляр по id, чат, владелец
+    черновика и архив. Устаревшая кнопка получает короткий ответ и ничего не
+    меняет. Действия: выбор поля — ровно один временный вопрос, страница —
+    перерисовка списка, «Назад» — возврат управления анонсу.
+    """
+    parsed = announcement_controls.parse_field_callback(ctx.query(update).data)
+    if parsed is None:
+        await _stale_answer(update)
+        return
+    action, instance_id, value = parsed
+
+    instance = _instance(instance_id)
+    if instance is None or instance.is_archived:
+        await _stale_answer(update)
+        return
+    if instance.chat_id != ctx.chat(update).id:
+        await _stale_answer(update)
+        return
+    details = _details(ctx.user(update).id, instance)
+    if details is None:
+        await _stale_answer(update)
+        return
+
+    if action == announcement_controls.FIELD_ACTION_BACK:
+        await wizard._answer(update)
+        await wizard._show_announcement_controls(
+            context, ctx.chat(update).id, details, instance=instance
+        )
+        wizard.remember_conversation_state(update, context, wizard.AW_PREVIEW)
+        return
+
+    if action == announcement_controls.FIELD_ACTION_PAGE:
+        await wizard._answer(update)
+        state = await wizard._render_field_list(
+            update,
+            context,
+            details,
+            instance_id=instance.id,
+            page=wizard._field_page(int(value or 0)),
+        )
+        wizard.remember_conversation_state(update, context, state)
+        return
+
+    if wizard._edit_blocked(details):
+        # Идёт отправка: правка запрещена так же, как по кнопке панели.
+        await wizard._answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
+        wizard.remember_conversation_state(update, context, wizard.AW_PREVIEW)
+        return
+    await wizard._answer(update)
+    state = await wizard._open_field_question(
+        update, context, details, instance, int(value or 0)
+    )
+    wizard.remember_conversation_state(update, context, state)
 
 
 def announcement_panel_handlers() -> list[BaseHandler]:
@@ -167,4 +233,25 @@ def announcement_panel_handlers() -> list[BaseHandler]:
     ]
 
 
-__all__ = ["handle_panel_callback", "announcement_panel_handlers"]
+def field_handlers() -> list[BaseHandler]:
+    """
+    Кнопки списка текстовых полей (`anf_`) активного экземпляра (§5).
+
+    Регистрируются в той же группе 0 и в том же порядке, что и панель:
+    список живёт на самом анонсе и обязан работать после рестарта службы,
+    когда состояния диалога нет.
+    """
+    return [
+        CallbackQueryHandler(
+            handle_field_callback,
+            pattern=announcement_controls.FIELD_CALLBACK_PATTERN,
+        )
+    ]
+
+
+__all__ = [
+    "handle_field_callback",
+    "handle_panel_callback",
+    "announcement_panel_handlers",
+    "field_handlers",
+]

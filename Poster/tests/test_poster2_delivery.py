@@ -857,9 +857,8 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         изменения» нет.
         """
         from tests.test_stage27b_announcement_ui import (
-            _callback,
             _no_photos,
-            _open_edit,
+            _open_field_question,
         )
 
         await h.text("/start")
@@ -867,9 +866,7 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         await _no_photos(h)
         first = self._assert_single_copy(h, draft.id)
 
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Обновлено")

@@ -34,6 +34,7 @@ try:
         is_panel_record,
         scenario_test,
     )
+    from tests.test_stage25_acceptance_c import _assert_field_list
     from tests.test_stage25_delivery_instances import (
         _delivered_with_photos,
         _delivered_without_photos,
@@ -55,7 +56,10 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
     INTEGRATION_IMPORT_ERROR = str(exc)
 
 
+# 2.5.3 §5: экрана «✏️ Изменить анонс» больше нет — правка начинается со
+# списка текстовых полей на самом управлении анонса.
 EDIT_TITLE = "✏️ Изменить анонс"
+FIELDS_TITLE = "📝 Текстовые поля"
 MAIN_MENU_TITLE = "Здравствуйте! 👋"
 PHOTO_STEP_TITLE = "📷 Фотографии анонса"
 USER_ID = 1
@@ -108,6 +112,18 @@ def _edits_of(h, message_id: int, *, since: int = 0) -> list[dict]:
 
 def _panel_records(h) -> list[dict]:
     return [call for call in h.calls if is_panel_record(call)]
+
+
+def _panel_sends(h) -> list[dict]:
+    """
+    Вызовы, СОЗДАВШИЕ панель управления (§22).
+
+    2.5.3 §5: список текстовых полей правит текст панели
+    (`editMessageText`), поэтому `is_panel_record` видит и правки. Проверки
+    «панель не задублирована» считают именно отправки: правка панели —
+    ожидаемая работа с ней, а не вторая панель.
+    """
+    return [call for call in _panel_records(h) if call["type"] == "message"]
 
 
 def _panel_message_id(h) -> int | None:
@@ -284,14 +300,19 @@ class PanelExitToMenuTests(unittest.TestCase):
 class EditorExitToMenuTests(unittest.TestCase):
     @scenario_test
     async def test_editor_menu_archives_and_strips_announcement(self, h) -> None:
-        """Выход из редактора: экран управление снимут, меню открыто."""
+        """Выход из редактора: управление снимут, меню открыто."""
         await h.text("/start")
         draft = await _delivered_without_photos(h)
         active = _only_active(h, draft.id)
         message_id = active.message_ids[0]
 
+        # 2.5.3 §5: «📝 Текстовые поля» — режим самого управления анонса, а
+        # не отдельный экран. Выход в меню доступен после «◀️ Назад».
         await h.callback(controls.panel_callback(controls.ACTION_DATA, active.id))
-        self.assertTrue(h.screen_text().startswith(EDIT_TITLE), h.screen_text()[:80])
+        _assert_field_list(h)
+        self.assertFalse(h.screen_text().startswith(EDIT_TITLE), h.screen_text()[:80])
+        self.assertIsNone(h.screen_message_id(), "служебного экрана нет")
+        await h.callback(h.live_callbacks("anf_back:")[0])
 
         await h.callback("main_menu")
 
@@ -314,30 +335,34 @@ class EditorExitToMenuTests(unittest.TestCase):
 class TemporaryEditorTests(unittest.TestCase):
     @scenario_test
     async def test_successful_edit_closes_screen_and_keeps_control(self, h) -> None:
-        """Успешное сохранение: анонс на месте, экран удалён, управление у поста."""
+        """Успешное сохранение: анонс на месте, вопрос закрыт, управление у поста."""
         await h.text("/start")
         draft = await _delivered_without_photos(h)
         active = _only_active(h, draft.id)
         message_id = active.message_ids[0]
 
+        # 2.5.3 §5: «📝 Текстовые поля» открывает список на самом анонсе,
+        # отдельного экрана нет; выбор поля даёт ровно один вопрос.
         await h.callback(controls.panel_callback(controls.ACTION_DATA, active.id))
+        _assert_field_list(h)
+        self.assertIsNone(h.screen_message_id(), "служебного экрана нет")
+        await h.callback(h.live_callbacks("anf_sel:")[0])
         screen_id = h.screen_message_id()
-        self.assertIsNotNone(screen_id)
+        self.assertIsNotNone(screen_id, "вопрос не открыт")
 
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
         mark = len(h.calls)
         await h.text("Обновлено")
 
         self.assertEqual(
             h.bot.content_text(h.chat_id, message_id), "Обновлено", "правка не на месте"
         )
-        self.assertIn(int(screen_id), h.deleted_ids(), "временный экран не закрыт")
+        self.assertIn(int(screen_id), h.deleted_ids(), "вопрос не закрыт")
         markup = _final_markup(h, message_id)
         self.assertIsNotNone(markup, "управление не вернулось к анонсу")
         self.assertTrue(
             all(data and data.startswith("anp_") for _l, data in inline_buttons(markup))
         )
+        self.assertFalse(h.live_callbacks("anf_"), "список полей остался висеть")
         # Контракт не должен зависеть от семантики Bot API: правка содержимого
         # передаёт актуальную клавиатуру явно, поэтому управление не теряется
         # ни в реальном Telegram, ни в FakeBot.
@@ -362,8 +387,7 @@ class TemporaryEditorTests(unittest.TestCase):
         message_id = active.message_ids[0]
 
         await h.callback(controls.panel_callback(controls.ACTION_DATA, active.id))
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await h.callback(h.live_callbacks("anf_sel:")[0])
         mark = len(h.calls)
         await h.text("Обновлено")
 
@@ -402,14 +426,14 @@ class TemporaryEditorTests(unittest.TestCase):
         message_id = active.message_ids[0]
 
         await h.callback(controls.panel_callback(controls.ACTION_DATA, active.id))
+        _assert_field_list(h)
+        await h.callback(h.live_callbacks("anf_sel:")[0])
         screen_id = h.screen_message_id()
-        self.assertIsNotNone(screen_id, "экран редактора не открыт")
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        self.assertIsNotNone(screen_id, "вопрос по полю не открыт")
         await h.text("не число")
 
         self.assertNotIn(
-            int(screen_id), h.deleted_ids(), "экран неудачного ввода не удаляется"
+            int(screen_id), h.deleted_ids(), "вопрос неудачного ввода не удаляется"
         )
         self.assertIn("число", h.screen_text().lower(), h.screen_text()[:120])
         self.assertEqual(

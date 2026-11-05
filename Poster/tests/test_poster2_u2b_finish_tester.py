@@ -35,7 +35,6 @@ try:
 
     import announcement_controls as controls
     from announcement_store import get_announcement_draft
-    from handlers.announcement_wizard import DELIVERED_EDIT_TEXT
     from models import User
     from tests.integration_harness import (
         DEFAULT_USER_ID,
@@ -56,6 +55,8 @@ try:
         _choose_personal,
         _latest_draft,
         _no_photos,
+        _open_control,
+        _open_field_question,
         _seed_personal_template,
         _seed_place,
         _start_to_template,
@@ -154,7 +155,7 @@ class ForeignDeliveredTests(unittest.TestCase):
             )
             assert data is not None
             self.assertTrue(data.endswith(f":{active.id}"), f"{label}: {buttons}")
-        self.assertEqual(buttons[0][0], "📝 Данные", buttons)
+        self.assertEqual(buttons[0][0], "📝 Текстовые поля", buttons)
         self.assertFalse(_callbacks(h, "aw_edit"), "экрана завершения нет")
         _ensure_other_user(h)
 
@@ -191,8 +192,7 @@ class ForeignDeliveredTests(unittest.TestCase):
         # активный экземпляр НА МЕСТЕ (§28) — второго сообщения и архивного
         # снимка при том же составе медиа не появляется.
         await h.callback(_instance_button(h, first, controls.ACTION_DATA))
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Своё изменение")
@@ -264,15 +264,17 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
 
         self.assertIn("Данные изменились", h.answer_texts()[-1])
         self.assertEqual(h.posts(), posts_before)
-        # Экран остаётся рабочим редактором доставленного анонса.
-        self.assertIn(DELIVERED_EDIT_TEXT, h.screen_text())
+        # 2.5.3 §5: служебного экрана нет — устаревшая кнопка открывает
+        # список текстовых полей на самом анонсе.
+        self.assertEqual(h.screen_text(), "", "служебного экрана нет")
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
         self.assertEqual(_details(h, draft.id).revision, draft.revision)
 
         # Подделанный `anp_data` с несуществующим экземпляром — тот же отказ.
         await h.callback(controls.panel_callback("data", 999_999))
         self.assertEqual(h.answer_texts()[-1], controls.STALE_INSTANCE_TEXT)
         self.assertEqual(h.posts(), posts_before)
-        self.assertIn(DELIVERED_EDIT_TEXT, h.screen_text())
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
 
     @scenario_test
     async def test_forged_edit_with_wrong_revision_is_rejected(self, h) -> None:
@@ -284,7 +286,8 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
 
         self.assertIn("Данные изменились", h.answer_texts()[-1])
         self.assertEqual(h.posts(), posts_before)
-        self.assertIn(DELIVERED_EDIT_TEXT, h.screen_text())
+        self.assertEqual(h.screen_text(), "", "служебного экрана нет")
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
         self.assertEqual(_details(h, draft.id).revision, draft.revision)
 
     @scenario_test
@@ -297,12 +300,12 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
 
         await h.callback(edit)
         first_text = h.screen_text()
-        # «📝 Данные» ведёт в компактный редактор (§26): там свои кнопки
-        # `aw_qmanage`/`aw_photos`/`main_menu`, а `aw_edit` не появляется.
-        self.assertEqual(first_text, DELIVERED_EDIT_TEXT)
-        self.assertTrue(_callbacks(h, "aw_qmanage"))
-        self.assertTrue(_callbacks(h, "aw_photos"))
-        self.assertTrue(_callbacks(h, "main_menu"))
+        # 2.5.3 §5: «📝 Текстовые поля» не создают экран — список полей
+        # заменяет клавиатуру анонса (`anf_sel:`), управление скрыто.
+        self.assertEqual(first_text, "", "служебного экрана нет")
+        self.assertIsNone(h.screen_message_id(), "экранного ref нет")
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
+        self.assertFalse(h.live_callbacks("anp_"), "управление скрыто списком")
         self.assertFalse(_callbacks(h, "aw_edit"))
         screens_before = len([c for c in h.screens() if c["type"] == "message"])
         await h.callback(edit)
@@ -314,8 +317,7 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
             "второго сообщения экрана нет",
         )
         self.assertEqual(h.posts(), posts_before)
-        # Порядок сообщений не изменился: служебный экран ниже анонса.
-        self.assertGreater(h.screen_message_id(), max(active.message_ids))
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не задвоился")
 
     @scenario_test
     async def test_reopening_edit_screens_creates_no_second_post(self, h) -> None:
@@ -328,10 +330,18 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
 
         for _attempt in range(2):
             await h.callback(_instance_button(h, active, controls.ACTION_DATA))
-            await h.callback(_instance_button(h, active, controls.ACTION_PHOTOS))
+            self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
+            # §5: фото открываются после возврата «◀️ Назад» — список полей
+            # заменяет клавиатуру анонса.
+            await _open_control(h, "photos")
             self.assertIn("Фотографии анонса", h.screen_text())
+            # §5: прежняя кнопка «Изменить» ведёт в тот же список полей.
             await h.callback(_callback(h, "aw_edit"))
-            self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
+            self.assertEqual(h.screen_text(), "", "служебного экрана нет")
+            self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
+            # Возврат «◀️ Назад» — снова доступно управление анонса.
+            await h.callback(h.live_callbacks("anf_back:")[0])
+            self.assertTrue(h.live_callbacks("anp_"), "управление не вернулось")
 
         # 2.5.2 §2: «🏠 В меню» архивирует экземпляр, поэтому выход — один
         # раз в конце, уже после проверки повторных открытий.
@@ -362,8 +372,9 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
         # §28: правка текста идёт на месте — экземпляр и его кнопка остаются
         # действующими, вторая копия в чате не появляется.
         await h.callback(stale_instance)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        # 2.5.3 §5: правка идёт через живой список полей, а не экран
+        # «✏️ Изменить анонс» с `aw_qmanage`/`aw_qgoto`.
+        await _open_field_question(h)
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Новое значение")

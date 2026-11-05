@@ -38,7 +38,7 @@ try:
         _latest_draft,
         _specs,
     )
-    from tests.test_stage27b_announcement_ui import _open_edit
+    from tests.test_stage27b_announcement_ui import _back_to_controls, _open_edit
 
     IMPORT_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
@@ -132,8 +132,13 @@ class ExtrasErrorNoticeTests(unittest.TestCase):
 
         await self._deliver_extended(h)
         await _open_edit(h)
-        data = _callbacks(h, "aw_extras")
-        self.assertTrue(data, f"нет кнопки доп. полей: {h.screen_buttons()}")
+        # 2.5.3 §5: список полей скрывает `anp_` — возврат «◀️ Назад»
+        # открывает управление анонсом, откуда берётся кнопка доп. полей.
+        await _back_to_controls(h)
+        data = _callbacks(h, "aw_extras") or [
+            value for value in (h.control_callback("extras"),) if value is not None
+        ]
+        self.assertTrue(data, f"нет кнопки доп. полей: {h.live_buttons()}")
 
         error = AnnouncementBrickError(
             "Кирпичик #1 недоступен для этого пользователя/места."

@@ -72,6 +72,7 @@ try:
         _instances,
         _only_active,
         _panel_records,
+        _panel_sends,
         _stored,
         _text_copies,
     )
@@ -83,7 +84,9 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 
 # Пользовательские заголовки экранов (§18/§26–27/§34).
-EDIT_TITLE = "✏️ Изменить анонс"
+# 2.5.3 §5: экрана «✏️ Изменить анонс» больше нет — вместо него список
+# текстовых полей на самом управлении анонса.
+FIELDS_TITLE = "📝 Текстовые поля"
 PHOTOS_TITLE = "📷 Фотографии анонса"
 EXTRAS_TITLE = "🧩 Дополнительные поля"
 MAIN_MENU_TITLE = "Здравствуйте! 👋"
@@ -103,7 +106,7 @@ STALE_TEXT = controls.STALE_INSTANCE_TEXT
 
 # §27/§18: действия редактора одинаковы у любой структуры медиа.
 EXPECTED_ACTIONS = (
-    ("📝 Данные", "data"),
+    ("📝 Текстовые поля", "data"),
     ("🖼 Фото (n)", "photos"),
     ("🧩 Дополнительные поля", "extras"),
     ("🏠 В меню", "menu"),
@@ -155,6 +158,8 @@ def _control_photos(h) -> str:
 
     2.5.2 §2: после публикации служебного экрана нет, поэтому вход в экран
     фотографий — кнопка самого анонса (или его панели), а не экрана.
+    2.5.3 §5: если открыт список текстовых полей, кнопки экземпляра скрыты —
+    сначала «◀️ Назад» списка.
     """
     data = h.control_callback("photos")
     if data is None:
@@ -162,6 +167,54 @@ def _control_photos(h) -> str:
             f"управление анонсом не найдено: экран {h.screen_text()[:200]!r}"
         )
     return data
+
+
+def _control_data(h) -> str:
+    """«📝 Текстовые поля» управления анонсом (2.5.3 §5)."""
+    data = h.control_callback("data")
+    if data is None:
+        raise AssertionError(
+            f"управление анонсом не найдено: экран {h.screen_text()[:200]!r}"
+        )
+    return data
+
+
+async def _open_field_question(h) -> None:
+    """
+    Открывает вопрос по первому текстовому полю (2.5.3 §5).
+
+    Список полей заменяет клавиатуру анонса, поэтому второй шаг — нажатие
+    `anf_sel:` из живых кнопок чата, а не из `screen_buttons`.
+    """
+    await h.callback(_control_data(h))
+    for data in h.live_callbacks("anf_sel:"):
+        await h.callback(data)
+        return
+    raise AssertionError(f"нет кнопок полей: {h.live_buttons()}")
+
+
+async def _back_to_controls(h) -> None:
+    """«◀️ Назад» списка полей возвращает управление анонсу (2.5.3 §5)."""
+    for data in h.live_callbacks("anf_back:"):
+        await h.callback(data)
+        return
+    raise AssertionError(f"нет «Назад» списка полей: {h.live_buttons()}")
+
+
+def _assert_field_list(h) -> None:
+    """
+    В чате показан список текстовых полей (2.5.3 §5).
+
+    Отдельного экрана нет: список заменяет управление анонса (0–1 фото) или
+    текст его единственной панели (2+), поэтому проверяются живые клавиатуры
+    чата, а не `screen_text`.
+    """
+    if not h.live_callbacks("anf_back:"):
+        raise AssertionError(f"нет списка полей: {h.live_buttons()}")
+    if h.live_callbacks("anp_"):
+        raise AssertionError(
+            f"управление анонса не скрыто: {h.live_control_callbacks()}"
+        )
 
 
 def _control_markup(h, instance):
@@ -231,13 +284,16 @@ def _outgoing_texts(h) -> list[str]:
 
 
 async def _edit_value(h, text: str) -> None:
-    """Управление анонса → «Данные» → поле → новое значение."""
+    """Управление анонса → «📝 Текстовые поля» → поле → новое значение."""
     draft_id = _only_active(h, _draft_id(h)).draft_id
     active = _only_active(h, draft_id)
     await h.callback(_panel_data(h, active))
-    # Экран редактора: «📝 Данные» → компактный список полей → пункт поля.
-    await h.callback(_button(h, "aw_qmanage"))
-    await h.callback(_button(h, "aw_qgoto"))
+    # 2.5.3 §5: список полей на самом управлении, затем ровно один вопрос.
+    for data in h.live_callbacks("anf_sel:"):
+        await h.callback(data)
+        break
+    else:
+        raise AssertionError(f"нет кнопок полей: {h.live_buttons()}")
     await h.text(text)
 
 
@@ -391,7 +447,7 @@ class NoReadyScreenTests(unittest.TestCase):
         # 2.5.2 §2: экрана «✏️ Изменить анонс» после доставки не появляется —
         # управление живёт на самом анонсе. Остаётся только рабочий экран шага,
         # с которого пользователь менял структуру.
-        self.assertNotIn(EDIT_TITLE, h.screen_text())
+        self.assertNotIn("✏️ Изменить анонс", h.screen_text())
         self.assertIsNotNone(h.control_callback("data"), "нет управления анонсом")
         self.assertNotIn(READY_SCREEN, h.screen_text())
 
@@ -499,7 +555,7 @@ class InPlaceEditTests(unittest.TestCase):
         )
         # Кнопки живы: панель открывает редактор и после правки.
         await h.callback(_panel_data(h, edited))
-        self.assertTrue(h.screen_text().startswith(EDIT_TITLE))
+        _assert_field_list(h)
         self.assertEqual(_only_active(h, draft.id).id, active.id)
 
     @scenario_test
@@ -788,9 +844,10 @@ class PhotoScreenLayoutTests(unittest.TestCase):
         await h.callback(_button(h, "aw_photo_del", ":0"))
         self.assertEqual(_photo_labels(h), [[PHOTO_ADD], [BACK]])
 
-        # §34: «Назад» возвращает к управлению текущим анонсом.
+        # §34: «Назад» возвращает к управлению текущим анонсом: 2.5.3 §5
+        # это список текстовых полей на клавиатуре самого анонса.
         await h.callback(_button(h, "aw_edit"))
-        self.assertTrue(h.screen_text().startswith(EDIT_TITLE))
+        _assert_field_list(h)
 
     @scenario_test
     async def test_delete_all_requires_confirmation(self, h) -> None:
@@ -862,7 +919,7 @@ class FailedDeliveryRetryTests(unittest.TestCase):
         self.assertEqual(len(_instances(h, draft.id)), 2, "ровно одна замена")
         groups = [c for c in h.calls if c["type"] == "media_group"]
         self.assertEqual(len(groups), 1, "подтверждённый альбом отправлен один раз")
-        self.assertEqual(len(_panel_records(h)), 1, "панель не задублирована")
+        self.assertEqual(len(_panel_sends(h)), 1, "панель не задублирована")
         self.assertEqual(len(set(active.message_ids)), 2, "адреса уникальны")
         self.assertNotIn(first_id, active.message_ids, "контент не переиспользован")
         self.assertIsNone(_final_markup(h, first_id), "кнопки прежнего сняты")
@@ -912,11 +969,15 @@ class InPlaceInvariantTests(unittest.TestCase):
         self.assertEqual(len(_instances(h, draft.id)), 1)
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
 
-        # Кнопки после правки живы и открывают редактор того же экземпляра.
+        # Кнопки после правки живы и открывают редактор того же экземпляра:
+        # 2.5.3 §5 — список полей, из него ровно один вопрос.
         await h.callback(_panel_data(h, after))
-        self.assertTrue(h.screen_text().startswith(EDIT_TITLE))
-        await h.callback(_button(h, "aw_qmanage"))
-        await h.callback(_button(h, "aw_qgoto"))
+        _assert_field_list(h)
+        for data in h.live_callbacks("anf_sel:"):
+            await h.callback(data)
+            break
+        else:
+            raise AssertionError(f"нет кнопок полей: {h.live_buttons()}")
         await h.text("Второе изменение")
 
         repeated = _only_active(h, draft.id)
@@ -984,26 +1045,44 @@ class ControlActionsParityTests(unittest.TestCase):
                 # последним, иначе действующего экземпляра уже нет.
                 continue
             await h.callback(controls.panel_callback(action, active.id))
+            if action == controls.ACTION_DATA:
+                # 2.5.3 §5: список полей — не экран, а клавиатура анонса.
+                # Проверяем его по живым кнопкам и возвращаем управление,
+                # иначе следующие действия недоступны.
+                self.assertTrue(
+                    h.live_callbacks("anf_sel:"),
+                    f"список полей не показан: {h.live_buttons()}",
+                )
+                self.assertIsNone(
+                    h.screen_message_id(), "служебного экрана для полей нет"
+                )
+                await _back_to_controls(h)
+                continue
             screens[action] = h.screen_text().splitlines()[0]
             self.assertEqual(
                 _only_active(h, draft.id).id,
                 active.id,
                 f"{action}: экземпляр не должен меняться",
             )
+            # Экран шага закрывается возвратом к управлению, чтобы следующая
+            # кнопка `anp_` осталась доступной в чате.
+            if action == controls.ACTION_PHOTOS:
+                for data in h.live_callbacks("aw_edit:"):
+                    await h.callback(data)
+                    break
         # Кнопки рабочие: экземпляр жив до выхода в меню.
         await h.callback(controls.panel_callback(controls.ACTION_MENU, active.id))
         screens[controls.ACTION_MENU] = h.screen_text().splitlines()[0]
         self.assertEqual(
             screens,
             {
-                "data": EDIT_TITLE,
                 "photos": PHOTOS_TITLE,
                 "extras": EXTRAS_TITLE,
                 "menu": MAIN_MENU_TITLE,
             },
             "каждое действие ведёт на свой экран",
         )
-        self.assertEqual(len(set(screens.values())), 4, "экраны не дублируются")
+        self.assertEqual(len(set(screens.values())), 3, "экраны не дублируются")
         self.assertNotIn(READY_SCREEN, " ".join(_outgoing_texts(h)))
 
 

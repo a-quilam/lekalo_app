@@ -17,7 +17,10 @@ from config import TELEGRAM_BOT_TOKEN
 from database import init_db
 from errors import error_handler
 from handlers.admin import admin_handlers
-from handlers.announcement_panel import announcement_panel_handlers
+from handlers.announcement_panel import (
+    announcement_panel_handlers,
+    field_handlers,
+)
 from handlers.announcement_wizard import announcement_wizard_handlers
 from handlers.bricks import bricks_handlers
 from handlers.main_menu import main_menu_handlers
@@ -202,6 +205,10 @@ def build_application() -> Application:
     # обработчика на группу, поэтому fallback `.*` конструктора нажатие не
     # перехватывает, а состояние диалога остаётся нетронутым.
     for handler in announcement_panel_handlers():
+        application.add_handler(handler)
+    # Кнопки списка текстовых полей (`anf_`) — там же: список живёт на самом
+    # анонсе и работает без состояния диалога (2.5.3 §5).
+    for handler in field_handlers():
         application.add_handler(handler)
 
     # Адаптивный мастер анонсов Stage 27B — первым: у него собственные

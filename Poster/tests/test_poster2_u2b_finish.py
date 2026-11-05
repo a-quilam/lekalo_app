@@ -28,7 +28,6 @@ import unittest
 try:
     from announcement_instances import get_active_instance
     from announcement_store import get_announcement_draft
-    from handlers.announcement_wizard import DELIVERED_EDIT_TEXT
     from tests.integration_harness import (
         DEFAULT_USER_ID,
         HARNESS_IMPORT_ERROR,
@@ -43,7 +42,9 @@ try:
         _choose_personal,
         _latest_draft,
         _no_photos,
+        _open_control,
         _open_edit,
+        _open_field_question,
         _seed_personal_template,
         _seed_place,
         _start_to_template,
@@ -54,9 +55,12 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
     INTEGRATION_IMPORT_ERROR = str(exc)
 
 
-# §18 (2.5): после доставки служебный экран — рабочий редактор анонса.
-EDIT_ROW = ["📝 Данные", "🖼 Фото (0)"]
+# §18 (2.5) / 2.5.3 §5: после доставки служебного экрана нет — управление
+# живёт на самом анонсе, а «📝 Текстовые поля» заменяют его клавиатуру
+# списком полей.
+EDIT_ROW = ["📝 Текстовые поля", "🖼 Фото (0)"]
 EDIT_MENU = "🏠 В меню"
+FIELDS_TITLE = "📝 Текстовые поля"
 
 
 def _details(h, draft_id: int):
@@ -66,18 +70,6 @@ def _details(h, draft_id: int):
             actor_telegram_user_id=DEFAULT_USER_ID,
             draft_id=draft_id,
         )
-
-
-def _keyboard_rows(h) -> list[list[tuple[str, str | None]]]:
-    """Матрица inline-клавиатуры экрана: строки и кнопки."""
-    record = h.screen()
-    assert record is not None, "экрана ещё не было"
-    markup = record.get("reply_markup")
-    assert markup is not None, "у экрана нет клавиатуры"
-    return [
-        [(button.text, button.callback_data) for button in row]
-        for row in markup.inline_keyboard
-    ]
 
 
 def _post_ids(h, record: dict) -> tuple[int, ...]:
@@ -241,9 +233,9 @@ class DeliveredScreenTests(unittest.TestCase):
         self.assertEqual(len(posts_after_reopen), 2, "новый экземпляр отправлен")
 
         # Правка значения применяется сразу, «неприменённых» изменений нет.
+        # 2.5.3 §5: путь — «📝 Текстовые поля» → поле (временный экран вопроса).
         await h.callback(_control_callback(h, "data"))
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await h.callback(h.live_callbacks("anf_sel:")[0])
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Новое значение")
@@ -269,12 +261,12 @@ class DeliveredScreenTests(unittest.TestCase):
     f"интеграционное окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
 )
 class DeliveredEditScreenTests(unittest.TestCase):
-    """«✏️ Изменить» — компактный экран категорий без дублей (H3)."""
+    """«📝 Текстовые поля» — список полей на самом анонсе, без дублей (H3)."""
 
-    # H3 (требование B): две категории в одной строке, условные доп. поля и
-    # выход в главное меню. Ни «Применить изменения», ни «Обзор», ни
+    # H3 (требование B) + 2.5.3 §5: список полей — режим управления анонса,
+    # а не отдельный экран. Ни «Применить изменения», ни «Обзор», ни
     # «Показать вложения», ни ложного «Назад».
-    EDIT_ROW = ["📝 Данные", "🖼 Фото (0)"]
+    EDIT_ROW = ["📝 Текстовые поля", "🖼 Фото (0)"]
     EDIT_MENU = "🏠 В меню"
 
     @scenario_test
@@ -293,23 +285,27 @@ class DeliveredEditScreenTests(unittest.TestCase):
         )
         posts_before = h.posts()
 
-        # 2.5.2 §2: сразу после доставки экрана нет — открываем его кнопкой
-        # «📝 Данные» (временный экран) и проверяем категории.
+        # 2.5.2 §2 / 2.5.3 §5: сразу после доставки экрана нет — «📝 Текстовые
+        # поля» заменяют клавиатуру анонса списком полей.
         await h.callback(_control_callback(h, "data"))
-        self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
+        self.assertEqual(h.screen_text(), "", "служебного экрана нет")
+        self.assertIsNone(h.screen_message_id(), "экранного ref нет")
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
+        self.assertFalse(h.live_callbacks("anp_"), "управление скрыто списком")
 
-        rows = _keyboard_rows(h)
+        # «🧩 Дополнительные поля» — отдельная строка управления анонсом и
+        # только когда есть что добавить: у этого шаблона кирпичики есть.
+        await h.callback(h.live_callbacks("anf_back:")[0])
+        rows = _control_rows(h)
         self.assertEqual([label for label, _data in rows[0]], self.EDIT_ROW, rows)
         self.assertEqual([label for label, _data in rows[-1]], [self.EDIT_MENU], rows)
-        # «🧩 Дополнительные поля» — отдельная строка и только когда есть что
-        # добавить: у этого шаблона доступные кирпичики есть.
         extras_rows = [
             row
             for row in rows
             if [label for label, _data in row] == ["🧩 Дополнительные поля"]
         ]
         self.assertEqual(len(extras_rows), 1, f"нет строки доп. полей: {rows}")
-        labels = [label for label, _data in h.screen_buttons()]
+        labels = [label for row in rows for label, _data in row]
         for gone in (
             "Применить изменения",
             "Обзор",
@@ -319,7 +315,7 @@ class DeliveredEditScreenTests(unittest.TestCase):
             self.assertFalse(
                 any(gone in label for label in labels), f"лишняя «{gone}»: {labels}"
             )
-        # Экран правки ничего не отправляет и не меняет версию.
+        # Список полей ничего не отправляет и не меняет версию.
         self.assertEqual(h.posts(), posts_before)
         self.assertEqual(_details(h, draft.id).revision, draft.revision)
 
@@ -344,9 +340,12 @@ class DeliveredEditScreenTests(unittest.TestCase):
             extended_content="[main]\n[extra_a]",
         )
         await h.callback(_control_callback(h, "data"))
+        self.assertTrue(h.live_callbacks("anf_back:"), "список полей не открыт")
+        # Список закрывается «◀️ Назад»: в управлении снова есть доп. поля.
+        await h.callback(h.live_callbacks("anf_back:")[0])
         self.assertIn(
             "🧩 Дополнительные поля",
-            [label for label, _data in h.screen_buttons()],
+            [label for label, _data in h.live_buttons()],
         )
 
         # Заполняем все доступные кирпичики: P2 показывает и заполненные,
@@ -397,9 +396,12 @@ class DeliveredEditScreenTests(unittest.TestCase):
             extended_content=None,
         )
         await h.callback(_control_callback(h, "data"))
+        self.assertTrue(h.live_callbacks("anf_back:"), "список полей не открыт")
+        await h.callback(h.live_callbacks("anf_back:")[0])
+        # Без расширенного текста и без выбранных полей строки доп. полей нет.
         self.assertNotIn(
             "🧩 Дополнительные поля",
-            [label for label, _data in h.screen_buttons()],
+            [label for label, _data in h.live_buttons()],
         )
 
     @scenario_test
@@ -426,9 +428,11 @@ class DeliveredEditScreenTests(unittest.TestCase):
         await _delivered(h)
         posts_before = len(h.posts())
 
-        # 2.5.2 §2: категории правки открываются кнопкой «📝 Данные».
+        # 2.5.2 §2 / 2.5.3 §5: «📝 Текстовые поля» заменяют клавиатуру
+        # анонса списком полей — фото открываются после возврата «◀️ Назад».
         await h.callback(_control_callback(h, "data"))
-        await h.callback(_callback(h, "aw_photos"))
+        await h.callback(h.live_callbacks("anf_back:")[0])
+        await _open_control(h, "photos")
         self.assertIn("Фотографии анонса", h.screen_text())
         # У доставленного анонса вложения уже стоят в чате выше: отдельного
         # «Показать вложения» нет, предпросмотр не дублирует готовый пост.
@@ -537,8 +541,7 @@ class MessageOrderInvariantTests(unittest.TestCase):
         first_ids = _details(h, draft.id).delivered_message_ids
 
         await h.callback(_control_callback(h, "data"))
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await h.callback(h.live_callbacks("anf_sel:")[0])
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Обновлено")
@@ -595,7 +598,7 @@ class DeliveredApplyTests(unittest.TestCase):
         version_ids = _details(h, draft.id).delivered_message_ids
 
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_photos"))
+        await _open_control(h, "photos")
         await h.callback("main_menu")
 
         # Осмотр экранов правки не публикует копию и не меняет экземпляр.
@@ -646,9 +649,7 @@ class DeliveredApplyTests(unittest.TestCase):
         stale_edit = f"aw_edit:{draft.id}:{draft.revision}"
 
         # Правка меняет ревизию: старая кнопка «Изменить» устарела.
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Другое значение")
@@ -656,9 +657,12 @@ class DeliveredApplyTests(unittest.TestCase):
         await h.callback(stale_edit)
         self.assertIn("Данные изменились.", h.answer_texts()[-1])
         # Устаревший callback не отправил вторую копию и не открыл чужую
-        # версию правки: показан актуальный экран данных.
-        self.assertIn(DELIVERED_EDIT_TEXT, h.screen_text())
-        rows = _keyboard_rows(h)
+        # версию правки: показан актуальный список полей на самом управлении
+        # (2.5.3 §5), а не служебный экран.
+        self.assertEqual(h.screen_text(), "", "служебного экрана нет")
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
+        await h.callback(h.live_callbacks("anf_back:")[0])
+        rows = _control_rows(h)
         self.assertEqual([label for label, _data in rows[0]], EDIT_ROW, rows)
         self.assertEqual([label for label, _data in rows[-1]], [EDIT_MENU], rows)
         # §28 (2.5): правка ушла в то же сообщение — единственный пост в
@@ -678,8 +682,13 @@ class DeliveredApplyTests(unittest.TestCase):
 
         await h.callback(f"aw_panel:{draft.id}:{draft.revision}")
 
-        self.assertEqual(h.screen_text(), DELIVERED_EDIT_TEXT)
-        self.assertEqual([label for label, _data in _keyboard_rows(h)[0]], EDIT_ROW)
+        # 2.5.3 §5: служебного экрана нет — устаревшая кнопка показывает
+        # список полей на самом анонсе.
+        self.assertEqual(h.screen_text(), "", "служебного экрана нет")
+        self.assertIsNone(h.screen_message_id(), "служебный экран не создан")
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
+        await h.callback(h.live_callbacks("anf_back:")[0])
+        self.assertEqual([label for label, _data in _control_rows(h)[0]], EDIT_ROW)
         self.assertEqual(h.posts(), posts_before, "устаревшая кнопка не публикует")
 
     @scenario_test
@@ -687,9 +696,7 @@ class DeliveredApplyTests(unittest.TestCase):
         await h.text("/start")
         draft, _bricks = await _delivered(h)
         stale_edit = f"aw_edit:{draft.id}:{draft.revision}"
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Другое")

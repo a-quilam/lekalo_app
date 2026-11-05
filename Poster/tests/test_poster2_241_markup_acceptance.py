@@ -163,6 +163,7 @@ try:
         _callback,
         _choose_personal,
         _no_photos,
+        _open_control,
         _open_edit,
         _seed_personal_template,
         _seed_place,
@@ -654,8 +655,10 @@ class ContentAndExtendedTests(unittest.TestCase):
         await _no_photos(h)
         self.assertEqual(h.posts()[-1], "<b>Основной</b> текст Главное значение")
 
+        # 2.5.3 §5: «📝 Текстовые поля» заменяют клавиатуру анонса, поэтому
+        # доп. поля открываются после возврата управления «◀️ Назад».
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_extras"))
+        await _open_control(h, "extras")
         await h.callback(_callback(h, "aw_exedit", f":{bricks['extra']}"))
         await h.text("Доп значение")
         self.assertEqual(

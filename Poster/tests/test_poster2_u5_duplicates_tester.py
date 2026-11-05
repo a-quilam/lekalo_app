@@ -43,7 +43,9 @@ try:
         _choose_personal,
         _latest_draft,
         _no_photos,
+        _open_control,
         _open_edit,
+        _open_field_question,
         _seed_personal_template,
         _seed_place,
         _start_to_template,
@@ -212,9 +214,7 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
         await _no_photos(h)
         first = _assert_single_copy(self, h, draft.id)
 
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text(UPDATED)
@@ -385,9 +385,11 @@ class PhotoAndRestartSingleCopyTests(unittest.TestCase):
         self.assertNotIn(first, h.deleted_ids(), "прежний экземпляр не удаляется")
         self.assertIsNone(_final_markup(h, first), "с прежнего снята клавиатура")
 
-        # «Изменить» после рестарта открывает компактный экран правки.
+        # «Изменить» после рестарта открывает список текстовых полей прямо на
+        # самом анонсе (2.5.3 §5) — служебного экрана нет.
         await _open_edit(h)
-        self.assertIn("✏️ Изменить анонс", h.screen_text())
+        self.assertEqual(h.screen_text(), "", "служебного экрана нет")
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
 
     def _only_post_id(self, h, stored) -> int:
         ids = list(stored.delivered_message_ids)

@@ -62,11 +62,10 @@ try:
         scenario_test,
     )
     from tests.test_stage27b_announcement_ui import (
-        _callback,
         _choose_personal,
         _latest_draft,
         _no_photos,
-        _open_edit,
+        _open_field_question,
         _seed_personal_template,
         _seed_place,
         _start_to_template,
@@ -422,9 +421,7 @@ class ExplicitExitAfterRestartTests(unittest.TestCase):
         await _choose_personal(h, template_id)
         await h.text("Ценное значение")
         await _no_photos(h)
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         # Poster 2.4 (P2): «✏️ Изменить ответ» больше нет — экран вопроса сам
         # показывает текущее значение и принимает новый ввод.
         self.assertIn("Текущее значение: Ценное значение", h.screen_text())
@@ -800,9 +797,7 @@ class BlockquoteRegressionTests(unittest.TestCase):
         await _choose_personal(h, template_id)
         await h.text("Старая цитата", entities=[ent(MessageEntity.BLOCKQUOTE, 0, 13)])
         await _no_photos(h)
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         self.assertIn(
             "Текущее значение: <blockquote>Старая цитата</blockquote>",
             h.screen_text(),

@@ -1098,6 +1098,59 @@ class Harness:
                     return data
         return None
 
+    def live_buttons(self) -> list[tuple[str, str | None]]:
+        """
+        Inline-кнопки всех ЖИВЫХ (не удалённых) сообщений чата.
+
+        2.5.3 §5: список текстовых полей — не отдельный экран, а клавиатура
+        самого анонса (0–1 фото) или его единственной панели (2+). Поэтому
+        `screen_buttons()` его не видит: нужны фактические клавиатуры чата.
+        Состояние каждого сообщения — последний вызов, который его менял.
+        """
+        deleted = {int(mid) for mid in self.deleted_ids()}
+        latest: dict[int, Any] = {}
+        for call in self.calls:
+            kind = call["type"]
+            if kind == "media_group":
+                # У sendMediaGroup нет общей клавиатуры (§22): кнопки живут
+                # в отдельной панели, её вызовы учитываются ниже.
+                continue
+            if kind in {"message", "photo", "rich_message"}:
+                ids = self.bot.call_message_ids.get(id(call), ())
+                for message_id in ids:
+                    if int(message_id) not in deleted:
+                        latest[int(message_id)] = call.get("reply_markup")
+                continue
+            if kind in {
+                "edit_message",
+                "edit_markup",
+                "edit_caption",
+                "edit_media",
+            }:
+                message_id = call.get("message_id")
+                if message_id is None or int(message_id) in deleted:
+                    continue
+                latest[int(message_id)] = call.get("reply_markup")
+        out: list[tuple[str, str | None]] = []
+        for message_id in sorted(latest):
+            out.extend(inline_buttons(latest[message_id]))
+        return out
+
+    def live_callbacks(self, prefix: str) -> list[str]:
+        """`callback_data` живых кнопок с данным префиксом (2.5.3 §5)."""
+        return [
+            data
+            for _label, data in self.live_buttons()
+            if data and data.startswith(prefix)
+        ]
+
+    def live_label(self, data: str) -> str | None:
+        """Подпись живой кнопки по её `callback_data` (None — кнопки нет)."""
+        for label, value in self.live_buttons():
+            if value == data:
+                return label
+        return None
+
     def live_control_callbacks(self) -> list[str]:
         """
         `anp_`-callback'и всех ЖИВЫХ (не удалённых) сообщений чата.

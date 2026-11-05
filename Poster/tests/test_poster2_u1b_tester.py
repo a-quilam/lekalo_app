@@ -49,6 +49,7 @@ try:
         _choose_personal,
         _latest_draft,
         _no_photos,
+        _open_control,
         _open_edit,
         _reopen_question,
         _seed_personal_template,
@@ -599,7 +600,7 @@ class LongValueScreenTests(unittest.TestCase):
         await _no_photos(h)
         await _open_edit(h)
 
-        await h.callback(_callback(h, "aw_extras"))
+        await _open_control(h, "extras")
         # Poster 2.4 (P2): незаполненный доп. кирпичик открывается сразу.
         await self._choose_extra_brick(h, bricks["extra"])
         # H2: секций и позиций нет — после выбора кирпичика сразу значение.

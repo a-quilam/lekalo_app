@@ -32,6 +32,7 @@ try:
         _choose_personal,
         _latest_draft,
         _no_photos,
+        _open_control,
         _open_edit,
         _seed_personal_template,
         _seed_place,
@@ -261,20 +262,21 @@ class Poster231AcceptanceTests(unittest.TestCase):
         await h.text("Значение")
         await _skip_until_photos(h)
         await _no_photos(h)
+        # 2.5.3 §5: вместо экрана «Поля анонса» — список текстовых полей на
+        # самом управлении анонса; лишних кнопок в нём по-прежнему нет.
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-
-        self.assertIn("Поля анонса", h.screen_text())
-        datas = [data for _label, data in h.screen_buttons()]
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
+        self.assertEqual(h.screen_text(), "", "служебного экрана нет")
+        datas = [data for _label, data in h.live_buttons()]
         self.assertEqual(
             [d for d in datas if d and d.startswith("aw_extras")],
             [],
-            "«Добавить поле» не место на экране списка полей",
+            "«Добавить поле» не место в списке полей",
         )
         self.assertEqual(
             [d for d in datas if d and d.startswith("aw_preview")],
             [],
-            "«Обзор анонса» не место на экране списка полей",
+            "«Обзор анонса» не место в списке полей",
         )
 
     # —— E1: список доступных доп. полей и его применение ————————
@@ -293,8 +295,10 @@ class Poster231AcceptanceTests(unittest.TestCase):
         await h.text("Значение")
         await _skip_until_photos(h)
         await _no_photos(h)
+        # 2.5.3 §5: список полей заменяет клавиатуру анонса, поэтому доп.
+        # поля открываются после возврата управления.
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_extras"))
+        await _open_control(h, "extras")
 
         # Poster 2.4 (P2): экран сразу показывает все доп. кирпичики
         # расширенной версии, кнопки «➕ Добавить поле» больше нет.
@@ -386,7 +390,7 @@ class Poster231AcceptanceTests(unittest.TestCase):
         self.assertIn("ADD", before)
 
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_extras"))
+        await _open_control(h, "extras")
         await h.callback(_callback(h, "aw_exdel"))
         self.assertEqual(
             _draft_extras(h, draft.id), [], "доп. поле должно быть удалено"

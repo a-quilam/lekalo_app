@@ -48,6 +48,24 @@ PANEL_ACTIONS = (ACTION_DATA, ACTION_PHOTOS, ACTION_EXTRAS, ACTION_MENU)
 # префиксом всё равно получит короткий ответ, а не доменную ошибку.
 PANEL_CALLBACK_PATTERN = rf"^{PANEL_CALLBACK_PREFIX}({'|'.join(PANEL_ACTIONS)}):\d+$"
 
+# Poster 2.5.3 §5: список ТЕКСТОВЫХ полей анонса. Он живёт не на отдельном
+# экране, а на самом управлении: у 0–1 фото — клавиатурой сообщения анонса,
+# у медиагруппы — текстом её единственной панели. Поэтому у протокола свой
+# префикс: кнопки списка не являются действиями панели и разбираются
+# отдельно (проверка экземпляра у них та же).
+FIELD_CALLBACK_PREFIX = "anf_"
+FIELD_ACTION_PAGE = "page"
+FIELD_ACTION_SELECT = "sel"
+FIELD_ACTION_BACK = "back"
+FIELD_ACTIONS = (FIELD_ACTION_PAGE, FIELD_ACTION_SELECT, FIELD_ACTION_BACK)
+
+# `anf_page:{instance_id}:{offset}`, `anf_sel:{instance_id}:{brick_id}`,
+# `anf_back:{instance_id}` — id экземпляра обязателен, страница и кирпичик
+# необязательны в зависимости от действия.
+FIELD_CALLBACK_PATTERN = (
+    rf"^{FIELD_CALLBACK_PREFIX}({'|'.join(FIELD_ACTIONS)}):\d+(?::\d+)?$"
+)
+
 # Ответ на кнопку устаревшего экземпляра (§32, сценарий Ж). Кнопка могла
 # пережить архив, удаление записи или рестарт службы: пользователь получает
 # только пояснение, без правки экранов и записей в БД.
@@ -87,6 +105,56 @@ def parse_panel_callback(data: str | None) -> tuple[str, int] | None:
     if instance_id <= 0:
         return None
     return action, instance_id
+
+
+def field_callback(action: str, instance_id: int, value: int | None = None) -> str:
+    """
+    `callback_data` кнопки списка текстовых полей (2.5.3 §5).
+
+    `value` — смещение страницы (`page`) или id кирпичика (`sel`); у
+    «◀️ Назад» его нет. Как и у `anp_`, в данных только id экземпляра:
+    черновик и чат восстанавливаются по записи, поэтому старая кнопка
+    списка не может открыть чужой анонс.
+    """
+    if action not in FIELD_ACTIONS:
+        raise ValueError(f"Неизвестное действие списка полей: {action!r}")
+    base = f"{FIELD_CALLBACK_PREFIX}{action}:{int(instance_id)}"
+    if action == FIELD_ACTION_BACK:
+        return base
+    if value is None:
+        raise ValueError(f"Действию списка полей {action!r} нужен параметр.")
+    return f"{base}:{int(value)}"
+
+
+def parse_field_callback(data: str | None) -> tuple[str, int, int | None] | None:
+    """
+    Разбирает `anf_{action}:{instance_id}[:{value}]`.
+
+    `None` — данные не нашего формата; подделанный callback получает тот же
+    короткий ответ «устарело», что и кнопка архивного экземпляра.
+    """
+    raw = (data or "").strip()
+    if not raw.startswith(FIELD_CALLBACK_PREFIX):
+        return None
+    parts = raw.split(":")
+    if len(parts) not in {2, 3}:
+        return None
+    action = parts[0][len(FIELD_CALLBACK_PREFIX) :]
+    if action not in FIELD_ACTIONS or not parts[1].isdigit():
+        return None
+    instance_id = int(parts[1])
+    if instance_id <= 0:
+        return None
+    value: int | None = None
+    if len(parts) == 3:
+        if not parts[2].isdigit():
+            return None
+        value = int(parts[2])
+    if action == FIELD_ACTION_BACK:
+        return (action, instance_id, None) if value is None else None
+    if value is None:
+        return None
+    return action, instance_id, value
 
 
 def panel_keyboard(

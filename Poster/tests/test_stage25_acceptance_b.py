@@ -61,6 +61,7 @@ from tests.test_stage27b_announcement_ui import (
     _callback,
     _latest_draft,
     _no_photos,
+    _open_control,
     _open_edit,
     _seed_personal_template,
     _seed_place,
@@ -261,6 +262,27 @@ async def _fill_until_photos(
         title_done = True
         await h.callback(_callback(h, "aw_qskip"))
     raise AssertionError(f"шаг фотографий не достигнут: {h.screen_text()[:200]!r}")
+
+
+async def _open_field(h: Harness, title_part: str) -> None:
+    """
+    Открывает ровно один вопрос по полю доставленного анонса (2.5.3 §5).
+
+    Путь автора: «📝 Текстовые поля» на управлении анонса → пункт списка.
+    Отдельного экрана «✏️ Изменить анонс» больше нет.
+    """
+    await _open_edit(h)
+    field = next(
+        (
+            data
+            for label, data in h.live_buttons()
+            if data and data.startswith("anf_sel:") and title_part in label
+        ),
+        None,
+    )
+    if field is None:
+        raise AssertionError(f"нет поля {title_part!r} в списке: {h.live_buttons()}")
+    await h.callback(field)
 
 
 async def _personal_announcement(
@@ -744,7 +766,7 @@ class DateFormatAcceptance(unittest.TestCase):
             self.assertNotIn(formatted, h.posts()[-1] or "", "дата до выбора доп. поля")
 
             await _open_edit(h)
-            await h.callback(_callback(h, "aw_extras"))
+            await _open_control(h, "extras")
             await h.callback(_callback(h, "aw_exedit"))
             self.assertIn("📅 Дата", h.screen_text())
             await h.text(raw_next)
@@ -756,14 +778,9 @@ class DateFormatAcceptance(unittest.TestCase):
             await h.callback("main_menu")
             await h.callback("my_announcements")
             await h.callback(f"aw_open:{standard_draft_id}")
-            await _open_edit(h)
-            await h.callback(_callback(h, "aw_qmanage"))
-            date_callback = next(
-                data
-                for label, data in _flat(h)
-                if data and data.startswith("aw_qgoto:") and "Дата" in label
-            )
-            await h.callback(date_callback)
+            # 2.5.3 §5: правка поля доставленного анонса — «📝 Текстовые поля»
+            # на самом управлении, затем пункт списка (без временного экрана).
+            await _open_field(h, "Дата")
             await h.text(raw_edit)
             # §28 (2.5): правка доставленного идёт НА МЕСТЕ — анонс без фото
             # доводится `editMessageText`, поэтому видимый текст берётся из

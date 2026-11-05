@@ -44,7 +44,7 @@ try:
         _callback,
         _choose_personal,
         _latest_draft,
-        _open_edit,
+        _open_field_question,
         _seed_personal_template,
         _seed_place,
         _start_to_template,
@@ -107,6 +107,18 @@ def _final_markup(h, message_id: int):
 
 def _panel_records(h) -> list[dict]:
     return [call for call in h.calls if is_panel_record(call)]
+
+
+def _panel_sends(h) -> list[dict]:
+    """
+    Вызовы, СОЗДАВШИЕ панель управления (§22).
+
+    2.5.3 §5: список текстовых полей правит текст панели
+    (`editMessageText`), поэтому `is_panel_record` видит и правки. Проверки
+    «панель не задублирована» считают именно отправки: правка панели —
+    ожидаемая работа с ней, а не вторая панель.
+    """
+    return [call for call in _panel_records(h) if call["type"] == "message"]
 
 
 def _text_copies(h, text: str) -> list[int]:
@@ -407,8 +419,8 @@ class DeliveryResumeTests(unittest.TestCase):
         active = _only_active(h, draft.id)
         self.assertEqual(active.message_ids, tuple(content_ids))
         self.assertEqual(len(_instances(h, draft.id)), 1, "второй экземпляр не создан")
-        self.assertEqual(len(_panel_records(h)), 1, "панель отправлена один раз")
-        panel_id = h.bot.call_message_ids[id(_panel_records(h)[0])][0]
+        self.assertEqual(len(_panel_sends(h)), 1, "панель отправлена один раз")
+        panel_id = h.bot.call_message_ids[id(_panel_sends(h)[0])][0]
         self.assertEqual(active.panel_message_id, panel_id)
 
 
@@ -438,9 +450,7 @@ class InstanceArchiveTests(unittest.TestCase):
         first_panel = first.panel_message_id
         self.assertIsNotNone(first_panel)
 
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         await h.text("Обновлено")
 
         # Правка применена к тому же экземпляру: копий и архива нет.
@@ -515,9 +525,7 @@ class InstanceArchiveTests(unittest.TestCase):
         first = _only_active(h, draft.id)
         first_id = first.message_ids[0]
 
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         await h.text("Обновлено")
 
         self.assertEqual(len(_instances(h, draft.id)), 1, "правка не плодит экземпляры")

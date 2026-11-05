@@ -282,17 +282,14 @@ async def _no_photos(h) -> None:
 
 async def _open_edit(h) -> None:
     """
-    Открывает компактный экран правки доставленного анонса.
+    Открывает список текстовых полей доставленного анонса (2.5.3 §5).
 
-    2.5.2 §2: у опубликованного анонса ОДНО место управления — кнопки
-    `anp_` на самом сообщении (0–1 фото) или на панели медиагруппы. Экран
-    правки — временный: он открывается кнопкой «📝 Данные» и закрывается
-    после успешного сохранения. Поэтому helper сначала нажимает управление
-    активного экземпляра, а устаревшую кнопку «✏️ Изменить» (`aw_edit`)
-    использует только там, где экран правки уже открыт.
+    У опубликованного анонса ОДНО место управления — кнопки `anp_` на самом
+    сообщении (0–1 фото) или на панели медиагруппы. «📝 Текстовые поля»
+    меняют это место, а не создают экран: у 0–1 фото это клавиатура анонса,
+    у медиагруппы — текст панели. Поэтому список виден не в `screen_buttons`,
+    а в живых клавиатурах чата (`h.live_callbacks`).
     """
-    if _callbacks(h, "aw_qmanage"):
-        return
     data = _control_callback(h, "data")
     if data is not None:
         await h.callback(data)
@@ -317,21 +314,84 @@ def _control_callback(h, action: str) -> str | None:
     return None
 
 
+def _live_callback(h, prefix: str) -> str | None:
+    """`callback_data` ЖИВОЙ кнопки чата с данным префиксом (2.5.3 §5)."""
+    for data in h.live_callbacks(prefix):
+        return data
+    return None
+
+
+async def _back_to_controls(h) -> None:
+    """
+    «◀️ Назад» из списка полей возвращает управление анонсу (§5).
+
+    Список полей — режим самого управления, поэтому фото, доп. поля и выход
+    в меню снова доступны только после возврата.
+    """
+    data = _live_callback(h, "anf_back:")
+    if data is None:
+        raise AssertionError(
+            f"нет «Назад» списка полей; живые кнопки: {h.live_buttons()}"
+        )
+    await h.callback(data)
+
+
+async def _open_control(h, action: str) -> None:
+    """
+    Нажимает действие управления анонсом (`data`/`photos`/`extras`/`menu`).
+
+    Если открыт список полей, сначала возвращает управление «◀️ Назад»:
+    так же поступит автор, у которого список заменил клавиатуру анонса.
+    """
+    data = _live_callback(h, f"anp_{action}:")
+    if data is None:
+        await _back_to_controls(h)
+        data = _live_callback(h, f"anp_{action}:")
+    if data is None:
+        raise AssertionError(
+            f"нет кнопки управления {action!r}; живые кнопки: {h.live_buttons()}"
+        )
+    await h.callback(data)
+
+
+async def _open_field_question(h, brick_id: int | None = None) -> None:
+    """
+    Открывает временный вопрос по полю доставленного анонса (§5).
+
+    Путь автора: «📝 Текстовые поля» → пункт списка. `brick_id` не задан —
+    берётся первая кнопка поля.
+    """
+    if _live_callback(h, "anf_sel:") is None:
+        await _open_edit(h)
+    data = _live_callback(h, "anf_sel:")
+    if data is None:
+        raise AssertionError(f"нет кнопок полей; живые кнопки: {h.live_buttons()}")
+    if brick_id is not None:
+        suffix = f":{int(brick_id)}"
+        data = next(
+            (value for value in h.live_callbacks("anf_sel:") if value.endswith(suffix)),
+            None,
+        )
+        if data is None:
+            raise AssertionError(
+                f"нет поля #{brick_id}; живые кнопки: {h.live_buttons()}"
+            )
+    await h.callback(data)
+
+
 async def _reopen_question(h) -> None:
     """
     Возвращает пользователя к заполненному вопросу (U2b).
 
     До доставки удобнее «◀️ Назад» с шага фото — оно ведёт на последний
-    кирпичик. После доставки (2.5, §18) автор уже на экране категорий
-    правки, поэтому путь такой: «Данные» → пункт поля.
+    кирпичик. После доставки (2.5, §18) правка начинается со списка полей
+    (§5, 2.5.3), поэтому путь такой: «📝 Текстовые поля» → пункт поля.
     """
     back = _callbacks(h, "aw_photo_back")
     if back:
         await h.callback(back[0])
         return
-    await _open_edit(h)
-    await h.callback(_callback(h, "aw_qmanage"))
-    await h.callback(_callback(h, "aw_qgoto"))
+    await _open_field_question(h)
 
 
 async def _preview(h) -> None:
@@ -685,10 +745,11 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
         self.assertIn("Всё заполнено. Анонс собирается", h.screen_text())
         await h.callback(_callback(h, "aw_save"))
         self.assertEqual(h.posts(), posts_after_delivery)
-        # §18 (2.5): доставленный анонс «сохранить» не меняет — короткий
-        # ответ и строка о том, что отправленная версия не тронута.
-        self.assertEqual("Сохранено.", h.answer_texts()[-1])
-        self.assertIn("Отправленный анонс не менялся", h.screen_text())
+        # §18 (2.5): доставленный анонс «сохранить» не меняет: короткий
+        # ответ о том, что отправленная версия не тронута, и список полей
+        # на самом управлении (2.5.3 §5) вместо служебного экрана.
+        self.assertIn("Отправленный анонс не менялся", h.answer_texts()[-1])
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не показан")
 
         draft = _latest_draft(h)
         with h.session_factory() as session:
@@ -752,7 +813,7 @@ class AnnouncementWizardExtrasTests(unittest.TestCase):
         _assert_delivered_controls(h)
         self.assertEqual(len(h.posts()), 1)
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_extras"))
+        await _open_control(h, "extras")
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_EXTRAS)
         # Poster 2.5.1: строки доп. полей идут по пять на страницу — восемь
         # кирпичиков дают две страницы и индикатор `1/2`.
@@ -898,13 +959,7 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         await _no_photos(h)
         self.assertIn("Исходное", h.posts()[-1] or "")
 
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        self.assertIn("Поля анонса", h.screen_text())
-        self.assertTrue(
-            any("заполнено" in label for label, _data in h.screen_buttons())
-        )
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h, _bricks["main"])
         self.assertIn("Исходное", h.screen_text())
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # показывает текущее значение и принимает новый текст.
@@ -912,7 +967,7 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         await h.text("Новое")
         # H3: ответ сразу применил изменение — новой версии достаточно,
         # строки «Есть изменения» и кнопки применения больше нет.
-        # 2.5.2 §2: служебный экран правки закрыт, управление — у анонса.
+        # 2.5.3 §5: временный вопрос закрыт, управление — у анонса.
         _assert_delivered_controls(h)
         self.assertFalse(_callbacks(h, "aw_apply"))
         self.assertIn("Новое", h.posts()[-1] or "")
@@ -925,9 +980,12 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
 
         await h.callback(_callback(h, "aw_save"))
         # §18 (2.5): «сохранить» после доставки только подтверждает, что
-        # отправленная версия не тронута: короткий ответ + строка на экране.
-        self.assertEqual("Сохранено.", h.answer_texts()[-1])
-        self.assertIn("Отправленный анонс не менялся", h.screen_text())
+        # отправленная версия не тронута. 2.5.3 §5: служебного экрана нет,
+        # поэтому пояснение приходит ОДНИМ ответом на callback, а в чате
+        # снова список текстовых полей.
+        self.assertIn("Отправленный анонс не менялся", h.answer_texts()[-1])
+        self.assertNotEqual("Сохранено.", h.answer_texts()[-1])
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не показан")
         posts_after_save = h.posts()
         self.assertEqual(posts_after_save, posts_after_apply)
         draft = _latest_draft(h)
@@ -1025,11 +1083,15 @@ class AnnouncementWizardSafetyTests(unittest.TestCase):
         # §18 (2.5): предупреждение об устаревшей кнопке уходит ответом на
         # callback, а управление анонсом остаётся рабочим (2.5.2 §2).
         self.assertIn("Данные изменились", h.answer_texts()[-1])
+        # 2.5.3 §5: после устаревшего callback автор остаётся на управлении
+        # анонсом — открытый список полей. «◀️ Назад» возвращает кнопки
+        # экземпляра (`anp_`), ни сообщение, ни версия не меняются.
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не показан")
+        await _back_to_controls(h)
         self.assertIsNotNone(h.control_callback("data"), "управление анонсом пропало")
-        self.assertIn(
-            "📝 Данные",
-            [label for label, _data in h.screen_buttons()],
-        )
+        data_callback = h.control_callback("data")
+        assert data_callback is not None
+        self.assertEqual(h.live_label(data_callback), "📝 Текстовые поля")
         with h.session_factory() as session:
             fields = build_announcement_fields(
                 session,

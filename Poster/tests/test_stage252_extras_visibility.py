@@ -129,12 +129,46 @@ async def _deliver(
     return draft, bricks
 
 
-async def _open_editor(h) -> None:
-    """Временный экран редактора: кнопка «📝 Данные» активного экземпляра."""
+async def _open_fields(h) -> None:
+    """
+    Список текстовых полей доставленного анонса (2.5.3 §5).
+
+    Отдельного экрана «✏️ Изменить анонс» больше нет: кнопка «📝 Текстовые
+    поля» заменяет клавиатуру самого анонса (0–1 фото) или текст его
+    единственной панели.
+    """
     data = h.control_callback("data")
     if data is None:
-        raise AssertionError(f"нет управления анонсом: {h.screen_buttons()}")
+        raise AssertionError(f"нет управления анонсом: {h.live_buttons()}")
     await h.callback(data)
+
+
+def _extras_datas(h) -> list[str]:
+    """`callback_data` кнопки доп. полей во ВСЕХ живых клавиатурах чата."""
+    return [
+        data
+        for _label, data in h.live_buttons()
+        if data and (data.startswith("anp_extras") or data.startswith("aw_extras"))
+    ]
+
+
+async def _back_to_controls(h) -> None:
+    """«◀️ Назад» списка полей возвращает управление анонсу (§5)."""
+    backs = h.live_callbacks("anf_back:")
+    if not backs:
+        raise AssertionError(f"нет «Назад» списка полей: {h.live_buttons()}")
+    await h.callback(backs[0])
+
+
+async def _ensure_controls(h) -> None:
+    """
+    Управление анонсом доступно автору: список полей закрывается «◀️ Назад».
+
+    Список может не открыться (например, поле в снимке шаблона ушло в
+    архив) — тогда управление уже на месте, и закрывать нечего.
+    """
+    if h.live_callbacks("anf_back:"):
+        await _back_to_controls(h)
 
 
 @unittest.skipIf(
@@ -156,14 +190,10 @@ class ExtrasHiddenTests(unittest.TestCase):
         )
 
         self.assertNotIn(EXTRAS_LABEL, _control_labels(h), "кнопка на самом анонсе")
-        await _open_editor(h)
-        self.assertNotIn(EXTRAS_LABEL, _screen_labels(h), "кнопка в редакторе")
+        await _open_fields(h)
+        self.assertNotIn(EXTRAS_LABEL, [label for label, _d in h.live_buttons()])
         self.assertFalse(
-            [
-                data
-                for _label, data in h.screen_buttons()
-                if data and data.startswith("aw_extras")
-            ],
+            _extras_datas(h),
             "у simple-only шаблона нет перехода в доп. поля",
         )
 
@@ -201,8 +231,9 @@ class ExtrasHiddenTests(unittest.TestCase):
         )
 
         self.assertNotIn(EXTRAS_LABEL, _control_labels(h))
-        await _open_editor(h)
-        self.assertNotIn(EXTRAS_LABEL, _screen_labels(h))
+        await _open_fields(h)
+        self.assertNotIn(EXTRAS_LABEL, [label for label, _d in h.live_buttons()])
+        self.assertFalse(_extras_datas(h))
 
         with h.session_factory() as session:
             details = get_announcement_draft(
@@ -235,12 +266,14 @@ class ExtrasHiddenTests(unittest.TestCase):
                 expected_revision=1,
             )
 
-        await _open_editor(h)
+        await _open_fields(h)
+        await _ensure_controls(h)
         self.assertNotIn(
             EXTRAS_LABEL,
-            _screen_labels(h),
+            [label for label, _data in h.live_buttons()],
             "архивный кандидат не должен открывать экран доп. полей",
         )
+        self.assertFalse(_extras_datas(h))
         with h.session_factory() as session:
             details = get_announcement_draft(
                 session,
@@ -274,14 +307,17 @@ class ExtrasVisibleTests(unittest.TestCase):
         )
 
         self.assertIn(EXTRAS_LABEL, _control_labels(h), "кнопка на самом анонсе")
-        await _open_editor(h)
-        self.assertIn(EXTRAS_LABEL, _screen_labels(h), "кнопка в редакторе")
+        await _open_fields(h)
+        # 2.5.3 §5: список полей заменяет клавиатуру анонса, поэтому кнопка
+        # доп. полей появляется после «◀️ Назад».
+        await _back_to_controls(h)
+        self.assertIn(
+            EXTRAS_LABEL,
+            [label for label, _data in h.live_buttons()],
+            "кнопка в управлении анонсом",
+        )
 
-        extras_data = [
-            data
-            for _label, data in h.screen_buttons()
-            if data and data.startswith("aw_extras")
-        ]
+        extras_data = _extras_datas(h)
         self.assertEqual(len(extras_data), 1, "ровно один переход в доп. поля")
         await h.callback(extras_data[0])
         # Экран не пуст: в списке есть кирпичик расширенного текста.
@@ -323,17 +359,14 @@ class ExtrasVisibleTests(unittest.TestCase):
                     value="Доп. значение",
                 )
 
-        await _open_editor(h)
+        await _open_fields(h)
+        await _back_to_controls(h)
         self.assertIn(
             EXTRAS_LABEL,
-            _screen_labels(h),
+            [label for label, _data in h.live_buttons()],
             "выбранным полем надо управлять — кнопка обязана остаться",
         )
-        extras_data = [
-            data
-            for _label, data in h.screen_buttons()
-            if data and data.startswith("aw_extras")
-        ]
+        extras_data = _extras_datas(h)
         await h.callback(extras_data[0])
         self.assertTrue(
             [
@@ -445,24 +478,24 @@ class PreviewAndDeliveredKeyboardTests(unittest.TestCase):
             [data for data in hidden if data and data.startswith("aw_extras")]
         )
 
-        # Компактный редактор доставленного использует тот же флаг.
-        delivered_shown = [
+        # 2.5.3 §5: у доставленного анонса управление — `panel_keyboard`
+        # (клавиатура сообщения 0–1 фото или панель альбома). Фабрика
+        # подчиняется тому же флагу предиката.
+        with_extras = [
             data
             for _label, data in inline_buttons(
-                wizard._delivered_edit_keyboard(details, extras_available=True)
+                controls.panel_keyboard(1, extras_available=True)
             )
         ]
-        delivered_hidden = [
+        without_extras = [
             data
             for _label, data in inline_buttons(
-                wizard._delivered_edit_keyboard(details, extras_available=False)
+                controls.panel_keyboard(1, extras_available=False)
             )
         ]
-        self.assertTrue(
-            [data for data in delivered_shown if data and data.startswith("aw_extras")]
-        )
-        self.assertFalse(
-            [data for data in delivered_hidden if data and data.startswith("aw_extras")]
+        self.assertIn(controls.panel_callback(controls.ACTION_EXTRAS, 1), with_extras)
+        self.assertNotIn(
+            controls.panel_callback(controls.ACTION_EXTRAS, 1), without_extras
         )
 
 

@@ -53,7 +53,6 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 PHOTO_STEP_TITLE = "📷 Фотографии анонса"
 # §18 (2.5): экрана «✅ Анонс готов» нет; после публикации служебного экрана
 # тоже нет — управление живёт на самом анонсе (2.5.2 §2).
-DELIVERED_EDIT_TITLE = "✏️ Изменить анонс"
 
 
 def _published(h) -> None:
@@ -252,7 +251,10 @@ class PhotoStepWiringTests(unittest.TestCase):
         await h.callback(stale_back)
         self.assertIn("Данные изменились.", h.answer_texts()[-1])
         self.assertEqual(h.posts(), posts_before)
-        self.assertIn(DELIVERED_EDIT_TITLE, h.screen_text())
+        # 2.5.3 §5: служебного экрана нет — устаревшая кнопка открывает
+        # список полей на самом анонсе.
+        self.assertEqual(h.screen_text(), "", "служебного экрана нет")
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
 
     @scenario_test
     async def test_skip_finishes_without_photos(self, h) -> None:

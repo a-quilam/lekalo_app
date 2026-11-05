@@ -5,11 +5,12 @@ Poster 2.3 H3, редактор и UX (требования A, B, C).
 Проверяется снаружи, как у владельца: снапшоты текста экрана и структуры
 клавиатуры через FakeBot, а не поиск отдельных подстрок.
 
-- **B.** Главный экран правки готового анонса: строка
-  «📝 Данные | 🖼 Фото», «🧩 Дополнительные поля» только когда добавлять есть
-  что, «🏠 В главное меню». Кнопок «Применить изменения», «Обзор»,
-  «Показать вложения» и ложного «Назад» нет. Сохранённое значение сразу
-  заменяет доставленную версию: отдельного подтверждения не требуется.
+- **B.** Управление готовым анонсом: строка
+  «📝 Текстовые поля | 🖼 Фото», «🧩 Дополнительные поля» только когда
+  добавлять есть что, «🏠 В главное меню». Кнопок «Применить изменения»,
+  «Обзор», «Показать вложения» и ложного «Назад» нет. Сохранённое значение
+  сразу заменяет доставленную версию: отдельного подтверждения не требуется.
+  2.5.3 §5: список текстовых полей — клавиатура самого анонса, а не экран.
 - **C.** Управление площадкой: пары «✏️ Адрес | 🗑» и «✏️ Ссылка | 🗑» с
   подтверждением и отменой; у названия и города корзины нет; удаление
   города через UI недоступно; альтернативные названия — один вход.
@@ -43,6 +44,7 @@ try:
         get_personal_brick,
     )
     from handlers import announcement_wizard as announcement_wizard_handlers
+    from handlers.announcement_wizard import AW_PREVIEW, CONVERSATION_NAME
     from template_store import (
         create_personal_template,
         get_template_version,
@@ -58,7 +60,9 @@ try:
         _choose_personal,
         _latest_draft,
         _no_photos,
+        _open_control,
         _open_edit,
+        _open_field_question,
         _seed_personal_template,
         _seed_place,
         _start_to_template,
@@ -90,6 +94,32 @@ def _rows(h) -> list[list[tuple[str, str | None]]]:
         [(button.text, button.callback_data) for button in row]
         for row in markup.inline_keyboard
     ]
+
+
+def _control_rows(h) -> list[list[tuple[str, str | None]]]:
+    """
+    Строки клавиатуры ЖИВОГО управления анонсом (2.5.3 §5).
+
+    Управление живёт на сообщении анонса (0–1 фото) или на панели (2+), а не
+    на служебном экране, поэтому `screen()` здесь не подходит.
+    """
+    markup = _final_control_markup(h)
+    assert markup is not None, "у анонса нет клавиатуры управления"
+    return [
+        [(button.text, button.callback_data) for button in row]
+        for row in markup.inline_keyboard
+    ]
+
+
+def _final_control_markup(h):
+    """Итоговая клавиатура сообщения, несущего кнопки `anp_`."""
+    data = h.control_callback("data")
+    assert data is not None, "у анонса нет кнопки «📝 Текстовые поля»"
+    for message_id in sorted(h.bot._message_content, reverse=True):
+        entry = h.bot._message_content[message_id]
+        if entry[2] and "anp_data:" in str(entry[2]):
+            return _final_markup(h, message_id[1])
+    return None
 
 
 def _final_markup(h, message_id: int):
@@ -135,29 +165,39 @@ class DeliveredEditLayoutTests(unittest.TestCase):
 
     @scenario_test
     async def test_layout_is_two_columns_and_main_menu(self, h) -> None:
+        """
+        2.5.3 §5: список полей живёт НА управлении анонса.
+
+        Кнопки `anp_` («📝 Текстовые поля», «🖼 Фото») остаются одной строкой
+        двумя колонками, «🏠 В меню» — последней строкой. После выбора поля
+        список заменяет клавиатуру сообщения, а не создаёт второй экран.
+        """
         await h.text("/start")
         draft, _bricks = await _delivered(h)
-        await _open_edit(h)
-
-        rows = _rows(h)
+        rows = _control_rows(h)
         # Первая строка: данные и фото рядом — два связанных действия.
         self.assertEqual(
             [label for label, _data in rows[0]],
-            ["📝 Данные", "🖼 Фото (0)"],
+            ["📝 Текстовые поля", "🖼 Фото (0)"],
             f"первая строка: {rows[0]}",
         )
         self.assertEqual(
             [data for _label, data in rows[0]],
             [
-                f"aw_qmanage:{draft.id}:{draft.revision}",
-                f"aw_photos:{draft.id}:{draft.revision}:0",
+                h.control_callback("data"),
+                h.control_callback("photos"),
             ],
         )
         # Последняя строка: выход в меню.
         self.assertEqual([label for label, _data in rows[-1]], ["🏠 В меню"], rows)
-        # Экран правки ничего не отправляет и не меняет версию.
+
+        await _open_edit(h)
+        # Список полей — только клавиатура: ни сообщения, ни нового экрана.
+        self.assertIsNone(h.screen_message_id(), "служебный экран не создаётся")
         self.assertEqual(len(h.posts()), 1)
         self.assertEqual(_details(h, draft.id).revision, draft.revision)
+        fields = h.live_callbacks("anf_sel:")
+        self.assertTrue(fields, f"нет кнопок полей: {h.live_buttons()}")
 
     @scenario_test
     async def test_no_apply_preview_or_fake_back_button(self, h) -> None:
@@ -165,9 +205,9 @@ class DeliveredEditLayoutTests(unittest.TestCase):
         await _delivered(h)
         await _open_edit(h)
 
-        labels = [label for label, _data in h.screen_buttons()]
-        callbacks = [data for _label, data in h.screen_buttons()]
-        for gone in ("Применить изменения", "Обзор", "Показать вложения", "Назад"):
+        labels = [label for label, _data in h.live_buttons()]
+        callbacks = [data for _label, data in h.live_buttons()]
+        for gone in ("Применить изменения", "Обзор", "Показать вложения"):
             self.assertFalse(
                 any(gone in label for label in labels),
                 f"лишняя кнопка «{gone}»: {labels}",
@@ -187,9 +227,7 @@ class DeliveredEditLayoutTests(unittest.TestCase):
         self.assertTrue(first_ids)
         photos_before = len(h.posts())
 
-        await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        await h.callback(_callback(h, "aw_qgoto"))
+        await _open_field_question(h)
         # Poster 2.4 (P2): кнопки «✏️ Изменить ответ» больше нет — новый
         # текст на экране вопроса сразу заменяет значение.
         await h.text("Новое значение")
@@ -212,9 +250,15 @@ class DeliveredEditLayoutTests(unittest.TestCase):
         self.assertEqual(len(instances), 1, "архивного снимка при правке нет")
         # §30–31: прежнее сообщение не удаляется и остаётся в чате.
         self.assertNotIn(first_ids[0], h.deleted_ids(), "прежний экземпляр не удалён")
+        # §5 (2.5.3): вопрос закрыт, управление вернулось анонсу — кнопки
+        # экземпляра снова живы, «Применить изменения» нигде нет.
+        self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
+        self.assertEqual(
+            h.live_label(h.control_callback("data") or ""), "📝 Текстовые поля"
+        )
         self.assertNotIn(
             "Применить изменения",
-            [label for label, _data in h.screen_buttons()],
+            [label for label, _data in h.live_buttons()],
         )
 
     @scenario_test
@@ -232,7 +276,7 @@ class DeliveredEditLayoutTests(unittest.TestCase):
             extended_content="[main]\n[extra]",
         )
         await _open_edit(h)
-        data = _callbacks(h, "aw_extras")
+        data = h.live_callbacks("anp_extras:")
         if not data:
             self.skipTest("в шаблоне нет доступных дополнительных полей")
         await h.callback(data[0])
@@ -252,10 +296,11 @@ class DeliveredEditLayoutTests(unittest.TestCase):
         H3 (дефект ревизора): «сохранить» у доставленного анонса.
 
         Кнопки «Применить изменения» больше нет (H3), а экрана «✅ Анонс
-        готов» нет с 2.5 (§18): после доставки на экране рабочий редактор.
-        Если пересборка после правки сорвалась, «сохранить» честно
-        показывает APPLY_FAILED_TEXT: он отправляет автора к повторной
-        правке или к экрану повтора отправки, а не к удалённой кнопке.
+        готов» нет с 2.5 (§18). Если пересборка после правки сорвалась,
+        «сохранить» честно отвечает APPLY_FAILED_TEXT: он отправляет автора к
+        повторной правке или к экрану повтора отправки, а не к удалённой
+        кнопке. 2.5.3 §5: служебного экрана нет, пояснение — ответ на
+        callback, а управление анонсом остаётся живым.
         """
         await h.text("/start")
         _draft, bricks = await _delivered(h)
@@ -274,13 +319,19 @@ class DeliveredEditLayoutTests(unittest.TestCase):
         ui = h.user_data()["announcement_ui"]
         await h.callback(f"aw_save:{ui['draft_id']}:{ui['revision']}")
 
-        # Экран — редактор с честной строкой вместо обещания удалённой кнопки.
-        self.assertIn(announcement_wizard_handlers.APPLY_FAILED_TEXT, h.screen_text())
-        self.assertNotIn("Применить изменения", h.screen_text())
+        # Честная строка вместо обещания удалённой кнопки.
+        self.assertIn(
+            announcement_wizard_handlers.APPLY_FAILED_TEXT, h.answer_texts()[-1]
+        )
         self.assertNotIn("Применить изменения", h.answer_texts()[-1])
+        self.assertNotIn("Применить изменения", h.screen_text())
         # «Сохранить» у доставленного анонса ничего не отправляет.
         self.assertEqual(h.posts(), posts_before)
         self.assertFalse(_callbacks(h, "aw_apply"))
+        # Список полей не прочитался (кирпичик в архиве) — управление всё
+        # равно вернулось анонсу, а не превратилось в «внутреннюю ошибку».
+        self.assertIsNone(h.screen_message_id(), "служебного экрана нет")
+        self.assertIsNotNone(h.control_callback("data"), "управление анонсом живо")
 
 
 @unittest.skipIf(
@@ -680,7 +731,7 @@ class ScreenLimitRegressionTests(unittest.TestCase):
         await _no_photos(h)
         draft = _latest_draft(h)
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_extras"))
+        await _open_control(h, "extras")
         # Poster 2.4 (P2): список сразу содержит все доп. кирпичики
         # расширенного текста, кнопки `aw_exadd` больше нет.
         extra_id = bricks["extra"]

@@ -94,8 +94,12 @@
 "wizard.photos.accepted_many": "✅ Добавлено фото: {count}."
 "wizard.photos.duplicate": "Это фото уже есть в анонсе. Повторно добавлять его не нужно."
 "wizard.photos.rejected": "Фото не добавлено: {reason}"
-# Экран правки доставленного анонса: категории + «В меню» (§26–27).
-"wizard.finished.edit_text": "✏️ Изменить анонс\n\nВыберите, что изменить. Каждое изменение сразу обновляет анонс в чате: новая версия заменяет предыдущую."
+# Список текстовых полей доставленного анонса (2.5.3 §5): тело — заголовок и
+# одна подсказка, перечня полей в тексте нет — только кнопки.
+"wizard.fields.title": "📝 Текстовые поля"
+"wizard.fields.hint": "Выберите поле, чтобы изменить его. Изменение сразу обновляет анонс в чате."
+"wizard.fields.empty": "В этом анонсе нет текстовых полей для правки."
+"wizard.fields.button": "{number}. {title} — {status}"
 # Служебная панель управления альбомом: у sendMediaGroup нет общей клавиатуры,
 # поэтому кнопки живут в одном отдельном сообщении (§22). Это не «Анонс готов»
 # и не копия текста.
@@ -220,7 +224,7 @@
 "buttons.wizard.skip": "⏭ Пропустить"
 "buttons.wizard.choose_month": "📅 Выбрать месяц"
 "buttons.finished.edit": "✏️ Изменить"
-"buttons.finished.data": "📝 Данные"
+"buttons.finished.data": "📝 Текстовые поля"
 # {count} — число фотографий анонса в скобках.
 "buttons.finished.photos": "🖼 Фото ({count})"
 # H3: вход в список дополнительных полей с главного экрана правки.
@@ -510,7 +514,6 @@
 "alerts.wizard.prodolzhayu_otpravku": "Продолжаю отправку…"
 "alerts.wizard.profil_zaregistrirovan_otpravte": "Профиль пока не создан. Отправьте /start и попробуйте ещё раз."
 "alerts.wizard.shablon_vybran_snimok_sohranen": "Шаблон выбран, его копия сохранена для анонса."
-"alerts.wizard.sohraneno": "Сохранено."
 "alerts.wizard.vse_fotografii_udaleny": "Все фотографии удалены."
 "alerts.wizard.znachenie_sohraneno": "Значение «{title}» сохранено."
 

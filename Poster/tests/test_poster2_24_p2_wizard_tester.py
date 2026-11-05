@@ -68,6 +68,7 @@ try:
         _choose_personal,
         _latest_draft,
         _no_photos,
+        _open_edit,
         _seed_personal_template,
         _seed_place,
         _start_to_template,
@@ -98,9 +99,12 @@ LABEL_EDIT_ANSWER = "✏️ Изменить ответ"
 LABEL_ADD_FIELD = "➕ Добавить поле"
 LABEL_MENU = "🏠 В меню"
 LABEL_DELIVERED_EDIT = "✏️ Изменить"
-LABEL_DELIVERED_DATA = "📝 Данные"
+LABEL_DELIVERED_DATA = "📝 Текстовые поля"
 LABEL_DELIVERED_PHOTOS = "🖼 Фото (0)"
 LABEL_DELIVERED_MENU = "🏠 В меню"
+# 2.5.3 §5: прежней подписи «📝 Данные» больше нет — экран открывает список
+# текстовых полей на самом управлении анонса.
+LABEL_DATA_REMOVED = "📝 Данные"
 CURRENT_VALUE = "Текущее значение:"
 
 MISSING_FRAGMENT = "не заполнено"
@@ -305,41 +309,41 @@ def _specs(*rows: tuple[str, str, str, dict]) -> list[tuple[str, str, str, dict]
     return list(rows)
 
 
-async def _open_edit(h: Harness) -> None:
-    """
-    Открывает временный экран правки доставленного анонса.
-
-    2.5.2 §2: сразу после публикации экрана в чате нет — управление живёт на
-    самом анонсе (`anp_`). Helper нажимает «📝 Данные» активного экземпляра,
-    а устаревшие кнопки (`aw_qmanage`/`aw_edit`) использует только там, где
-    экран уже открыт.
-    """
-    if _callbacks(h, "aw_qmanage"):
-        return
-    data = h.control_callback("data")
-    if data is not None:
-        await h.callback(data)
-        return
-    fallback = _callbacks(h, "aw_edit")
-    if fallback:
-        await h.callback(fallback[0])
-
-
 async def _open_extras(h: Harness) -> None:
     """
-    Путь владельца (2.5, §18): экран редактора → «🧩 Дополнительные поля».
+    Путь владельца (2.5, §18): управление анонсом → «🧩 Дополнительные поля».
 
-    Допускается, что при устаревшей ревизии первый же переход сразу
-    показывает актуальный экран доп. полей (так работает восстановление).
+    У живого черновика кнопка живёт на экране (`aw_extras`). У доставленного
+    анонса управление — живые клавиатуры чата (`anp_extras`); если открыт
+    список текстовых полей (2.5.3 §5), сначала возвращается управление
+    «◀️ Назад», иначе кнопки экземпляра скрыты. В тесте может быть несколько
+    экземпляров одного чата, поэтому берётся самый новый (наибольший id).
     """
-    if EXTRAS_TITLE in h.screen_text():
-        return
-    await _open_edit(h)
     if EXTRAS_TITLE in h.screen_text():
         return
     data = _callbacks(h, "aw_extras")
     if data:
         await h.callback(data[0])
+        return
+    backs = h.live_callbacks("anf_back:")
+    if backs:
+        await h.callback(_newest(backs))
+    datas = h.live_callbacks("anp_extras:")
+    if not datas:
+        raise AssertionError(
+            f"нет «🧩 Дополнительные поля» управления анонсом: {h.live_buttons()}"
+        )
+    await h.callback(_newest(datas))
+
+
+def _newest(callbacks: list[str]) -> str:
+    """
+    Callback самого нового экземпляра: в его данных последний `:` — id.
+
+    В одном чате после повторной доставки живут клавиатуры нескольких
+    экземпляров; путь владельца ведёт к последнему.
+    """
+    return max(callbacks, key=lambda data: int(data.rsplit(":", 1)[-1]))
 
 
 async def _deliver(
@@ -1058,7 +1062,10 @@ class BackNavigationTests(unittest.TestCase):
             seed=[("e1", "500")],
         )
         await _open_edit(h)
-        self.assertIn(EDIT_HEAD, h.screen_text())
+        self.assertTrue(
+            h.live_callbacks("anf_back:"),
+            "«📝 Текстовые поля» открывает список полей на управлении анонса",
+        )
 
         await _open_extras(h)
         self.assertIn(EXTRAS_TITLE, h.screen_text())
@@ -1084,18 +1091,18 @@ class BackNavigationTests(unittest.TestCase):
         )
         self.assertNotIn(MENU_FRAGMENT, h.screen_text())
 
-        # Ещё «Назад» — к экрану «Изменить».
+        # Ещё «Назад» — к управлению анонсом: 2.5.3 §5 вместо прежнего экрана
+        # «✏️ Изменить анонс» — список текстовых полей на самом анонсе.
         backs = [item for item in _flat_buttons(h) if _is_back(*item)]
         self.assertTrue(
             backs, f"на списке доп. полей нужна кнопка «Назад»: {h.screen_buttons()}"
         )
         await h.callback(backs[0][1])
         _assert_no_internal(self, h, "назад со списка доп. полей")
-        self.assertIn(
-            EDIT_HEAD,
-            h.screen_text(),
-            "«Назад» из доп. полей ведёт к «Изменить», а не в главное меню: "
-            f"{h.screen_text()[:300]!r}",
+        self.assertTrue(
+            h.live_callbacks("anf_back:") or h.live_callbacks("anp_data:"),
+            "«Назад» из доп. полей возвращает к управлению анонсом (список "
+            f"полей), а не в меню: живые кнопки {h.live_buttons()}",
         )
         self.assertNotIn(MENU_FRAGMENT, h.screen_text())
         self.assertNotIn(
@@ -1131,7 +1138,7 @@ class BackNavigationTests(unittest.TestCase):
 
     @scenario_test
     async def test_s16_back_from_question_manager_returns_to_edit_screen(self, h):
-        """«Поля анонса» → «Назад» — к экрану «Изменить», не к шаблону."""
+        """«Поля анонса» → «Назад» — к управлению анонсом, не к шаблону."""
         await h.text("/start")
         await _deliver(
             h,
@@ -1140,20 +1147,19 @@ class BackNavigationTests(unittest.TestCase):
             extended=None,
         )
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_qmanage"))
-        self.assertIn(MANAGER_HEAD, h.screen_text())
-
-        backs = [item for item in _flat_buttons(h) if _is_back(*item)]
-        self.assertTrue(backs, f"на экране полей нужна «Назад»: {h.screen_buttons()}")
-        await h.callback(backs[0][1])
-        _assert_no_internal(self, h, "назад с экрана полей анонса")
-        self.assertIn(
-            EDIT_HEAD,
-            h.screen_text(),
-            "«Назад» с «Поля анонса» возвращает на экран, с которого пришли "
-            f"(«Изменить»), а не к выбору шаблона: {h.screen_text()[:300]!r}",
+        # 2.5.3 §5: у доставленного анонса списка полей — это режим самого
+        # управления, отдельного экрана «Поля анонса» (`aw_qmanage`) нет.
+        backs = h.live_callbacks("anf_back:")
+        self.assertTrue(backs, f"на списке полей нужна «Назад»: {h.live_buttons()}")
+        await h.callback(backs[0])
+        _assert_no_internal(self, h, "назад со списка полей анонса")
+        self.assertTrue(
+            h.live_callbacks("anp_data:"),
+            "«Назад» возвращает управление анонсу (список полей закрыт), а не "
+            f"уводит к выбору шаблона: живые кнопки {h.live_buttons()}",
         )
         self.assertNotIn(MENU_FRAGMENT, h.screen_text())
+        self.assertNotIn(TEMPLATE_HEAD, h.screen_text())
 
     @scenario_test
     async def test_s17_delivered_screen_has_edit_categories_and_menu(self, h):
@@ -1173,6 +1179,12 @@ class BackNavigationTests(unittest.TestCase):
             [label for label, _data in rows[0]],
             [LABEL_DELIVERED_DATA, LABEL_DELIVERED_PHOTOS],
             f"первая строка — категории правки: {rows}",
+        )
+        # 2.5.3 §5: кнопка называется «📝 Текстовые поля».
+        self.assertNotIn(
+            LABEL_DATA_REMOVED,
+            [label for label, _data in rows[0]],
+            "подписи «📝 Данные» больше нет",
         )
         self.assertEqual(
             [label for label, _data in rows[-1]],
@@ -1271,8 +1283,8 @@ class BackNavigationTests(unittest.TestCase):
                     f"{data}: callback остался без ответа (висящий спиннер)",
                 )
                 self.assertTrue(
-                    h.screen_text().strip() != "",
-                    f"{data}: после подделанного callback экран не пропал",
+                    h.screen_text().strip() != "" or h.live_buttons(),
+                    f"{data}: после подделанного callback управление не пропало",
                 )
         state = _value(h, draft.id, _draft(h, draft.id).values[0].brick_id)
         self.assertIsNotNone(state, "подделанные callback'и не портят черновик")

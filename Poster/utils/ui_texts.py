@@ -22,6 +22,11 @@
 - `tr_safe` — исключение для значений, уже прошедших allow-list
   (`utils.tg_html.SafeHtml`): повторное экранирование испортило бы
   сохранённое форматирование. Используется точечно, с комментарием.
+- `tr_plain` — подписи inline-кнопок: Telegram не разбирает разметку в
+  подписи кнопки, поэтому значения подставляются как есть, без `html.escape`
+  (иначе автор увидел бы `&lt;u&gt;` вместо `<u>`). Шаблон при этом, как и в
+  `tr`, экранируется для обычных ключей. Для текстов сообщений использовать
+  `tr`.
 
 Валидация файла: синтаксис YAML, строковые значения, обязательные ключи и
 совпадение набора переменных `{name}` с дефолтом. При любой ошибке файл
@@ -162,13 +167,16 @@ DEFAULTS: dict[str, str] = {
     "wizard.photos.accepted_many": "✅ Добавлено фото: {count}.",
     "wizard.photos.duplicate": "Это фото уже есть в анонсе. Повторно добавлять его не нужно.",
     "wizard.photos.rejected": "Фото не добавлено: {reason}",
-    # --- конструктор: экран правки доставленного анонса (§26–27) ------------
-    "wizard.finished.edit_text": (
-        (
-            "✏️ Изменить анонс\n\n"
-            "Выберите, что изменить. Каждое изменение сразу обновляет анонс в чате: новая версия заменяет предыдущую."
-        )
+    # --- конструктор: текстовые поля доставленного анонса (§5, 2.5.3) -------
+    # Список полей живёт на самом управлении (клавиатура анонса/панель),
+    # поэтому тело — только заголовок и одна подсказка, без перечня полей.
+    "wizard.fields.title": "📝 Текстовые поля",
+    "wizard.fields.hint": (
+        "Выберите поле, чтобы изменить его. Изменение сразу обновляет анонс в чате."
     ),
+    "wizard.fields.empty": "В этом анонсе нет текстовых полей для правки.",
+    # {number} — позиция в списке, {title} — название, {status} — состояние.
+    "wizard.fields.button": "{number}. {title} — {status}",
     # Poster 2.5 §22: единственная служебная панель управления альбомом.
     "wizard.panel.text": (
         "🛠 Управление анонсом\n\nКнопки ниже относятся к анонсу выше."
@@ -421,7 +429,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.wizard.skip": "⏭ Пропустить",
     "buttons.wizard.choose_month": "📅 Выбрать месяц",
     "buttons.finished.edit": "✏️ Изменить",
-    "buttons.finished.data": "📝 Данные",
+    "buttons.finished.data": "📝 Текстовые поля",
     "buttons.finished.photos": "🖼 Фото ({count})",
     "buttons.finished.extras_edit": "🧩 Дополнительные поля",
     "buttons.finished.main_menu": "🏠 В меню",
@@ -929,7 +937,6 @@ DEFAULTS: dict[str, str] = {
     "alerts.wizard.prodolzhayu_otpravku": "Продолжаю отправку…",
     "alerts.wizard.profil_zaregistrirovan_otpravte": "Профиль пока не создан. Отправьте /start и попробуйте ещё раз.",
     "alerts.wizard.shablon_vybran_snimok_sohranen": "Шаблон выбран, его копия сохранена для анонса.",
-    "alerts.wizard.sohraneno": "Сохранено.",
     "alerts.wizard.vse_fotografii_udaleny": "Все фотографии удалены.",
     "alerts.wizard.znachenie_sohraneno": "Значение «{title}» сохранено.",
     # --- Кирпичики -----------------------------------------------------
@@ -2220,6 +2227,39 @@ def tr_safe(key: str, **values: object) -> str:
         ", ".join(sorted(set(missing))),
     )
     return _render(DEFAULTS.get(key, template), prepared)[0]
+
+
+def tr_plain(key: str, **values: object) -> str:
+    """
+    Текст для PLAIN-контекста без HTML: подписи inline-кнопок.
+
+    Telegram не разбирает разметку в подписи кнопки (`InlineKeyboardButton`
+    всегда plain-текст), поэтому экранировать значения здесь не нужно: иначе
+    автор увидел бы `&lt;u&gt;` вместо `<u>` из названия своего кирпичика.
+    Шаблон, как и в `tr`, экранируется для обычных ключей — разметку в
+    подпись кнопки редактор каталога тоже не внедрит. Для тел сообщений
+    (HTML) использовать `tr`: там экранирование обязательно.
+    """
+    template, is_markup = _lookup(key)
+    if not template:
+        return ""
+    if not is_markup:
+        template = escape_html(template)
+    prepared = {
+        name: "" if value is None else str(value) for name, value in values.items()
+    }
+    text, missing = _render(template, prepared)
+    if not missing:
+        return text
+    logger.error(
+        "ui_texts: для ключа %r не переданы переменные %s — показан дефолт",
+        key,
+        ", ".join(sorted(set(missing))),
+    )
+    fallback = DEFAULTS.get(key, template)
+    if not is_markup:
+        fallback = escape_html(fallback)
+    return _render(fallback, prepared)[0]
 
 
 _initial_load()

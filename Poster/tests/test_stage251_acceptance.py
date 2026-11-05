@@ -71,6 +71,7 @@ try:
         _choose_personal,
         _latest_draft,
         _no_photos,
+        _open_control,
         _open_edit,
         _seed_personal_template,
         _seed_place,
@@ -463,7 +464,9 @@ class WizardPaginationAcceptanceTests(unittest.TestCase):
         await h.text("Главное")
         await _no_photos(h)
         await _open_edit(h)
-        await h.callback(_callback(h, "aw_extras"))
+        # 2.5.3 §5: «📝 Текстовые поля» заменяют клавиатуру анонса, поэтому
+        # доп. поля открываются после возврата управления «◀️ Назад».
+        await _open_control(h, "extras")
 
         self.assertEqual(
             [label for label, _data in _nav_buttons(h, "noop:", "aw_exbpage:")],
