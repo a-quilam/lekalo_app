@@ -30,6 +30,7 @@ Poster 2.5, C3: управление готовым анонсом вне кон
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 from telegram import Update
 from telegram.ext import BaseHandler, CallbackQueryHandler, ContextTypes
@@ -42,7 +43,13 @@ from announcement_store import (
     AnnouncementNotFoundError,
     get_announcement_draft,
 )
+from brick_types import (
+    BRICK_TYPE_CHOICE,
+    BRICK_TYPE_DATE,
+    BRICK_TYPE_TIME,
+)
 from database import SessionLocal
+from handlers import announcement_field_input, wizard_questions
 from handlers import announcement_wizard as wizard
 from utils import tg_context as ctx
 from utils.ui_texts import tr
@@ -219,6 +226,209 @@ async def handle_field_callback(
     wizard.remember_conversation_state(update, context, state)
 
 
+async def handle_field_input_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    Кнопки ВВОДА значения поля доставленного анонса (`anq_`, 2.5.4 §1).
+
+    Один маршрут на все типы полей и все действия: копий на каждое поле нет.
+    Проверки те же, что у списка и панели (§32): экземпляр по id, чат,
+    владелец черновика, архив. Устаревшая кнопка получает короткий ответ и
+    ничего не меняет.
+
+    Готовые варианты (время, дата, выбор) сохраняются общим
+    `_save_field_input_value`: значение применяется к доставленной версии на
+    месте, а клавиатура того же сообщения возвращается к списку полей.
+    «Назад» и «Пропустить» ничего не пишут — прежнее значение остаётся, а
+    автор снова видит список. Уровни календаря перерисовывают клавиатуру
+    ввода, новых сообщений не появляется.
+    """
+    parsed = announcement_controls.parse_field_input_callback(ctx.query(update).data)
+    if parsed is None:
+        await _stale_answer(update)
+        return
+    action, instance_id, brick_id, tail = parsed
+
+    instance = _instance(instance_id)
+    if instance is None or instance.is_archived:
+        await _stale_answer(update)
+        return
+    if instance.chat_id != ctx.chat(update).id:
+        await _stale_answer(update)
+        return
+    details = _details(ctx.user(update).id, instance)
+    if details is None:
+        await _stale_answer(update)
+        return
+    field = wizard._field_for_input(ctx.user(update).id, details, instance_id, brick_id)
+    if field is None:
+        # Поле ушло из анонса, принадлежит площадке (§5) или экземпляр
+        # переиздан: подделанная/старая кнопка не пишет значение.
+        await _stale_answer(update)
+        return
+
+    if wizard._edit_blocked(details):
+        # Идёт отправка: правка запрещена так же, как по кнопке панели.
+        await wizard._answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
+        wizard.remember_conversation_state(update, context, wizard.AW_PREVIEW)
+        return
+
+    await wizard._answer(update)
+    if action in {
+        announcement_controls.FIELD_INPUT_ACTION_BACK,
+        announcement_controls.FIELD_INPUT_ACTION_SKIP,
+    }:
+        # «Пропустить» не очищает значение (2.4, требование VI): прежнее
+        # значение остаётся, меняется только экран.
+        state = await wizard._return_to_field_list(
+            update, context, details, instance.id
+        )
+        wizard.remember_conversation_state(update, context, state)
+        return
+
+    value: object | None = None
+    stay = False
+    if action == announcement_controls.FIELD_INPUT_ACTION_TIME:
+        if field.value_type != BRICK_TYPE_TIME:
+            await _stale_answer(update)
+            return
+        value = ":".join(tail)
+        if value not in wizard_questions.TIME_PRESETS:
+            await _stale_answer(update)
+            return
+    elif action == announcement_controls.FIELD_INPUT_ACTION_DAY:
+        if field.value_type != BRICK_TYPE_DATE:
+            await _stale_answer(update)
+            return
+        value = _field_input_day(field, tail)
+        if value is None:
+            await _stale_answer(update)
+            return
+    elif action == announcement_controls.FIELD_INPUT_ACTION_CHOICE:
+        if field.value_type != BRICK_TYPE_CHOICE:
+            await _stale_answer(update)
+            return
+        found = _field_input_choice(field, tail)
+        if found is None:
+            await _stale_answer(update)
+            return
+        value, stay = found
+    elif action == announcement_controls.FIELD_INPUT_ACTION_CHOICE_DONE:
+        if field.value_type != BRICK_TYPE_CHOICE or not field.rules.get("multiple"):
+            await _stale_answer(update)
+            return
+        if field.status == wizard.FIELD_STATUS_MISSING:
+            await wizard._answer(
+                update, tr("alerts.wizard.otmette_hotya_by_odin"), alert=True
+            )
+            wizard.remember_conversation_state(update, context, wizard.AW_PREVIEW)
+            return
+
+    if action == announcement_controls.FIELD_INPUT_ACTION_CHOICE_DONE:
+        state = await wizard._return_to_field_list(
+            update, context, details, instance.id
+        )
+        wizard.remember_conversation_state(update, context, state)
+        return
+
+    if value is None:
+        # Календарь: новый уровень той же клавиатуры, без записи значения.
+        if field.value_type != BRICK_TYPE_DATE:
+            await _stale_answer(update)
+            return
+        view = _field_input_calendar_view(field, instance.id, action, tail)
+        if view is None:
+            await _stale_answer(update)
+            return
+        state = await wizard._show_field_input(
+            update, context, details, instance, field, view=view
+        )
+        wizard.remember_conversation_state(update, context, state)
+        return
+
+    state = await wizard._save_field_input_value(
+        update, context, details, instance, field, value, stay=stay
+    )
+    wizard.remember_conversation_state(update, context, state)
+
+
+def _field_input_day(field, tail: tuple[str, ...]) -> str | None:
+    """Дата из `anq_day` в формате значения (`ДД.ММ.ГГГГ`) или `None`."""
+    if len(tail) != 1:
+        return None
+    try:
+        day = date.fromisoformat(tail[0])
+    except ValueError:
+        return None
+    start, end = wizard_questions.calendar_bounds(dict(field.rules))
+    if day < start or day > end:
+        return None
+    return day.strftime("%d.%m.%Y")
+
+
+def _field_input_choice(field, tail: tuple[str, ...]) -> tuple[object, bool] | None:
+    """
+    Значение выбора по номеру варианта: `(значение, остаться_на_вводе)`.
+
+    Множественный выбор отмечает/снимает вариант и остаётся на клавиатуре
+    (автор отмечает несколько подряд), одиночный — сохраняет и закрывает.
+    """
+    if not tail or not tail[0].isdigit():
+        return None
+    options = wizard_questions.choice_options(field)
+    index = int(tail[0])
+    if index < 0 or index >= len(options):
+        return None
+    option = options[index]
+    if not field.rules.get("multiple"):
+        return option, False
+    selected = wizard_questions.selected_choices(field)
+    if option in selected:
+        selected = [item for item in selected if item != option]
+    else:
+        selected.append(option)
+    return selected, True
+
+
+def _field_input_calendar_view(
+    field, instance_id: int, action: str, tail: tuple[str, ...]
+):
+    """
+    Уровень календаря по действию `anq_`; `None` — адрес уровня неверен.
+
+    Устаревший уровень (диапазон/месяц вне горизонта) безопасно сводится к
+    первому экрану: сломанная клавиатура не показывается.
+    """
+    if action == announcement_controls.FIELD_INPUT_ACTION_CALQUICK:
+        return announcement_field_input.CalendarView()
+    if action == announcement_controls.FIELD_INPUT_ACTION_CALENDAR:
+        view = announcement_field_input.CalendarView(
+            announcement_field_input.VIEW_MONTHS
+        )
+    elif action == announcement_controls.FIELD_INPUT_ACTION_RANGE:
+        if len(tail) != 1 or not tail[0].isdigit():
+            return None
+        view = announcement_field_input.CalendarView(
+            announcement_field_input.VIEW_RANGE, index=int(tail[0])
+        )
+    elif action == announcement_controls.FIELD_INPUT_ACTION_MONTH:
+        if len(tail) != 2 or not all(item.isdigit() for item in tail):
+            return None
+        view = announcement_field_input.CalendarView(
+            announcement_field_input.VIEW_MONTH,
+            year=int(tail[0]),
+            month=int(tail[1]),
+        )
+    else:
+        return None
+    if not announcement_field_input.calendar_rows(
+        field, int(instance_id), field.brick_id, view
+    ):
+        return announcement_field_input.CalendarView()
+    return view
+
+
 def announcement_panel_handlers() -> list[BaseHandler]:
     """
     Обработчик кнопок готового анонса — один на всё приложение.
@@ -237,22 +447,27 @@ def announcement_panel_handlers() -> list[BaseHandler]:
 
 def field_handlers() -> list[BaseHandler]:
     """
-    Кнопки списка текстовых полей (`anf_`) активного экземпляра (§5).
+    Кнопки списка текстовых полей (`anf_`) и ВВОДА значения (`anq_`).
 
     Регистрируются в той же группе 0 и в том же порядке, что и панель:
-    список живёт на самом анонсе и обязан работать после рестарта службы,
-    когда состояния диалога нет.
+    список и ввод живут на самом анонсе и обязаны работать после рестарта
+    службы, когда состояния диалога нет.
     """
     return [
         CallbackQueryHandler(
             handle_field_callback,
             pattern=announcement_controls.FIELD_CALLBACK_PATTERN,
-        )
+        ),
+        CallbackQueryHandler(
+            handle_field_input_callback,
+            pattern=announcement_controls.FIELD_INPUT_CALLBACK_PATTERN,
+        ),
     ]
 
 
 __all__ = [
     "handle_field_callback",
+    "handle_field_input_callback",
     "handle_panel_callback",
     "announcement_panel_handlers",
     "field_handlers",

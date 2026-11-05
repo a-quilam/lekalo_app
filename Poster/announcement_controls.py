@@ -66,6 +66,43 @@ FIELD_CALLBACK_PATTERN = (
     rf"^{FIELD_CALLBACK_PREFIX}({'|'.join(FIELD_ACTIONS)}):\d+(?::\d+)?$"
 )
 
+# Poster 2.5.4 §1: ВВОД значения выбранного поля живёт на самом анонсе.
+# Отдельного служебного сообщения-вопроса больше нет: клавиатура того же
+# сообщения (0–1 фото) или единственной панели медиагруппы заменяется
+# клавиатурой ввода. Свой префикс нужен, чтобы кнопки ввода работали после
+# рестарта службы (когда состояния диалога нет) и не пересекались ни с `anp_`,
+# ни с `anf_`, ни с `aw_` конструктора.
+FIELD_INPUT_PREFIX = "anq_"
+FIELD_INPUT_ACTION_BACK = "back"
+FIELD_INPUT_ACTION_SKIP = "skip"
+FIELD_INPUT_ACTION_TIME = "time"
+FIELD_INPUT_ACTION_DAY = "day"
+FIELD_INPUT_ACTION_CHOICE = "choice"
+FIELD_INPUT_ACTION_CHOICE_DONE = "choice_done"
+FIELD_INPUT_ACTION_CALENDAR = "cal"
+FIELD_INPUT_ACTION_RANGE = "range"
+FIELD_INPUT_ACTION_MONTH = "month"
+FIELD_INPUT_ACTION_CALQUICK = "calquick"
+FIELD_INPUT_ACTIONS = (
+    FIELD_INPUT_ACTION_BACK,
+    FIELD_INPUT_ACTION_SKIP,
+    FIELD_INPUT_ACTION_TIME,
+    FIELD_INPUT_ACTION_DAY,
+    FIELD_INPUT_ACTION_CHOICE,
+    FIELD_INPUT_ACTION_CHOICE_DONE,
+    FIELD_INPUT_ACTION_CALENDAR,
+    FIELD_INPUT_ACTION_RANGE,
+    FIELD_INPUT_ACTION_MONTH,
+    FIELD_INPUT_ACTION_CALQUICK,
+)
+
+# `anq_back:{instance_id}:{brick_id}` и остальные действия списка ввода.
+# Хвост (значение времени, дата, номер варианта, месяц) необязателен и
+# разбирается по действию: у времени значение содержит двоеточие.
+FIELD_INPUT_CALLBACK_PATTERN = (
+    rf"^{FIELD_INPUT_PREFIX}({'|'.join(FIELD_INPUT_ACTIONS)}):\d+:\d+(?::[^\s:]+)*$"
+)
+
 # Ответ на кнопку устаревшего экземпляра (§32, сценарий Ж). Кнопка могла
 # пережить архив, удаление записи или рестарт службы: пользователь получает
 # только пояснение, без правки экранов и записей в БД.
@@ -155,6 +192,58 @@ def parse_field_callback(data: str | None) -> tuple[str, int, int | None] | None
     if value is None:
         return None
     return action, instance_id, value
+
+
+def field_input_callback(
+    action: str,
+    instance_id: int,
+    brick_id: int,
+    *tail: object,
+) -> str:
+    """
+    `callback_data` кнопки ВВОДА значения поля (2.5.4 §1).
+
+    В данных только id экземпляра и кирпичика плюс хвост действия: черновик,
+    ревизия и чат восстанавливаются по записи, поэтому клавиатура ввода
+    продолжает работать после рестарта службы и не может открыть чужой
+    анонс. Хвост (значение времени, дата, номер варианта, месяц) необязателен.
+    """
+    if action not in FIELD_INPUT_ACTIONS:
+        raise ValueError(f"Неизвестное действие ввода поля: {action!r}")
+    base = f"{FIELD_INPUT_PREFIX}{action}:{int(instance_id)}:{int(brick_id)}"
+    parts = [base]
+    for item in tail:
+        if item is None:
+            continue
+        parts.append(str(item))
+    return ":".join(parts)
+
+
+def parse_field_input_callback(
+    data: str | None,
+) -> tuple[str, int, int, tuple[str, ...]] | None:
+    """
+    Разбирает `anq_{action}:{instance_id}:{brick_id}[:...]`.
+
+    `None` — данные не нашего формата: подделанный callback получает тот же
+    короткий ответ «устарело», что и кнопка архивного экземпляра.
+    """
+    raw = (data or "").strip()
+    if not raw.startswith(FIELD_INPUT_PREFIX):
+        return None
+    parts = raw.split(":")
+    if len(parts) < 3:
+        return None
+    action = parts[0][len(FIELD_INPUT_PREFIX) :]
+    if action not in FIELD_INPUT_ACTIONS:
+        return None
+    if not parts[1].isdigit() or not parts[2].isdigit():
+        return None
+    instance_id = int(parts[1])
+    brick_id = int(parts[2])
+    if instance_id <= 0 or brick_id <= 0:
+        return None
+    return action, instance_id, brick_id, tuple(parts[3:])
 
 
 def panel_keyboard(

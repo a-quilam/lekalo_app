@@ -50,7 +50,6 @@ try:
     from tests.test_stage25_acceptance_c import _assert_field_list
     from tests.test_stage25_delivery_instances import (
         _delivered_with_photos,
-        _final_markup,
         _only_active,
         _panel_records,
         _panel_sends,
@@ -364,8 +363,8 @@ class FieldListOnAnnouncementTests(unittest.TestCase):
     # --- 3. выбор поля: один вопрос, подпись, возврат управления -----------
 
     @scenario_test
-    async def test_field_edit_closes_question_and_updates_caption(self, h) -> None:
-        """(в) поле → ровно один вопрос → текст → caption и управление."""
+    async def test_field_edit_updates_caption_in_place(self, h) -> None:
+        """(в) поле → ввод на анонсе → текст → caption на месте, без вопроса."""
         await h.text("/start")
         draft = await _delivered_with_photos(h, 1)
         active = _only_active(h, draft.id)
@@ -375,30 +374,28 @@ class FieldListOnAnnouncementTests(unittest.TestCase):
         created_before = _created_count(h)
         await h.callback(_field_buttons(h)[0][1])
 
-        # Ровно одно новое сообщение — временный вопрос.
+        # 2.5.4 §1: отдельного сообщения-вопроса больше нет — правится
+        # клавиатура того же анонса, экран ввода не появляется.
         self.assertEqual(
             _created_count(h),
-            created_before + 1,
-            "выбор поля даёт ровно один вопрос",
+            created_before,
+            "выбор поля не создаёт сообщений",
         )
-        question_id = h.screen_message_id()
-        self.assertIsNotNone(question_id, "вопрос не показан")
-        self.assertNotEqual(question_id, message_id)
-        self.assertIn(
-            tr("wizard.question.header", step=1, total=1, title="Основное поле"),
-            h.screen_text(),
-        )
+        self.assertIsNone(h.screen_message_id(), "служебный экран не создаётся")
+        self.assertTrue(h.live_callbacks("anq_"), "клавиатура ввода не открылась")
 
-        created_at_question = _created_count(h)
+        created_at_input = _created_count(h)
         await h.text(USE_TEXT)
 
-        # Вопрос закрыт/удалён, второго вопроса нет.
         self.assertEqual(
-            _created_count(h), created_at_question, "лишних сообщений при правке нет"
+            _created_count(h), created_at_input, "лишних сообщений при правке нет"
         )
-        self.assertIn(question_id, h.deleted_ids(), "временный вопрос не закрыт")
-        self.assertIsNone(h.screen_message_id(), "временный экран остался")
-        self.assertEqual(_field_buttons(h), [], "список полей остался висеть")
+        self.assertIsNone(h.screen_message_id(), "временный экран не создаётся")
+        self.assertNotIn(
+            message_id,
+            h.deleted_ids(),
+            "сообщение анонса не удаляется: ввод живёт на нём",
+        )
 
         # Подпись анонса обновилась на месте.
         self.assertEqual(h.bot.content_text(h.chat_id, message_id), USE_TEXT)
@@ -407,18 +404,9 @@ class FieldListOnAnnouncementTests(unittest.TestCase):
         self.assertEqual(edited.delivered_message_ids, (message_id,))
         self.assertEqual(_only_active(h, draft.id).message_ids, (message_id,))
 
-        # Управление вернулось на сам анонс (`anp_*`).
-        buttons = inline_buttons(_final_markup(h, message_id))
-        self.assertTrue(buttons, "у анонса нет управления после правки")
-        self.assertEqual(
-            [data for _label, data in buttons],
-            [
-                controls.panel_callback(action, active.id)
-                for action in controls.PANEL_ACTIONS
-            ],
-            "управление анонсом вернулось целиком",
-        )
-        self.assertFalse(h.live_callbacks("anf_"), "список полей не скрыт")
+        # Возврат к списку полей с актуальными значениями — на том же анонсе.
+        self.assertFalse(h.live_callbacks("anq_"), "ввод не закрыт")
+        self.assertTrue(_field_buttons(h), "список полей не вернулся")
 
     # --- 4. медиагруппа: список полей в существующей панели ----------------
 
@@ -477,8 +465,11 @@ class FieldListOnAnnouncementTests(unittest.TestCase):
             _assert_field_list(fresh)
             self.assertTrue(_field_buttons(fresh), "список полей не открылся")
 
+            # 2.5.4 §1: ввод открывается на самой клавиатуре анонса, поэтому
+            # `screen_message_id` больше не появляется.
             await fresh.callback(_field_buttons(fresh)[0][1])
-            self.assertIsNotNone(fresh.screen_message_id(), "вопрос не открылся")
+            self.assertTrue(fresh.live_callbacks("anq_"), "ввод не открылся")
+            self.assertIsNone(fresh.screen_message_id(), "лишнего экрана нет")
             await fresh.text(USE_TEXT)
 
             stored = _stored(fresh, draft.id)
@@ -532,10 +523,18 @@ class FieldListOnAnnouncementTests(unittest.TestCase):
             "живые клавиатуры не содержат «📝 Данные»",
         )
 
-        # После успешной правки подпись тоже новая: правка возвращает `anp_`.
+        # После успешной правки подпись тоже новая: правка возвращает к списку
+        # полей на том же сообщении, а «◀️ Назад» — управление анонсом.
         await _open_field_list(h, active.id)
         await h.callback(_field_buttons(h)[0][1])
         await h.text(USE_TEXT)
+        self.assertTrue(_field_buttons(h), "список полей не вернулся")
+        back = next(
+            data
+            for data in h.live_callbacks("anf_back")
+            if data.endswith(f":{active.id}")
+        )
+        await h.callback(back)
         labels_after = [label for label, _data in h.live_buttons()]
         self.assertIn(FIELDS_TITLE, labels_after)
         self.assertNotIn(REMOVED_LABEL, labels_after)

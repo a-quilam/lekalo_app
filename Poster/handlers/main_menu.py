@@ -494,9 +494,11 @@ async def _restore_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if draft_id is not None:
         payload = screen.load_payload(ctx.user(update).id) or {}
         snapshot = payload.get(wizard.RESUME_PAYLOAD_KEY)
+        chat = ctx.chat(update)
         prepared = wizard._resume_target(  # noqa: SLF001 — общий разбор снимка
             ctx.user(update).id,
             snapshot if isinstance(snapshot, dict) else {},
+            chat.id if chat is not None else None,
         )
         if prepared is not None:
             details, restored_ui = prepared

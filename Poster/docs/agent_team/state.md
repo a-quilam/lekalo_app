@@ -1,5 +1,27 @@
 # State — Poster
 
+## 2026-11-06 — Poster 2.5.4: старт (poster-manager)
+
+База: HEAD b1fc504 (2.5.3 выпущен, дерево чистое, main = origin/main).
+Служба poster-bot active (PID 1254354). План: A1 helper кнопок (disabled/style,
+LOW) → A2 редактор полей in-place (§1, HIGH) → B длинный текст+отмена (§3, HIGH)
+→ C парсер ссылок (§5 BLOCKER, HIGH) → D «Мои анонсы»+клавиатура площадок
+(§4+§6, LOW-MED) → E Rich «О проекте» (§7, MED) → F polling (§8, MED) →
+G приёмка A–J, make check, релиз.
+
+Факты разведки (не переисследовать):
+- PTB 22.8: `style` в InlineKeyboardButton ЕСТЬ, `disabled` НЕТ → минимальный
+  адаптер (владелец разрешил). Комментарий bot.py:196 подтверждает.
+- §1: список полей уже на анонсе (announcement_panel.py, `anf_`), точка
+  переделки — `_open_field_question` (wizard:3079) вызывает
+  `_show_announcement_controls` + `_render_question` → отдельное сообщение.
+- §5: кандидаты первопричины — `_TEMPLATE_ESCAPES` (tg_html:626, `(`→`\(`) и
+  путь сохранения секций; полный lifecycle — задание Developer с repro.
+- §4: `_hub_content` places.py:327 (search/add вертикально). §6: `_entry_label`
+  wizard:1198 (`▶️ {index}. …`). §7: help_rich.py + rich_message.py есть.
+- §8: bot.py — run_polling без явных pool/timeout; systemd drop-in 50-vpn.conf
+  (wait-proxy.py ExecStartPre).
+
 ## 2026-11-05 — Poster 2.5.3: РЕЛИЗ ЗАВЕРШЁН (poster-manager)
 
 Push: `f8fd26d..2efefcd` (10 коммитов релиза, список ниже), CI

@@ -102,8 +102,14 @@ async def _delivered_with_photo(h, *, value: str):
 
 
 def _screen_and_answers(h) -> str:
-    """Всё, что бот показал в этот раз: экран и короткие ответы на нажатия."""
-    return "\n".join([h.screen_text(), *h.answer_texts()])
+    """
+    Всё, что бот показал в этот раз: экран и короткие ответы.
+
+    2.5.4 §1: ошибка ввода поля приходит ответом на сообщение автора (ввод
+    живёт на самом анонсе), поэтому пустые ответы на callback тоже
+    включаются — иначе короткая ошибка не видна.
+    """
+    return "\n".join([h.screen_text(), *h.answer_texts(), *h.reply_texts()])
 
 
 def _no_removed_screen(h) -> None:

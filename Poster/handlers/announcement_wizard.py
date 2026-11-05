@@ -116,7 +116,12 @@ from brick_types import (
     brick_title_display,
 )
 from database import SessionLocal
-from handlers import wizard_live, wizard_photos, wizard_questions
+from handlers import (
+    announcement_field_input,
+    wizard_live,
+    wizard_photos,
+    wizard_questions,
+)
 from place_store import (
     get_place_details,
     list_places,
@@ -255,6 +260,11 @@ def _fresh_ui() -> dict[str, Any]:
         # закрывается, а управление возвращается анонсу.
         "field_edit": False,
         "field_instance_id": None,
+        # 2.5.4 §1: ввод значения поля идёт НА САМОМ анонсе (клавиатура
+        # сообщения или единственной панели). Значение — id экземпляра;
+        # `field_input_view` — текущий уровень календаря (None — первый).
+        "field_input": None,
+        "field_input_view": None,
         "photos_page": 0,
         "photo_add": False,
         # H1: шаг фото ждёт ввода — сохраняется в resume-снимке.
@@ -302,6 +312,10 @@ def _clear_active(ui: dict[str, Any]) -> None:
     # правка значения ушла бы в чужой сценарий закрытия вопроса.
     ui.pop("field_edit", None)
     ui.pop("field_instance_id", None)
+    # 2.5.4 §1: ввод значения на самом анонсе — тоже режим ввода. Снимается
+    # на любом экране без ввода, иначе следующий текст ушёл бы не туда.
+    ui.pop("field_input", None)
+    ui.pop("field_input_view", None)
 
 
 # —— Poster 2.4 P2b: навигационный стек конструктора (требование V) ————————
@@ -547,7 +561,9 @@ async def _nav_render(
 # —— Poster 2.3 H1: авто-resume активного черновика ————————————————————
 
 
-def _resume_snapshot(ui: dict[str, Any]) -> dict[str, Any] | None:
+def _resume_snapshot(
+    ui: dict[str, Any], chat_id: int | None = None
+) -> dict[str, Any] | None:
     """
     Минимальный снимок «экран ждёт ввода» для `user_states.payload`.
 
@@ -559,13 +575,25 @@ def _resume_snapshot(ui: dict[str, Any]) -> dict[str, Any] | None:
     draft_id = ui.get("draft_id")
     source = ui.get("active_source")
     brick_id = ui.get("active_brick_id")
-    if brick_id is not None and source in {"question", "extra"} and draft_id:
-        return {
+    if brick_id is not None and source in {"question", "extra", "field"} and draft_id:
+        snapshot: dict[str, Any] = {
             "mode": RESUME_MODE_TEXT,
             "draft_id": int(draft_id),
             "brick_id": int(brick_id),
             "source": str(source),
         }
+        instance_id = ui.get("field_input")
+        if source == "field":
+            # 2.5.4 §1: ввод значения поля доставленного анонса живёт на самом
+            # анонсе/панели, поэтому для продолжения после рестарта нужен id
+            # экземпляра: по нему восстанавливаются адреса сообщений. Чат
+            # хранится рядом: анонс принадлежит чату доставки, и ввод в другом
+            # чате (пересланная кнопка) продолжаться не должен.
+            if not isinstance(instance_id, int) or not isinstance(chat_id, int):
+                return None
+            snapshot["instance_id"] = int(instance_id)
+            snapshot["chat_id"] = int(chat_id)
+        return snapshot
     if ui.get("photo_step") and draft_id:
         return {"mode": RESUME_MODE_PHOTO, "draft_id": int(draft_id)}
     return None
@@ -586,7 +614,7 @@ def _remember_resume(
     Сбой БД не ломает отрисовку: экран уже нарисован.
     """
     payload = screen.load_payload(user_id) or {}
-    snapshot = _resume_snapshot(ui)
+    snapshot = _resume_snapshot(ui, chat_id)
     current = payload.get(RESUME_PAYLOAD_KEY)
     if snapshot is None:
         payload.pop(RESUME_PAYLOAD_KEY, None)
@@ -660,7 +688,11 @@ def _other_session_active(user_id: int) -> bool:
     )
 
 
-def _resume_target(user_id: int, snapshot: dict[str, Any]):
+def _resume_target(
+    user_id: int,
+    snapshot: dict[str, Any],
+    chat_id: int | None = None,
+):
     """
     Проверяет снимок по АКТУАЛЬНОМУ состоянию черновика.
 
@@ -668,6 +700,9 @@ def _resume_target(user_id: int, snapshot: dict[str, Any]):
     продолжения шага, либо None. Проверка в `check_update` (до выбора
     обработчика): если resume невозможен, update обязан уйти в обычную
     подсказку главного меню, а не пропасть.
+
+    `chat_id` — чат, из которого пришёл update: ввод значения доставленного
+    анонса продолжается только в чате самого экземпляра (2.5.4 §1).
     """
     mode = snapshot.get("mode")
     draft_id = snapshot.get("draft_id")
@@ -690,6 +725,60 @@ def _resume_target(user_id: int, snapshot: dict[str, Any]):
     ui = _fresh_ui()
     _set_details(ui, details)
     if mode == RESUME_MODE_TEXT:
+        brick_id = snapshot.get("brick_id")
+        source = snapshot.get("source")
+        if source == "field":
+            # 2.5.4 §1: ввод значения поля доставленного анонса. Восстанавливаем
+            # его только пока экземпляр и поле на месте; иначе снимок снимается
+            # и текст уходит обычной подсказкой — «зависшего» ввода, который
+            # писал бы в чужое поле, не остаётся (список полей открывается
+            # кнопкой управления заново).
+            instance_id = snapshot.get("instance_id")
+            snap_chat_id = snapshot.get("chat_id")
+            if (
+                not isinstance(brick_id, int)
+                or not isinstance(instance_id, int)
+                or not isinstance(snap_chat_id, int)
+            ):
+                return None
+            if not details.publication_sent:
+                return None
+            instance = _instance_for(details, instance_id)
+            if instance is None or int(instance.chat_id) != snap_chat_id:
+                logger.info(
+                    "Resume не нужен: user_id=%s draft_id=%s — экземпляр #%s "
+                    "не в этом чате.",
+                    user_id,
+                    draft_id,
+                    instance_id,
+                )
+                return None
+            if chat_id is not None and int(chat_id) != int(instance.chat_id):
+                # Update пришёл из другого чата (пересланная клавиатура):
+                # ввод не продолжается, значение не пишется в чужой анонс.
+                logger.info(
+                    "Resume не нужен: user_id=%s draft_id=%s — update из чата "
+                    "%s, а анонс #%s в чате %s.",
+                    user_id,
+                    draft_id,
+                    chat_id,
+                    instance_id,
+                    instance.chat_id,
+                )
+                return None
+            if _field_for_input(user_id, details, instance_id, brick_id) is None:
+                logger.info(
+                    "Resume не нужен: user_id=%s draft_id=%s — поле %s больше "
+                    "не редактируется.",
+                    user_id,
+                    draft_id,
+                    brick_id,
+                )
+                return None
+            ui["active_brick_id"] = brick_id
+            ui["active_source"] = "field"
+            ui["field_input"] = instance_id
+            return details, ui
         if details.stage not in RESUME_TEXT_STAGES:
             logger.info(
                 "Resume не нужен: user_id=%s draft_id=%s фаза=%s — этап %s.",
@@ -699,8 +788,6 @@ def _resume_target(user_id: int, snapshot: dict[str, Any]):
                 details.stage,
             )
             return None
-        brick_id = snapshot.get("brick_id")
-        source = snapshot.get("source")
         if not isinstance(brick_id, int) or source not in {"question", "extra"}:
             return None
         if source == "question":
@@ -796,7 +883,12 @@ async def handle_resume_input(
     """
     user_id = _user_id(update)
     snapshot = _load_resume(user_id)
-    target = _resume_target(user_id, snapshot) if snapshot is not None else None
+    chat = ctx.chat(update)
+    target = (
+        _resume_target(user_id, snapshot, chat.id if chat is not None else None)
+        if snapshot is not None
+        else None
+    )
     if target is None:
         _clear_resume(user_id, ctx.data(context), ctx.chat(update).id)
         logger.info(
@@ -2775,17 +2867,18 @@ async def _render_question_manager(
     return AW_QUESTIONS
 
 
-# —— Poster 2.5.3 §5: текстовые поля доставленного анонса ——————————————
+# —— Poster 2.5.3 §5 / 2.5.4 §1: текстовые поля доставленного анонса ——————
 #
 # Список полей НЕ живёт отдельным экраном: у 0–1 фото он заменяет клавиатуру
 # самого анонса (`editMessageReplyMarkup`, текст и подпись не меняются), у
 # медиагруппы — текст её единственной панели (`editMessageText`). Второго
 # сообщения с копией текста и второй панели не появляется.
 #
-# Выбор поля даёт РОВНО ОДИН временный вопрос (обычный экран конструктора).
-# После успешного сохранения вопрос закрывается, правка применяется сразу, а
-# управление возвращается анонсу. Кнопки «Применить изменения»/«Обзор» в
-# этом сценарии не нужны.
+# Выбор поля (2.5.4 §1) НЕ создаёт служебного вопроса: клавиатура того же
+# сообщения заменяется клавиатурой ввода (`announcement_field_input`), а
+# сохранение значения и возврат к списку полей идут общим маршрутом
+# `_save_field_input_value`. Ни sendMessage, ни «Теперь введите…», ни
+# отдельного сообщения об успехе в этом сценарии нет.
 
 
 def _field_list_text(fields: list[AnnouncementFieldState]) -> str:
@@ -3063,8 +3156,8 @@ async def _render_field_list(
     # продолжение пути конструктора: под ним в стеке ещё лежат вопросы, на
     # которые уже ответили. Без пометки `root` `_nav_enter` увидел бы там
     # вопрос того же кирпичика и «схлопнул» только что открытый список как
-    # возврат на родителя — тогда «Назад» из временного вопроса последнего
-    # поля уводил бы на «Вопрос N из M» вместо страницы списка.
+    # возврат на родителя — тогда «Назад» из ввода поля последнего кирпичика
+    # уводил бы на «Вопрос N из M» вместо страницы списка.
     _nav_enter(ui, NAV_FIELDS, page=page, root=True)
     stack = _nav_stack(ui)
     if stack:
@@ -3084,12 +3177,14 @@ async def _open_field_question(
     brick_id: int,
 ) -> int:
     """
-    Открывает РОВНО ОДИН временный вопрос по выбранному полю (§5).
+    Открывает ВВОД выбранного поля НА самом анонсе (2.5.4 §1).
 
-    Используется обычный экран вопроса конструктора: активный кирпичик и
-    источник `question` выставляются им же, поэтому ввод текста, календарь,
-    время и выбор идут прежними маршрутами. Перед вопросом управление
-    возвращается анонсу — список полей не остаётся висеть в чате.
+    Нового сообщения не создаётся: клавиатура сообщения анонса (0–1 фото)
+    или единственной панели медиагруппы заменяется клавиатурой ввода
+    (`announcement_field_input`). Управление анонсу не «возвращается» — его
+    и не отбирали: список полей и ввод живут на одном месте. Состояние
+    (`field_input` = id экземпляра) позволяет общему обработчику текста
+    понять, что введённое значение принадлежит доставленному анонсу.
     """
     if _edit_blocked(details):
         await _answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
@@ -3098,18 +3193,241 @@ async def _open_field_question(
     found = _find_field(fields, int(brick_id))
     if found is None:
         return await _stale(update, context)
-    index, field = found
+    _index, field = found
     if not _is_text_field(field):
         # Поле площадки в редакторе не спрашивается (§5): устаревшая кнопка
         # старого списка получает короткий ответ, данные не меняются.
         return await _stale(update, context)
-    _ui_data = _ui(context)
-    _ui_data["field_edit"] = True
-    _ui_data["field_instance_id"] = instance.id
-    await _show_announcement_controls(
-        context, ctx.chat(update).id, details, instance=instance
+    return await _show_field_input(update, context, details, instance, field)
+
+
+def _field_for_input(
+    user_id: int, details, instance_id: int, brick_id: int
+) -> AnnouncementFieldState | None:
+    """
+    Текстовое поле доставленного анонса по адресу из `anq_`-callback.
+
+    Нужен обработчику кнопок ввода: он живёт вне `update`-контекста диалога
+    и после рестарта службы, поэтому поле восстанавливается по id экземпляра
+    и кирпичика. `user_id` — Telegram id автора: доменные запросы принимают
+    именно его, а не внутренний id пользователя. `None` — экземпляр
+    устарел/архивный, поле больше не входит в анонс или оно принадлежит
+    площадке (§5): такая кнопка ничего не меняет.
+    """
+    instance = _instance_for(details, instance_id)
+    if instance is None:
+        return None
+    try:
+        fields = _text_fields(_load_fields(int(user_id), details.draft_id))
+    except AnnouncementError as exc:
+        logger.info("Поля анонса #%s не прочитаны: %s", details.draft_id, exc)
+        return None
+    found = _find_field(fields, int(brick_id))
+    return found[1] if found is not None else None
+
+
+def _field_input_context(user_id: int, ui: dict[str, Any], details):
+    """
+    Контекст ввода на самом анонсе: (экземпляр, поле) или `None`.
+
+    `None` — ввод уже закрыт (список полей, другой экран, рестарт): тогда
+    текст уходит обычным путём и значение не записывается в чужое поле.
+    `user_id` — Telegram id автора черновика: маршрут работает и после
+    рестарта, когда в `update` уже нет состояния диалога.
+    """
+    instance_id = ui.get("field_input")
+    brick_id = ui.get("active_brick_id")
+    if not isinstance(instance_id, int) or not isinstance(brick_id, int):
+        return None
+    instance = _instance_for(details, instance_id)
+    if instance is None:
+        return None
+    field = _field_for_input(int(user_id), details, instance_id, brick_id)
+    if field is None:
+        return None
+    return instance, field
+
+
+def _field_input_page(ui: dict[str, Any]) -> int:
+    """Страница списка полей, с которой открыт ввод (возврат «Назад/Готово»)."""
+    for entry in reversed(_nav_stack(ui)):
+        if entry.get("screen") == NAV_FIELDS:
+            page = entry.get("page")
+            return page if isinstance(page, int) and page >= 0 else 0
+    return 0
+
+
+async def _field_input_error(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    instance,
+    field: AnnouncementFieldState,
+    message: str,
+) -> int:
+    """
+    Ошибка входа значения БЕЗ потери данных (2.5.4 §1, п.6).
+
+    Клавиатура ввода остаётся/восстанавливается на том же месте, введённое
+    значение не записывается (CAS в домене не прошёл). Полная переделка
+    текстов ошибок — отдельный этап; здесь только безопасный путь: нажатие
+    кнопки получает короткий alert, а текст — короткий ответ на сообщение
+    автора (без нового экрана и без потери клавиатуры).
+    """
+    view = _field_input_view(_ui(context))
+    await announcement_field_input.apply_input_screen(
+        context.bot, ctx.chat(update).id, details, instance, field, view=view
     )
-    return await _render_question(update, context, details, fields, index)
+    if getattr(update, "callback_query", None) is not None:
+        await _answer(update, message, alert=True)
+        return AW_PREVIEW
+    msg = update.effective_message
+    if msg is not None:
+        try:
+            notice = await msg.reply_text(message[:200])
+        except Exception as exc:  # noqa: BLE001 — ответ не должен ломать ввод
+            logger.info("Ошибка ввода поля не показана: %s", exc)
+        else:
+            screen.track_temp(ctx.data(context), notice)
+    return AW_PREVIEW
+
+
+def _field_input_view(ui: dict[str, Any]) -> announcement_field_input.CalendarView:
+    """Уровень календаря на клавиатуре ввода из состояния (None — первый)."""
+    value = ui.get("field_input_view")
+    if isinstance(value, announcement_field_input.CalendarView):
+        return value
+    return announcement_field_input.CalendarView()
+
+
+async def _return_to_field_list(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    instance_id: int,
+) -> int:
+    """
+    Возврат к СПИСКУ ПОЛЕЙ на том же сообщении (2.5.4 §1, п.4–5).
+
+    Список — клавиатура анонса (0–1 фото) или текст единственной панели
+    (2+ фото) с актуальными значениями; страница берётся из пути, поэтому
+    «Назад» из ввода поля не сбрасывает список на первую страницу.
+    """
+    page = _field_input_page(_ui(context))
+    return await _render_field_list(
+        update, context, details, instance_id=instance_id, page=page
+    )
+
+
+async def _save_field_input_value(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    instance,
+    field: AnnouncementFieldState,
+    value: object,
+    *,
+    drop_input: bool = False,
+    stay: bool = False,
+) -> int:
+    """
+    ЕДИНЫЙ маршрут сохранения значения поля готового анонса (2.5.4 §1).
+
+    Используется и ручным вводом текста, и готовыми вариантами
+    (время/календарь/выбор): копий на каждый тип поля нет. После записи
+    значение применяется к доставленной версии на месте (механизм 2.5.3,
+    `_apply_immediately`/`_apply_in_place_change`), а клавиатура того же
+    сообщения возвращается к списку полей. Отдельного сообщения об успехе и
+    второй копии анонса не появляется.
+
+    `stay` — множественный выбор: отметка варианта обновляет анонс, но
+    клавиатура ввода остаётся, чтобы автор мог отметить несколько значений
+    подряд (как на экране вопроса конструктора); «✅ Готово» возвращает к
+    списку полей.
+    """
+    ui = _ui(context)
+    try:
+        with SessionLocal() as session:
+            updated = save_announcement_value(
+                session,
+                actor_telegram_user_id=_user_id(update),
+                draft_id=details.draft_id,
+                brick_id=field.brick_id,
+                value=value,
+                expected_revision=details.revision,
+                today=app_today(),
+            )
+    except AnnouncementError as exc:
+        return await _field_input_error(
+            update, context, details, instance, field, str(exc)
+        )
+    _set_details(ui, updated)
+    fresh = updated
+    if updated.publication_sent:
+        # H3: правка доставленного анонса применяется сразу — кнопки
+        # «Применить изменения» нет. `None` — версия не обновлена (лимит,
+        # ошибка сборки): причину уже показал `_finish_and_deliver`, данные
+        # и фото целы, клавиатура ввода восстанавливается.
+        applied = await _apply_immediately(update, context, updated)
+        fresh = _reload_details(update, updated)
+        if applied is None:
+            refusal = _length_check(update, fresh)
+            message = (
+                _length_refusal_text(refusal)
+                if refusal is not None
+                else APPLY_FAILED_TEXT
+            )
+            return await _field_input_error(
+                update, context, fresh, instance, field, message
+            )
+    if drop_input:
+        # Ввод удаляется только после ПОДТВЕРЖДЁННОГО сохранения (2.5.3 §7).
+        await _drop_accepted_input(update, context, f"aw:{field.brick_id}")
+    if stay:
+        # Множественный выбор: перерисовываем клавиатуру по СВЕЖЕМУ полю,
+        # иначе отметки ✅ остались бы от значения до сохранения.
+        fresh_field = (
+            _field_for_input(_user_id(update), fresh, instance.id, field.brick_id)
+            or field
+        )
+        return await _show_field_input(update, context, fresh, instance, fresh_field)
+    return await _return_to_field_list(update, context, fresh, instance.id)
+
+
+async def _show_field_input(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    instance,
+    field: AnnouncementFieldState,
+    view: announcement_field_input.CalendarView | None = None,
+) -> int:
+    """
+    Показывает (или перерисовывает) клавиатуру ввода поля на анонсе.
+
+    Состояние `field_input`/`field_input_view` выставляется здесь же, а
+    resume-снимок записывается в БД: после рестарта службы введённый текст
+    продолжает попадать в это поле (см. `_resume_target`), а не в подсказку
+    меню. Новых сообщений нет — правится клавиатура управления.
+    """
+    ui = _ui(context)
+    _set_details(ui, details)
+    ui["active_brick_id"] = field.brick_id
+    ui["active_source"] = "field"
+    ui["field_input"] = instance.id
+    ui["field_input_view"] = view
+    shown = await announcement_field_input.apply_input_screen(
+        context.bot, ctx.chat(update).id, details, instance, field, view=view
+    )
+    if not shown:
+        # Адрес сообщения/панели потерян: ввод показать некуда, «зависших»
+        # состояний не оставляем — возвращаемся к списку полей.
+        _clear_active(ui)
+        ui.pop("field_input", None)
+        ui.pop("field_input_view", None)
+        return await _return_to_field_list(update, context, details, instance.id)
+    _remember_resume(_user_id(update), ctx.data(context), ctx.chat(update).id, ui)
+    return AW_PREVIEW
 
 
 def _extra_field_state(details, definition) -> AnnouncementFieldState:
@@ -6808,7 +7126,7 @@ async def _handle_active_text(
     ui = _ui(context)
     brick_id = ui.get("active_brick_id")
     source = ui.get("active_source")
-    if brick_id is None or source not in {"question", "extra"}:
+    if brick_id is None or source not in {"question", "extra", "field"}:
         return None
     draft_id = ui.get("draft_id")
     if not draft_id:
@@ -6821,6 +7139,33 @@ async def _handle_active_text(
         ui["revision"] = details.revision
         return await _stale(update, context)
     _set_details(ui, details)
+
+    if source == "field":
+        # 2.5.4 §1: значение поля доставленного анонса. Данные не теряются:
+        # маршрут общий с готовыми вариантами, а ошибка восстанавливает
+        # клавиатуру ввода на том же сообщении.
+        found = _field_input_context(_user_id(update), ui, details)
+        if found is None:
+            return await _stale(update, context)
+        instance, field = found
+        if field.value_type == BRICK_TYPE_CHOICE:
+            return await _field_input_error(
+                update,
+                context,
+                details,
+                instance,
+                field,
+                tr("wizard.reject_choice.vyberite_variant_knopkoy_tekstovyy"),
+            )
+        return await _save_field_input_value(
+            update,
+            context,
+            details,
+            instance,
+            field,
+            capture_message_text(update.effective_message),
+            drop_input=True,
+        )
 
     if source == "question":
         fields = await _question_fields_for(update, context, details)

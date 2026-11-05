@@ -176,7 +176,10 @@ class InPlaceTextTests(unittest.TestCase):
         self.assertEqual(len(h.posts()), posts_before, "второй пост не появился")
         self.assertEqual(h.posts(), [UPDATED_TEXT])
 
-        # Управление осталось на месте: кнопки не пересоздавались.
+        # 2.5.4 §1: после сохранения на том же сообщении остаётся список
+        # полей; «◀️ Назад» возвращает управление анонсу (`anp_`).
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не вернулся")
+        await h.callback(next(iter(h.live_callbacks("anf_back:"))))
         markup = _final_markup(h, message_id)
         self.assertIsNotNone(markup, "кнопки управления потеряны")
         self.assertTrue(

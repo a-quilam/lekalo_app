@@ -727,7 +727,10 @@ class AnnouncementRedeliveryTests(unittest.TestCase):
             set(first_ids) & set(h.deleted_ids()),
             "активное сообщение не удаляется",
         )
-        # Управление остаётся на самом анонсе: кнопки не снимались.
+        # 2.5.4 §1: после сохранения на том же сообщении — список полей;
+        # «◀️ Назад» возвращает управление действующему экземпляру (`anp_`).
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не вернулся")
+        await h.callback(next(iter(h.live_callbacks("anf_back:"))))
         markup = _final_markup(h, message_id)
         self.assertIsNotNone(markup, "кнопки активного экземпляра живы")
         self.assertIn(

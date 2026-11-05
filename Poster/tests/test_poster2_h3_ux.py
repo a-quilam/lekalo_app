@@ -55,6 +55,7 @@ try:
         scenario_test,
     )
     from tests.test_stage27b_announcement_ui import (
+        _back_to_controls,
         _callback,
         _callbacks,
         _choose_personal,
@@ -250,9 +251,12 @@ class DeliveredEditLayoutTests(unittest.TestCase):
         self.assertEqual(len(instances), 1, "архивного снимка при правке нет")
         # §30–31: прежнее сообщение не удаляется и остаётся в чате.
         self.assertNotIn(first_ids[0], h.deleted_ids(), "прежний экземпляр не удалён")
-        # §5 (2.5.3): вопрос закрыт, управление вернулось анонсу — кнопки
-        # экземпляра снова живы, «Применить изменения» нигде нет.
+        # §5 (2.5.3) + §1 (2.5.4): после сохранения — снова список полей на
+        # самом анонсе; «◀️ Назад» возвращает управление экземпляру, «Применить
+        # изменения» нигде нет.
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не вернулся")
+        await _back_to_controls(h)
         self.assertEqual(
             h.live_label(h.control_callback("data") or ""), "📝 Текстовые поля"
         )

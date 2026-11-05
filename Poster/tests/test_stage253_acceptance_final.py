@@ -459,7 +459,8 @@ class PlaceDataProtectionTests(unittest.TestCase):
         active = _only_active(h, draft.id)
         await _open_field_list(h, active.id)
         await h.callback(_field_buttons(h)[0][1])
-        self.assertIn("Вопрос", h.screen_text(), h.screen_text()[:200])
+        # 2.5.4 §1: ввод идёт на самом анонсе, отдельного вопроса нет.
+        self.assertTrue(h.live_callbacks("anq_"), "ввод не открылся")
 
         row_before = _draft_row(h, draft.id)
         values_before = _value_rows(h, draft.id)
@@ -564,7 +565,9 @@ class LongTextInDeliveredAnnouncementTests(unittest.TestCase):
         await h.callback(_field_buttons(h)[-1][1])
         long_message = await h.text(LONG_VALUE)
 
-        shown = "\n".join([h.screen_text(), *h.answer_texts()])
+        # 2.5.4 §1: ошибка ввода приходит ответом на сообщение автора
+        # (ввод живёт на анонсе, отдельного экрана/вопроса нет).
+        shown = "\n".join([h.screen_text(), *h.answer_texts(), *h.reply_texts()])
         self.assertIn(LENGTH_REFUSAL, shown, f"нет короткой ошибки: {shown!r}")
         # Лимит считается по итоговому тексту анонса: значение заменяет прежнее
         # в шаблоне «Строка 0: [f0]», то есть 10 + 1500 символов.
@@ -608,15 +611,15 @@ class LongTextInDeliveredAnnouncementTests(unittest.TestCase):
             "цикл устаревших кнопок",
         )
 
-        # «◀️ Назад» из вопроса и рестарт: правка остаётся в БД.
+        # «◀️ Назад» из ввода и рестарт: правка остаётся в БД.
         backs = [
             data
-            for _label, data in h.screen_buttons()
-            if data and data.startswith("aw_qback")
+            for data in h.live_callbacks("anq_back")
+            if data.endswith(f":{bricks['f0']}")
         ]
-        self.assertEqual(len(backs), 1, f"нет «Назад» вопроса: {h.screen_buttons()}")
+        self.assertEqual(len(backs), 1, f"нет «Назад» ввода: {h.live_buttons()}")
         await h.callback(backs[0])
-        self.assertIsNone(h.screen_message_id(), "временный вопрос остался")
+        self.assertIsNone(h.screen_message_id(), "лишний экран ввода остался")
         self.assertTrue(_field_buttons(h), "список полей не вернулся")
 
         await h.restart()
@@ -658,7 +661,7 @@ class LongTextInDeliveredAnnouncementTests(unittest.TestCase):
         )
         self.assertEqual(len(h.posts()), posts_before, "лишняя публикация")
         self.assertEqual(_only_active(h, draft.id).id, active.id, "экземпляр заменён")
-        self.assertIn(FIELDS_TITLE, _labels(h), "управление не вернулось")
+        self.assertTrue(_field_buttons(h), f"список полей не вернулся: {_labels(h)}")
 
 
 # --- L. Сквозной путь ------------------------------------------------------
@@ -699,7 +702,7 @@ class FullAuthorPathTests(unittest.TestCase):
             h.bot.content_text(h.chat_id, message_id), edited.publication_text
         )
         self.assertEqual(len(h.posts()), posts_before, "текст опубликован заново")
-        self.assertIn(FIELDS_TITLE, _labels(h), "управление не вернулось")
+        self.assertTrue(_field_buttons(h), f"список полей не вернулся: {_labels(h)}")
 
         # 3. Фото-режим → 2-е фото: 1 → 2 = одна контролируемая замена.
         await h.callback(_control(h, controls.ACTION_PHOTOS))
@@ -730,7 +733,9 @@ class FullAuthorPathTests(unittest.TestCase):
         published = _stored(h, draft.id).publication_text
         long_message = await h.text(LONG_VALUE)
 
-        shown = "\n".join([h.screen_text(), *h.answer_texts()])
+        # 2.5.4 §1: ошибка ввода приходит ответом на сообщение автора
+        # (ввод живёт на анонсе, отдельного экрана/вопроса нет).
+        shown = "\n".join([h.screen_text(), *h.answer_texts(), *h.reply_texts()])
         self.assertIn(LENGTH_REFUSAL, shown, f"нет короткой ошибки: {shown!r}")
         self.assertNotIn(long_message.message.message_id, h.deleted_ids())
         refused = _stored(h, draft.id)

@@ -960,10 +960,11 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         self.assertIn("Исходное", h.posts()[-1] or "")
 
         await _open_field_question(h, _bricks["main"])
-        self.assertIn("Исходное", h.screen_text())
-        # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
-        # показывает текущее значение и принимает новый текст.
-        self.assertIn("Текущее значение: Исходное", h.screen_text())
+        # 2.5.4 §1: ввод живёт на самом анонсе, отдельного вопроса нет.
+        # Текущее значение уже в тексте анонса, клавиатура — клавиатура ввода.
+        self.assertIsNone(h.screen(), "служебный экран ввода")
+        self.assertTrue(h.live_callbacks("anq_"), "ввод не открылся")
+        self.assertIn("Исходное", h.posts()[-1] or "")
         await h.text("Новое")
         # H3: ответ сразу применил изменение — новой версии достаточно,
         # строки «Есть изменения» и кнопки применения больше нет.

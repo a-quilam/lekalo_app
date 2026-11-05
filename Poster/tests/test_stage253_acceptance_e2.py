@@ -366,19 +366,20 @@ class TextFieldsOnAnnouncementAcceptanceTests(unittest.TestCase):
         )
         self.assertIn("7. Поле 6", _field_labels(h))
 
-        # Открываем последнее поле — вопрос, затем «◀️ Назад».
+        # Открываем последнее поле — ввод на самом анонсе (2.5.4 §1), затем
+        # «◀️ Назад» этой же клавиатуры.
         await h.callback(last_data)
-        self.assertIn("Вопрос 7 из 7", h.screen_text(), h.screen_text()[:200])
+        self.assertIsNone(h.screen_message_id(), "лишний экран ввода")
         backs = [
             data
-            for _label, data in h.screen_buttons()
-            if data and data.startswith("aw_qback")
+            for data in h.live_callbacks("anq_back")
+            if data.endswith(f":{bricks['f6']}")
         ]
-        self.assertEqual(len(backs), 1, f"нет «Назад» вопроса: {h.screen_buttons()}")
+        self.assertEqual(len(backs), 1, f"нет «Назад» ввода: {h.live_buttons()}")
         await h.callback(backs[0])
 
-        # Возврат именно на страницу 2 списка (регрессия D3), а не на вопрос.
-        self.assertIsNone(h.screen_message_id(), "временный вопрос остался")
+        # Возврат именно на страницу 2 списка (регрессия D3), а не на первую.
+        self.assertIsNone(h.screen_message_id(), "временный экран остался")
         self.assertEqual(
             h.live_callbacks("anf_page:"),
             [f"anf_page:{active.id}:0"],
@@ -417,8 +418,9 @@ class TextFieldsOnAnnouncementAcceptanceTests(unittest.TestCase):
             self.assertNotIn("основной текст", lowered, "раздел «основной текст»")
             self.assertNotIn("расширенный текст", lowered, "раздел «расширенный текст»")
 
+        # 2.5.4 §1: ввод открывается на самом анонсе, без экрана-вопроса.
         await h.callback(_field_buttons(h)[0][1])
-        self.assertIn("Вопрос 1 из 2", h.screen_text(), h.screen_text()[:200])
+        self.assertTrue(h.live_callbacks("anq_"), "ввод не открылся")
         await h.text(NEW_VALUE)
 
         stored = _stored(h, draft.id)
@@ -428,7 +430,11 @@ class TextFieldsOnAnnouncementAcceptanceTests(unittest.TestCase):
             stored.publication_text,
             "показанный анонс не совпадает с сохранённым",
         )
-        self.assertIn(FIELDS_TITLE, _all_labels(h), "управление не вернулось")
+        # 2.5.4 §1: после сохранения — снова список полей на том же анонсе.
+        self.assertTrue(
+            _field_buttons(h), f"список полей не вернулся: {_all_labels(h)}"
+        )
+        self.assertTrue(h.live_callbacks(f"anf_back:{active.id}"))
 
     @scenario_test
     async def test_d4_simple_announcement_field_path(self, h) -> None:
@@ -494,9 +500,9 @@ class TextFieldsOnAnnouncementAcceptanceTests(unittest.TestCase):
         active = _only_active(h, draft.id)
         await _open_field_list(h, active.id)
 
-        # Открываем РЕАЛЬНОЕ текстовое поле из списка.
+        # Открываем РЕАЛЬНОЕ текстовое поле из списка (ввод — на анонсе).
         await h.callback(_field_buttons(h)[0][1])
-        self.assertIn("Вопрос", h.screen_text())
+        self.assertTrue(h.live_callbacks("anq_"), "ввод не открылся")
 
         before_row = _draft_row(h, draft.id)
         before_values = _value_rows(h, draft.id)
@@ -652,10 +658,11 @@ class TextFieldsOnAnnouncementAcceptanceTests(unittest.TestCase):
         created_before = _created_count(h)
         await h.callback(description_data)
 
+        # 2.5.4 §1: выбор поля не создаёт сообщений — ввод на самом анонсе.
         self.assertEqual(
-            _created_count(h), created_before + 1, "ровно один временный вопрос"
+            _created_count(h), created_before, "выбор поля не создаёт сообщений"
         )
-        self.assertIn("Вопрос", h.screen_text())
+        self.assertTrue(h.live_callbacks("anq_"), "ввод не открылся")
         await h.text(NEW_VALUE)
 
         stored = _stored(h, draft.id)
@@ -664,7 +671,11 @@ class TextFieldsOnAnnouncementAcceptanceTests(unittest.TestCase):
             h.bot.content_text(h.chat_id, active.message_ids[0]),
             stored.publication_text,
         )
-        self.assertIn(FIELDS_TITLE, _all_labels(h), "управление анонсом вернулось")
+        # 2.5.4 §1: после сохранения — снова список полей на том же анонсе.
+        self.assertTrue(
+            _field_buttons(h), f"список полей не вернулся: {_all_labels(h)}"
+        )
+        self.assertTrue(h.live_callbacks(f"anf_back:{active.id}"))
 
         values = _value_rows(h, draft.id)
         description_id = _place_brick_id("описание")

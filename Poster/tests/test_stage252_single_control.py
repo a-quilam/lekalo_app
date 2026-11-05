@@ -341,14 +341,14 @@ class TemporaryEditorTests(unittest.TestCase):
         active = _only_active(h, draft.id)
         message_id = active.message_ids[0]
 
-        # 2.5.3 §5: «📝 Текстовые поля» открывает список на самом анонсе,
-        # отдельного экрана нет; выбор поля даёт ровно один вопрос.
+        # 2.5.3 §5 + 2.5.4 §1: «📝 Текстовые поля» открывает список на самом
+        # анонсе, а ввод поля — там же: служебных экранов нет вовсе.
         await h.callback(controls.panel_callback(controls.ACTION_DATA, active.id))
         _assert_field_list(h)
         self.assertIsNone(h.screen_message_id(), "служебного экрана нет")
         await h.callback(h.live_callbacks("anf_sel:")[0])
-        screen_id = h.screen_message_id()
-        self.assertIsNotNone(screen_id, "вопрос не открыт")
+        self.assertIsNone(h.screen_message_id(), "экран ввода не создаётся")
+        self.assertTrue(h.live_callbacks("anq_"), "клавиатура ввода не открылась")
 
         mark = len(h.calls)
         await h.text("Обновлено")
@@ -356,7 +356,13 @@ class TemporaryEditorTests(unittest.TestCase):
         self.assertEqual(
             h.bot.content_text(h.chat_id, message_id), "Обновлено", "правка не на месте"
         )
-        self.assertIn(int(screen_id), h.deleted_ids(), "вопрос не закрыт")
+        # 2.5.4 §1: после сохранения — снова список полей на тех же кнопках.
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не вернулся")
+        self.assertFalse(h.live_callbacks("anq_"), "ввод не закрыт")
+        self.assertIsNone(h.screen_message_id(), "служебный экран появился")
+
+        # «◀️ Назад» списка возвращает управление самому анонсу.
+        await h.callback(h.live_callbacks("anf_back:")[0])
         markup = _final_markup(h, message_id)
         self.assertIsNotNone(markup, "управление не вернулось к анонсу")
         self.assertTrue(
@@ -428,19 +434,20 @@ class TemporaryEditorTests(unittest.TestCase):
         await h.callback(controls.panel_callback(controls.ACTION_DATA, active.id))
         _assert_field_list(h)
         await h.callback(h.live_callbacks("anf_sel:")[0])
-        screen_id = h.screen_message_id()
-        self.assertIsNotNone(screen_id, "вопрос по полю не открыт")
+        # 2.5.4 §1: ввода-экрана нет, клавиатура ввода живёт на анонсе.
+        self.assertTrue(h.live_callbacks("anq_"), "ввод не открылся")
         await h.text("не число")
 
-        self.assertNotIn(
-            int(screen_id), h.deleted_ids(), "вопрос неудачного ввода не удаляется"
-        )
-        self.assertIn("число", h.screen_text().lower(), h.screen_text()[:120])
+        # Данные не потеряны: анонс тот же, клавиатура ввода восстановлена,
+        # ошибка объяснена ответом на сообщение автора.
+        self.assertIn("число", "\n".join(h.reply_texts()).lower(), h.reply_texts()[:3])
         self.assertEqual(
             h.bot.content_text(h.chat_id, message_id),
             "42",
             "анонс не изменился при неудачном вводе",
         )
+        self.assertTrue(h.live_callbacks("anq_"), "клавиатура ввода потеряна")
+        self.assertIsNone(h.screen_message_id(), "служебный экран появился")
 
 
 if __name__ == "__main__":  # pragma: no cover

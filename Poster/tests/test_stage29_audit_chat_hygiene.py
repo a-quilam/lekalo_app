@@ -439,7 +439,15 @@ class ScreenHtmlEscapingTests(unittest.TestCase):
             any("Поле <u>с тегом</u>" in label for label in field_labels),
             "заголовок поля не найден в кнопках",
         )
+        # 2.5.4 §1: ввод открывается на самом анонсе — служебного экрана
+        # больше нет, поэтому заголовок проверяется в подписи кнопки-подсказки
+        # (plain-текст: HTML там не парсится), а значение живёт только в тексте
+        # анонса, куда оно попало уже экранированным (проверено выше).
         await h.callback(fields[0])
-        raw3 = h.screen()["text"]
-        self.assertIn("Текущее значение: &lt;b&gt;ответ&lt;/b&gt;", raw3)
-        self.assertNotIn("<b>ответ</b>", raw3)
+        self.assertIsNone(h.screen(), "служебный экран ввода не создаётся")
+        hints = [
+            label
+            for label, data in h.live_buttons()
+            if data is None and "Поле <u>с тегом</u>" in label
+        ]
+        self.assertTrue(hints, f"нет подсказки ввода: {h.live_buttons()}")
