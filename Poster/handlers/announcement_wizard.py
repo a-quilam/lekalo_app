@@ -369,6 +369,7 @@ def _nav_enter(
     page: int | None = None,
     index: int | None = None,
     brick_id: int | None = None,
+    root: bool = False,
 ) -> None:
     """
     Фиксирует показ экрана в пути.
@@ -378,8 +379,15 @@ def _nav_enter(
     экран. Повторный показ того же шага обновляет запись, а возврат на уже
     пройденный экран (например, к списку после сохранения значения)
     обрезает путь до него — копии не копятся, циклы невозможны.
+
+    `root` — экран начинает собственный маршрут (правка доставленного
+    анонса): история конструктора, из которой пришли, к нему не относится.
+    Без этого дедупликация ниже принимала бы новый список полей за возврат
+    на вопрос того же кирпичика, который остался в пути после доставки.
     """
     stack = _nav_stack(ui)
+    if root:
+        stack.clear()
     identity = _nav_identity(screen, index=index, brick_id=brick_id)
     entry: dict[str, Any] = {
         "screen": screen,
@@ -484,7 +492,11 @@ async def _nav_render(
                 found = (index, fields[index])
         if found is None:
             return None
-        index, _field = found
+        index, field = found
+        if not _delivered_text_question_allowed(details, field):
+            # Старая запись пути на поле площадки у доставленного анонса:
+            # редактор текстовых полей таких вопросов не открывает (§5).
+            return None
         return await _render_question(update, context, details, fields, index)
     if screen_name == NAV_MANAGER:
         return await _render_question_manager(update, context, details)
@@ -518,11 +530,13 @@ async def _nav_render(
         )
     if screen_name == NAV_FIELDS:
         instance_id = entry.get("instance_id")
+        page = entry.get("page")
         return await _render_field_list(
             update,
             context,
             details,
             instance_id=instance_id if isinstance(instance_id, int) else None,
+            page=page if isinstance(page, int) else 0,
         )
     if screen_name == NAV_PREVIEW:
         return await _render_preview(update, context, details)
@@ -692,7 +706,8 @@ def _resume_target(user_id: int, snapshot: dict[str, Any]):
             return None
         if source == "question":
             fields = _askable_fields(_load_fields(user_id, draft_id))
-            if _find_field(fields, brick_id) is None:
+            found = _find_field(fields, brick_id)
+            if found is None or not _delivered_text_question_allowed(details, found[1]):
                 logger.info(
                     "Resume не нужен: user_id=%s draft_id=%s — кирпичик %s "
                     "больше не спрашивается.",
@@ -2228,6 +2243,23 @@ def _is_text_field(field: AnnouncementFieldState) -> bool:
     return field.code not in PLACE_FIELD_CODES
 
 
+def _delivered_text_question_allowed(details, field: AnnouncementFieldState) -> bool:
+    """
+    Вопрос по этому полю открывается из текущего режима правки.
+
+    Доставленный анонс (2.5.3 §5) редактируется только через список
+    «📝 Текстовые поля», поэтому его вопрос открывается ровно для текстового
+    поля — как в легитимном `_open_field_question`. Подделанный callback
+    вопроса (`aw_qgoto`/`aw_qback`/`aw_qskip`) с brick_id адреса/места/
+    ссылки/города получает отказ, и значение справочника не попадает в
+    анонс. Не доставленный черновик идёт прежним путём конструктора, где
+    поле площадки без значения из карточки — обычный вопрос.
+    """
+    if not details.publication_sent:
+        return True
+    return _is_text_field(field)
+
+
 def _text_fields(
     fields: tuple[AnnouncementFieldState, ...],
 ) -> list[AnnouncementFieldState]:
@@ -2451,6 +2483,11 @@ async def _question_from_callback(
         return None
     index, field = found
     if ui.get("active_brick_id") != brick_id:
+        return None
+    if not _delivered_text_question_allowed(details, field):
+        # Подделанный brick_id поля площадки у доставленного анонса: отказ
+        # без изменения данных (§5). Легитимный вопрос открыт только для
+        # текстового поля и проверку проходит.
         return None
     return ui, details, fields, index, field
 
@@ -2989,7 +3026,13 @@ async def _render_field_list(
         await _answer(update, announcement_controls.STALE_INSTANCE_TEXT, alert=True)
         return await _render_home(update, context)
     ui["field_instance_id"] = instance.id
-    _nav_enter(ui, NAV_FIELDS)
+    # Список полей — корень СВОЕГО маршрута правки доставленного анонса, а не
+    # продолжение пути конструктора: под ним в стеке ещё лежат вопросы, на
+    # которые уже ответили. Без пометки `root` `_nav_enter` увидел бы там
+    # вопрос того же кирпичика и «схлопнул» только что открытый список как
+    # возврат на родителя — тогда «Назад» из временного вопроса последнего
+    # поля уводил бы на «Вопрос N из M» вместо страницы списка.
+    _nav_enter(ui, NAV_FIELDS, page=page, root=True)
     stack = _nav_stack(ui)
     if stack:
         # Возврат «Назад» с пути знает, чей это список: id экземпляра, а не
@@ -6561,6 +6604,11 @@ async def _handle_active_text(
         index, field = found
         if ui.get("active_brick_id") != field.brick_id:
             return await _stale(update, context)
+        if not _delivered_text_question_allowed(details, field):
+            # Подделанный/устаревший активный кирпичик поля площадки у
+            # доставленного анонса: значение справочника вводом не пишется
+            # (§5), даже если вопрос был подставлен старым снимком resume.
+            return await _stale(update, context)
         await _reanchor(update, context)
         if field.value_type == BRICK_TYPE_CHOICE:
             return await _reject_choice_text(
@@ -7435,6 +7483,19 @@ async def handle_question_callback(
         if guarded is None:
             return await _stale(update, context)
         _ui_data, details = guarded
+        # Отказ полю площадки решается ДО `_ensure_stage`: иначе отказ сам
+        # менял бы stage/revision черновика.
+        fields = await _question_fields_for(update, context, details)
+        field_found = _find_field(fields, int(parts[3]))
+        if field_found is None:
+            return await _stale(update, context)
+        index, field = field_found
+        if not _delivered_text_question_allowed(details, field):
+            # Та же валидация, что у `_open_field_question`: у доставленного
+            # анонса подделанный callback на поле площадки получает отказ и
+            # ничего не меняет (§5). Значения справочника вводом не
+            # переписываются.
+            return await _stale(update, context)
         try:
             updated = _ensure_stage(update, context, details, WizardStage.QUESTIONS)
         except AnnouncementError as exc:

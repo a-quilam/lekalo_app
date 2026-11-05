@@ -1002,8 +1002,18 @@ class PlacesIsolationTests(unittest.TestCase):
         await h.text("Кофейня «Дом»")
 
         self.assertEqual(place_count(h), before, "место не создано из текста")
-        # §18 (2.5): экрана «✅ Анонс готов» нет — после доставки редактор.
-        self.assertIn("✏️ Изменить анонс", h.screen_text())
+        # 2.5.3 §5: отдельного экрана «✏️ Изменить анонс» больше нет —
+        # текстовые поля открываются клавиатурой самого анонса (`anf_sel:`).
+        # Текст на шаге фото не открыл поиск мест и не потерял редактор:
+        # диалог мастера жив, список полей показан.
+        self.assertIsNone(load_place_session(h.user_id), "поиск мест не запущен")
+        self.assertNotIn("🔎 Поиск места", h.screen_text())
+        self.assertNotIn("🔎 Поиск площадки", h.screen_text())
+        self.assertIsNotNone(
+            h.dialog_state(name="announcement_wizard"),
+            "диалог мастера потерян",
+        )
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не показан")
 
     @scenario_test
     async def test_create_post_does_not_start_legacy_wizard_or_clear_place(self, h):
