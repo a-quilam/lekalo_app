@@ -181,7 +181,16 @@ class PhotoLimitScenarioTests(unittest.TestCase):
         self.assertEqual(
             stored.photos, tuple(f"limit-photo-{index}" for index in range(10))
         )
-        self.assertIn("больше добавить нельзя", h.screen_text())
+        # 2.5.3 §6: отказ объясняется в единственной панели медиагруппы
+        # (служебного экрана у фото-режима больше нет).
+        from tests.integration_harness import is_panel_record
+
+        notices = "\n".join(
+            str(call.get("text") or "")
+            for call in h.calls
+            if call["type"] == "edit_message" and is_panel_record(call)
+        )
+        self.assertIn("больше добавить нельзя", notices)
         # Сообщение с отклонённым снимком не удалено: автор видит причину.
         self.assertNotIn(rejected.message.message_id, h.deleted_ids())
 

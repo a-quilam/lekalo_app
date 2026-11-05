@@ -334,9 +334,20 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
             # §5: фото открываются после возврата «◀️ Назад» — список полей
             # заменяет клавиатуру анонса.
             await _open_control(h, "photos")
-            self.assertIn("Фотографии анонса", h.screen_text())
-            # §5: прежняя кнопка «Изменить» ведёт в тот же список полей.
-            await h.callback(_callback(h, "aw_edit"))
+            # 2.5.3 §6: фото-режим живёт на клавиатуре анонса — не экран.
+            self.assertIsNone(h.screen_message_id(), "служебного экрана нет")
+            self.assertTrue(h.live_callbacks("anf_back:"), "фото-режим не открыт")
+            self.assertIn(
+                "noop:0:0",
+                [data for _label, data in h.live_buttons()],
+                "нет подсказки «📷 Пришлите фото»",
+            )
+            # §5: прежняя кнопка «Изменить» (`aw_edit:{draft}:{revision}`)
+            # ведёт в тот же список полей. В чате её уже нет (служебного
+            # экрана не существует), поэтому callback собирается так, как его
+            # помнит клиент прежней версии.
+            legacy = _details(h, draft.id)
+            await h.callback(f"aw_edit:{draft.id}:{legacy.revision}")
             self.assertEqual(h.screen_text(), "", "служебного экрана нет")
             self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
             # Возврат «◀️ Назад» — снова доступно управление анонса.

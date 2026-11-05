@@ -66,9 +66,9 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 # Заголовки экранов, к которым ведут действия панели (§18/§26–27/§34).
 # 2.5.3 §5: экрана «✏️ Изменить анонс» больше нет — «📝 Текстовые поля»
-# открывают список полей на самом управлении анонса.
+# открывают список полей на самом управлении анонса. 2.5.3 §6: у фото тоже
+# нет экрана — фото-режим живёт на клавиатуре анонса/панели.
 FIELDS_TITLE = "📝 Текстовые поля"
-PHOTOS_TITLE = "📷 Фотографии анонса"
 EXTRAS_TITLE = "🧩 Дополнительные поля"
 MAIN_MENU_TITLE = "Здравствуйте! 👋"
 
@@ -82,11 +82,11 @@ EXPECTED_PANEL_ACTIONS = (
 )
 
 # Экран и состояние диалога после действия панели (§24/§30–33).
-# `None` — отдельного экрана нет: список полей живёт на управлении анонса
-# (2.5.3 §5), поэтому проверяется живая клавиатура чата.
+# `None` — отдельного экрана нет: список полей и фото-режим живут на
+# управлении анонса (2.5.3 §5–§6), поэтому проверяется живая клавиатура чата.
 PANEL_EXPECTATIONS = {
     "data": (None, AW_PREVIEW),
-    "photos": (PHOTOS_TITLE, AW_PREVIEW),
+    "photos": (None, AW_PREVIEW),
     "extras": (EXTRAS_TITLE, AW_EXTRAS),
     "menu": (MAIN_MENU_TITLE, None),
 }
@@ -358,8 +358,31 @@ class PanelRoutingTests(PanelTestMixin, unittest.TestCase):
 
         title, state = PANEL_EXPECTATIONS[action]
         if title is None:
-            # 2.5.3 §5: список текстовых полей — на самом управлении анонса.
-            _assert_field_list(h)
+            if action == "photos":
+                # 2.5.3 §6: фото-режим — клавиатура самого анонса/панели:
+                # «◀️ Назад» плюс подсказка (`noop:`) или удаление снимков.
+                callbacks = [data or "" for _label, data in h.live_buttons()]
+                self.assertTrue(
+                    any(data.startswith("anf_back:") for data in callbacks),
+                    f"{action}: нет «Назад» фото-режима: {h.live_buttons()}",
+                )
+                self.assertTrue(
+                    any(
+                        data == "noop:0:0"
+                        or data.startswith("aw_photo_del:")
+                        or data.startswith("aw_photo_clear:")
+                        for data in callbacks
+                    ),
+                    f"{action}: фото-режим не показан: {h.live_buttons()}",
+                )
+                self.assertEqual(
+                    h.screen_buttons(),
+                    [],
+                    f"{action}: служебного экрана нет",
+                )
+            else:
+                # 2.5.3 §5: список текстовых полей — на самом управлении анонса.
+                _assert_field_list(h)
             self.assertEqual(h.screen_text(), "", "служебный экран не создаётся")
         else:
             self.assertTrue(

@@ -433,7 +433,16 @@ class DeliveredEditScreenTests(unittest.TestCase):
         await h.callback(_control_callback(h, "data"))
         await h.callback(h.live_callbacks("anf_back:")[0])
         await _open_control(h, "photos")
-        self.assertIn("Фотографии анонса", h.screen_text())
+        # 2.5.3 §6: у доставленного анонса фото-режим — не экран, а клавиатура
+        # самого анонса (0–1 фото) или его панели: «◀️ Назад» и подсказка
+        # `noop:0:0` (0 фото).
+        self.assertIsNone(h.screen_message_id(), "служебного экрана нет")
+        self.assertTrue(h.live_callbacks("anf_back:"), "фото-режим не открыт")
+        self.assertIn(
+            "noop:0:0",
+            [data for _label, data in h.live_buttons()],
+            "нет подсказки «📷 Пришлите фото»",
+        )
         # У доставленного анонса вложения уже стоят в чате выше: отдельного
         # «Показать вложения» нет, предпросмотр не дублирует готовый пост.
         self.assertEqual(len(h.posts()), posts_before)

@@ -151,7 +151,9 @@ async def handle_panel_callback(
             update, context, details, instance_id=instance.id
         )
     elif action == announcement_controls.ACTION_PHOTOS:
-        await wizard._render_photos(update, context, details)
+        # 2.5.3 §6: фото-режим — на управлении самого анонса/панели, не
+        # отдельным экраном. Экземпляр известен из callback.
+        await wizard._show_photos(update, context, details, instance_id=instance.id)
     else:
         await wizard._enter_extras(update, context, details)
 

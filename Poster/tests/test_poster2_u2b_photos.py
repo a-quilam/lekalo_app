@@ -582,12 +582,12 @@ class LiveBlockPhotoCompositionTests(unittest.TestCase):
         self.assertIn("не помещается", h.screen_text(), "ожидался проблемный экран")
         self.assertIsNone(_details(h, draft.id).publication_status)
 
-        # Мои анонсы → открыть → Фотографии → Добавить фото.
+        # Мои анонсы → открыть → Фотографии; снимок приходит обычным
+        # сообщением (2.5.3 §6: кнопки «📥 Добавить фото» больше нет).
         await h.callback("main_menu")
         await h.callback("my_announcements")
         await h.callback(f"aw_open:{draft.id}")
         await h.callback(_callback(h, "aw_photos"))
-        await h.callback(_callback(h, "aw_photo_add"))
         await h.photo("F-2")
         self.assertEqual(
             _details(h, draft.id).photos,

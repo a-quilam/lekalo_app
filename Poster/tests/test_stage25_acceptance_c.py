@@ -87,15 +87,17 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 # 2.5.3 §5: экрана «✏️ Изменить анонс» больше нет — вместо него список
 # текстовых полей на самом управлении анонса.
 FIELDS_TITLE = "📝 Текстовые поля"
-PHOTOS_TITLE = "📷 Фотографии анонса"
 EXTRAS_TITLE = "🧩 Дополнительные поля"
 MAIN_MENU_TITLE = "Здравствуйте! 👋"
 
 # §18: экрана «Анонс готов» больше нет — ни как экран, ни как сообщение.
 READY_SCREEN = "Анонс готов"
 
-# §34–37: подписи экрана фотографий.
-PHOTO_ADD = "📥 Добавить фото"
+# §34–37 / 2.5.3 §6: подписи фото-режима. Кнопки «📥 Добавить фото» больше
+# нет — снимки приходят в чат, а раскладка зависит от числа фото.
+REMOVED_PHOTO_ADD = "📥 Добавить фото"
+PHOTO_MODE_EMPTY = "📷 Пришлите фото"
+PHOTO_MODE_MORE = "📷 Можно прислать ещё"
 PHOTO_DELETE_ONE = "🗑 Удалить фото"
 PHOTO_DELETE_ALL = "🗑 Удалить все фото"
 PHOTO_CONFIRM = "🗑 Да, удалить все"
@@ -137,8 +139,37 @@ def _labels(markup) -> list[list[str]]:
     return [[button.text for button in row] for row in markup.inline_keyboard]
 
 
-def _photo_labels(h) -> list[list[str]]:
-    return _labels(h.screen().get("reply_markup"))
+def _photo_layout(h, instance) -> list[list[str]]:
+    """
+    Живая раскладка фото-режима доставленного анонса (§6, 2.5.3).
+
+    0–1 фото — клавиатура самого сообщения анонса (`editMessageReplyMarkup`),
+    2+ — единственной панели (`editMessageText`). Отдельного экрана у режима
+    нет, поэтому `screen()` здесь не подходит.
+    """
+    if instance.panel_message_id is not None:
+        edits = [
+            call
+            for call in _panel_records(h)
+            if call["type"] == "edit_message"
+            and int(call.get("message_id") or 0) == int(instance.panel_message_id)
+        ]
+        return _labels(edits[-1].get("reply_markup")) if edits else []
+    return _labels(_final_markup(h, instance.message_ids[0]))
+
+
+def _panel_edits(h, instance) -> int:
+    """Сколько раз правила текст панели: вторая панель исключена по счёту."""
+    if instance.panel_message_id is None:
+        return 0
+    return len(
+        [
+            call
+            for call in _panel_records(h)
+            if call["type"] == "edit_message"
+            and int(call.get("message_id") or 0) == int(instance.panel_message_id)
+        ]
+    )
 
 
 def _button(h, prefix: str, suffix: str | None = None) -> str:
@@ -150,6 +181,18 @@ def _button(h, prefix: str, suffix: str | None = None) -> str:
         ):
             return data
     raise AssertionError(f"нет кнопки {prefix!r}{suffix or ''}: {h.screen_buttons()}")
+
+
+def _live_button(h, prefix: str, suffix: str | None = None) -> str:
+    """Callback живой кнопки чата (`live_buttons`), а не служебного экрана."""
+    for _label, data in h.live_buttons():
+        if (
+            data
+            and data.startswith(prefix)
+            and (suffix is None or data.endswith(suffix))
+        ):
+            return data
+    raise AssertionError(f"нет живой кнопки {prefix!r}{suffix or ''}: {h.live_buttons()}")
 
 
 def _control_photos(h) -> str:
@@ -573,7 +616,14 @@ class InPlaceEditTests(unittest.TestCase):
         self.assertEqual(h.bot.content_text(h.chat_id, message_id), "Другое значение")
         self.assertEqual(len(h.posts()), 1, "второй пост не появился")
         await h.callback(controls.panel_callback("photos", edited.id))
-        self.assertTrue(h.screen_text().startswith(PHOTOS_TITLE))
+        # 2.5.3 §6: фото-режим — клавиатура самого анонса, отдельного экрана
+        # нет; у 0 фото это «📷 Пришлите фото» и «◀️ Назад».
+        self.assertEqual(
+            _photo_layout(h, edited),
+            [[PHOTO_MODE_EMPTY], [BACK]],
+            "фото-режим не показан на анонсе",
+        )
+        self.assertIsNone(h.screen_message_id(), "служебного экрана нет")
 
 
 # --- 5. смена структуры (§31, §28) ----------------------------------------
@@ -665,12 +715,14 @@ class StructureChangeTests(unittest.TestCase):
         self.assertNotEqual(active.id, first.id)
         self.assertEqual(len(active.message_ids), 2, "новый альбом целиком")
         self.assertIsNone(_final_markup(h, first_id), "кнопки архивного сняты")
-        # Панель создана один раз и записана в активный экземпляр.
-        panels = _panel_records(h)
-        self.assertEqual(len(panels), 1, "панель создана один раз")
+        # Панель создана один раз и записана в активный экземпляр. Правил
+        # (`editMessageText`) после приёма партии не считается: 2.5.3 §6
+        # фото-режим правит существующую панель, а не создаёт вторую.
+        sends = _panel_sends(h)
+        self.assertEqual(len(sends), 1, "панель создана один раз")
         self.assertEqual(
             active.panel_message_id,
-            h.bot.call_message_ids[id(panels[0])][0],
+            h.bot.call_message_ids[id(sends[0])][0],
         )
         # Финальный активный экземпляр содержит оба фото партии.
         self.assertEqual(
@@ -688,8 +740,8 @@ class StructureChangeTests(unittest.TestCase):
         panel_id = first.panel_message_id
 
         await h.callback(_control_photos(h))
-        await h.callback(_button(h, "aw_photo_clear"))
-        await h.callback(_button(h, "aw_photo_clear_yes"))
+        await h.callback(_live_button(h, "aw_photo_clear"))
+        await h.callback(_live_button(h, "aw_photo_clear_yes"))
 
         active = _only_active(h, draft.id)
         self.assertNotEqual(active.id, first.id)
@@ -761,10 +813,14 @@ class StaleAfterRestartTests(unittest.TestCase):
             self.assertEqual(h.deleted_ids(), deleted_before)
             self.assertEqual(_instance_rows(h, draft.id), rows_before)
 
-        # Кнопка действующего экземпляра после рестарта работает.
+        # Кнопка действующего экземпляра после рестарта работает: фото-режим
+        # открывается на самом управлении (панель альбома), экземпляр тот же.
         await h.callback(controls.panel_callback("photos", active.id))
-        self.assertTrue(h.screen_text().startswith(PHOTOS_TITLE))
         self.assertEqual(_only_active(h, draft.id).id, active.id)
+        layout = _photo_layout(h, active)
+        self.assertTrue(layout, f"фото-режим не открылся: {h.live_buttons()}")
+        self.assertNotIn(REMOVED_PHOTO_ADD, _all_labels(layout), "кнопки добавления нет")
+        self.assertEqual(layout[-1], [BACK], "выход из режима — «◀️ Назад»")
         self.assertNotIn(READY_SCREEN, " ".join(_outgoing_texts(h)))
 
     @scenario_test
@@ -809,45 +865,83 @@ class PhotoScreenLayoutTests(unittest.TestCase):
     @scenario_test
     async def test_photo_screen_layouts_change_with_photo_count(self, h) -> None:
         await h.text("/start")
-        await _delivered_with_photos(h, 3)
+        draft = await _delivered_with_photos(h, 3)
+        active = _only_active(h, draft.id)
         await h.callback(_control_photos(h))
-        self.assertTrue(h.screen_text().startswith(PHOTOS_TITLE))
 
-        # §37: три фото — добавление, удаление по две в строке, «удалить все».
+        # §6 (2.5.3): фото-режим живёт на самом управлении, отдельного экрана
+        # и кнопки «📥 Добавить фото» нет.
+        self.assertNotIn(REMOVED_PHOTO_ADD, _all_labels(_photo_layout(h, active)))
         self.assertEqual(
-            _photo_labels(h),
+            _photo_layout(h, active),
             [
-                [PHOTO_ADD],
                 [f"{PHOTO_DELETE_ONE} 1", f"{PHOTO_DELETE_ONE} 2"],
                 [f"{PHOTO_DELETE_ONE} 3"],
                 [PHOTO_DELETE_ALL],
                 [BACK],
             ],
+            "§37: три фото — удаление по две в строке и «удалить все»",
         )
-        self.assertNotIn("🏠 В меню", _all_labels(_photo_labels(h)), "§34: меню нет")
+        self.assertNotIn(
+            "🏠 В меню", _all_labels(_photo_layout(h, active)), "§34: меню нет"
+        )
 
-        # 3 → 2: раскладка пересчитана сразу.
-        await h.callback(_button(h, "aw_photo_del", ":2"))
+        # 3 → 2: раскладка пересчитана сразу (состав медиагруппы меняется —
+        # версия заменяется, панель переезжает вместе с ней).
+        await h.callback(_live_button(h, "aw_photo_del", ":2"))
+        active = _only_active(h, draft.id)
         self.assertEqual(
-            _photo_labels(h),
+            _photo_layout(h, active),
             [
-                [PHOTO_ADD],
                 [f"{PHOTO_DELETE_ONE} 1", f"{PHOTO_DELETE_ONE} 2"],
                 [PHOTO_DELETE_ALL],
                 [BACK],
             ],
         )
-        # 2 → 1: немедленная раскладка одной фотографии (§36).
-        await h.callback(_button(h, "aw_photo_del", ":1"))
-        self.assertEqual(_photo_labels(h), [[PHOTO_ADD, PHOTO_DELETE_ONE], [BACK]])
-        # 1 → 0: раскладка нуля (§35) — только добавление.
-        await h.callback(_button(h, "aw_photo_del", ":0"))
-        self.assertEqual(_photo_labels(h), [[PHOTO_ADD], [BACK]])
+        # 2 → 1: анонс переиздан одним фото — управление на самом сообщении
+        # (§21), панели у него быть не может.
+        await h.callback(_live_button(h, "aw_photo_del", ":1"))
+        active = _only_active(h, draft.id)
+        self.assertIsNone(active.panel_message_id, "у одного фото панели нет")
+        self.assertEqual(
+            _photo_layout(h, active), [[PHOTO_MODE_MORE, PHOTO_DELETE_ONE], [BACK]]
+        )
+        # 1 → 0: раскладка нуля (§6) — информационная подсказка и «Назад».
+        await h.callback(_live_button(h, "aw_photo_del", ":0"))
+        active = _only_active(h, draft.id)
+        self.assertEqual(
+            _photo_layout(h, active), [[PHOTO_MODE_EMPTY], [BACK]], "§35: ноль фото"
+        )
+        # Второго фото-интерфейса нет: подсказка и «Удалить» существуют ровно
+        # в одной живой клавиатуре (архивные версии остались без кнопок).
+        self.assertEqual(
+            [
+                label
+                for label, _data in h.live_buttons()
+                if label in {PHOTO_MODE_EMPTY, PHOTO_MODE_MORE}
+            ],
+            [PHOTO_MODE_EMPTY],
+            "одна клавиатура фото-режима",
+        )
 
-        # §34: «Назад» возвращает к управлению текущим анонсом: 2.5.3 §5
-        # это список текстовых полей на клавиатуре самого анонса.
-        await h.callback(_button(h, "aw_edit"))
-        _assert_field_list(h)
+        # §6: «Назад» возвращает управление самому анонсу — клавиатура снова
+        # `anp_`, фото-режим закрыт.
+        await h.callback(_live_button(h, "anf_back"))
+        controls_back = h.live_control_callbacks()
+        self.assertEqual(
+            sorted(data.rsplit(":", 1)[0] for data in controls_back),
+            [f"anp_{action}" for action in sorted(controls.PANEL_ACTIONS)],
+            f"управление анонсом не вернулось: {h.live_buttons()}",
+        )
+        self.assertEqual(
+            [
+                data
+                for _label, data in h.live_buttons()
+                if data and (data.startswith("aw_photo_") or data.startswith("noop:"))
+            ],
+            [],
+            "фото-режим закрыт",
+        )
 
     @scenario_test
     async def test_delete_all_requires_confirmation(self, h) -> None:
@@ -858,22 +952,33 @@ class PhotoScreenLayoutTests(unittest.TestCase):
         await h.callback(_control_photos(h))
 
         # §37: массовое удаление — только с подтверждением.
-        await h.callback(_button(h, "aw_photo_clear"))
+        await h.callback(_live_button(h, "aw_photo_clear"))
         self.assertIn(
-            PHOTO_CONFIRM, _all_labels(_photo_labels(h)), "нужно подтверждение"
+            PHOTO_CONFIRM, _all_labels(_photo_layout(h, active)), "нужно подтверждение"
         )
-        self.assertIn("Удалить все фото", h.screen_text(), "экран объясняет действие")
+        panel_text = [
+            call.get("text")
+            for call in _panel_records(h)
+            if call["type"] == "edit_message"
+        ][-1]
+        self.assertIn("Удалить все фото", panel_text or "", "панель объясняет действие")
         # Отмена ничего не меняет: коллекция, анонс и кнопки на месте.
         await h.callback(_control_photos(h))
         self.assertEqual(_stored(h, draft.id).photos, photos_before)
         self.assertEqual(_only_active(h, draft.id).id, active.id)
-        self.assertEqual(_photo_labels(h)[0], [PHOTO_ADD])
-
-        await h.callback(_button(h, "aw_photo_clear"))
-        await h.callback(_button(h, "aw_photo_clear_yes"))
         self.assertEqual(
-            _photo_labels(h),
-            [[PHOTO_ADD], [BACK]],
+            _photo_layout(h, active)[0],
+            [f"{PHOTO_DELETE_ONE} 1", f"{PHOTO_DELETE_ONE} 2"],
+        )
+
+        await h.callback(_live_button(h, "aw_photo_clear"))
+        await h.callback(_live_button(h, "aw_photo_clear_yes"))
+        # 2→0 — новый экземпляр: управление на самом сообщении, раскладка нуля.
+        cleared = _only_active(h, draft.id)
+        self.assertIsNone(cleared.panel_message_id)
+        self.assertEqual(
+            _photo_layout(h, cleared),
+            [[PHOTO_MODE_EMPTY], [BACK]],
             "после удаления — раскладка нуля",
         )
         self.assertEqual(_stored(h, draft.id).publication_photos, ())
@@ -1058,31 +1163,43 @@ class ControlActionsParityTests(unittest.TestCase):
                 )
                 await _back_to_controls(h)
                 continue
+            if action == controls.ACTION_PHOTOS:
+                # 2.5.3 §6: фото-режим — не отдельный экран, а клавиатура
+                # самого управления. Проверяем состояние коллекции и
+                # возвращаемся «◀️ Назад» к управлению анонсом.
+                self.assertIsNone(
+                    h.screen_message_id(), "служебного экрана для фото нет"
+                )
+                self.assertEqual(
+                    _only_active(h, draft.id).id,
+                    active.id,
+                    f"{action}: экземпляр не должен меняться",
+                )
+                layout = _photo_layout(h, _only_active(h, draft.id))
+                self.assertTrue(layout, f"фото-режим не показан: {h.live_buttons()}")
+                self.assertNotIn(
+                    REMOVED_PHOTO_ADD, _all_labels(layout), "кнопки добавления нет"
+                )
+                await _back_to_controls(h)
+                continue
             screens[action] = h.screen_text().splitlines()[0]
             self.assertEqual(
                 _only_active(h, draft.id).id,
                 active.id,
                 f"{action}: экземпляр не должен меняться",
             )
-            # Экран шага закрывается возвратом к управлению, чтобы следующая
-            # кнопка `anp_` осталась доступной в чате.
-            if action == controls.ACTION_PHOTOS:
-                for data in h.live_callbacks("aw_edit:"):
-                    await h.callback(data)
-                    break
         # Кнопки рабочие: экземпляр жив до выхода в меню.
         await h.callback(controls.panel_callback(controls.ACTION_MENU, active.id))
         screens[controls.ACTION_MENU] = h.screen_text().splitlines()[0]
         self.assertEqual(
             screens,
             {
-                "photos": PHOTOS_TITLE,
                 "extras": EXTRAS_TITLE,
                 "menu": MAIN_MENU_TITLE,
             },
             "каждое действие ведёт на свой экран",
         )
-        self.assertEqual(len(set(screens.values())), 3, "экраны не дублируются")
+        self.assertEqual(len(set(screens.values())), 2, "экраны не дублируются")
         self.assertNotIn(READY_SCREEN, " ".join(_outgoing_texts(h)))
 
 

@@ -525,7 +525,7 @@ async def _nav_render(
         return await _render_template_screen(update, context, details)
     if screen_name == NAV_PHOTOS:
         page = entry.get("page")
-        return await _render_photos(
+        return await _show_photos(
             update, context, details, page=page if isinstance(page, int) else None
         )
     if screen_name == NAV_FIELDS:
@@ -4846,6 +4846,284 @@ async def _resume_current(
     return await _render_preview(update, context, details, notice=notice)
 
 
+def _photo_hint_button(key: str) -> InlineKeyboardButton:
+    """
+    Информационная кнопка фото-режима: подпись без действия.
+
+    Отдельного обработчика нет: callback `noop:0:0` закрывает спиннер и
+    ничего не меняет (§6, 2.5.3). Поле `disabled` PTB 22.8 не поддерживает,
+    поэтому кнопка выглядит обычной, а действие остаётся безвредным.
+    """
+    return InlineKeyboardButton(tr(key), callback_data="noop:0:0")
+
+
+def _photo_mode_keyboard(
+    details,
+    instance,
+    page: int,
+    *,
+    clear_confirm: bool = False,
+) -> InlineKeyboardMarkup:
+    """
+    Клавиатура фото-режима доставленного анонса (§6, 2.5.3).
+
+    Кнопки «📥 Добавить фото» больше нет: снимки принимаются обычным
+    сообщением, поэтому фото-режим только показывает состояние коллекции и
+    даёт удалить лишнее. Раскладка зависит от числа фото:
+
+    - 0 — информационная «📷 Пришлите фото» и «◀️ Назад»;
+    - 1 — «📷 Можно прислать ещё» и «🗑 Удалить фото» в одной строке;
+    - 2–10 — удаление конкретных снимков (по два в строке, 8 на страницу),
+      «🗑 Удалить все фото» с подтверждением и «◀️ Назад».
+    """
+    photos = list(details.photos)
+    total = len(photos)
+    editable = not _edit_blocked(details)
+    # «Назад» возвращает управление анонсу тем же протоколом, что и список
+    # текстовых полей: кнопка работает по id экземпляра и после рестарта,
+    # когда состояния диалога уже нет.
+    if instance is not None:
+        back = announcement_controls.field_callback(
+            announcement_controls.FIELD_ACTION_BACK, instance.id
+        )
+    else:
+        back = f"aw_edit:{details.draft_id}:{details.revision}"
+
+    if clear_confirm:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.wizard.da_udalit_vse"),
+                        callback_data=(
+                            f"aw_photo_clear_yes:{details.draft_id}:"
+                            f"{details.revision}"
+                        ),
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.admin.otmena_2"),
+                        callback_data=(
+                            f"aw_photos:{details.draft_id}:"
+                            f"{details.revision}:{page}"
+                        ),
+                    )
+                ],
+            ]
+        )
+
+    rows: list[list[InlineKeyboardButton]] = []
+    if total == 0:
+        rows.append([_photo_hint_button("wizard.photos.mode_empty")])
+    elif total == 1:
+        row = [_photo_hint_button("wizard.photos.mode_more")]
+        if editable:
+            row.append(
+                InlineKeyboardButton(
+                    tr("buttons.wizard.udalit_edinstvennoe_foto"),
+                    callback_data=(
+                        f"aw_photo_del:{details.draft_id}:{details.revision}:0"
+                    ),
+                )
+            )
+        rows.append(row)
+    else:
+        start = page * PHOTO_PAGE_SIZE
+        current: list[InlineKeyboardButton] = []
+        for offset in range(min(PHOTO_PAGE_SIZE, max(0, total - start))):
+            index = start + offset
+            current.append(
+                InlineKeyboardButton(
+                    tr("buttons.wizard.udalit_foto", value=index + 1),
+                    callback_data=(
+                        f"aw_photo_del:{details.draft_id}:"
+                        f"{details.revision}:{index}"
+                    ),
+                )
+            )
+            if len(current) == 2:
+                rows.append(current)
+                current = []
+        if current:
+            rows.append(current)
+        pages = max(1, (total + PHOTO_PAGE_SIZE - 1) // PHOTO_PAGE_SIZE)
+        nav = pagination.nav_buttons(
+            page,
+            pages,
+            f"aw_photos:{details.draft_id}:{details.revision}",
+            as_offset=False,
+        )
+        if nav:
+            rows.append(
+                [InlineKeyboardButton(label, callback_data=data) for label, data in nav]
+            )
+        if editable:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.wizard.udalit_vse_foto"),
+                        callback_data=(
+                            f"aw_photo_clear:{details.draft_id}:{details.revision}"
+                        ),
+                    )
+                ]
+            )
+    rows.append([InlineKeyboardButton(tr("buttons.nav.back"), callback_data=back)])
+    return InlineKeyboardMarkup(rows)
+
+
+async def _photo_mode_notice(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    notice: str,
+) -> None:
+    """
+    Короткое пояснение фото-режима без служебного экрана.
+
+    Кнопки пришли из callback — пояснение уходит ответом на нажатие. После
+    присланного снимка callback нет, и для 0–1 фото отдельное сообщение
+    создало бы второй интерфейс рядом с анонсом: пояснение пишется в журнал,
+    а факт принятия виден по обновлённому анонсу.
+    """
+    if getattr(update, "callback_query", None) is not None:
+        await _answer(update, _short(notice, 200))
+        return
+    logger.info("Фото-режим анонса: %s", _short(notice, 200))
+
+
+async def _render_photo_mode(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    *,
+    instance_id: int | None = None,
+    notice: str | None = None,
+    page: int = 0,
+    clear_confirm: bool = False,
+    answered: bool = False,
+) -> int:
+    """
+    Фото-режим доставленного анонса: правка ЕГО управления, не новый экран.
+
+    У 0–1 фото клавиатура ставится на само сообщение анонса
+    (`editMessageReplyMarkup`): текст и подпись не меняются. У 2–10 фото
+    правится текст единственной панели (`editMessageText`) — второй панели
+    и второго места управления не появляется (§18/§22/§6 2.5.3).
+
+    Активного экземпляра нет (анонс переиздан, запись удалена) — безопасный
+    откат на экран шага: показывать фото-режим несуществующего управления
+    нельзя.
+    """
+    ui = _ui(context)
+    _set_details(ui, details)
+    _clear_active(ui)
+    # Фото-режим продолжает принимать снимки обычным сообщением (H1/S4):
+    # без этого после рестарта снимок ушёл бы в подсказку меню.
+    ui["photo_step"] = True
+    total = len(details.photos)
+    pages = max(1, (total + PHOTO_PAGE_SIZE - 1) // PHOTO_PAGE_SIZE)
+    page = max(0, min(int(page or 0), pages - 1))
+    ui["photos_page"] = page
+    _nav_enter(ui, NAV_PHOTOS, page=page)
+    # §6: фото-режим — тоже приём ввода. Снимок продолжает анонс и после
+    # рестарта службы, поэтому «ждём фото» фиксируется в `user_states`
+    # вместе с ref экрана (отдельного экрана у режима нет).
+    _remember_resume(_user_id(update), ctx.data(context), ctx.chat(update).id, ui)
+
+    instance = _instance_for(details, instance_id)
+    if instance is None:
+        if notice and not answered:
+            await _answer(update, notice)
+        return await _render_photos(update, context, details, page=page)
+    keyboard = _photo_mode_keyboard(
+        details, instance, page, clear_confirm=clear_confirm
+    )
+    chat_id = ctx.chat(update).id
+    if delivery.needs_control_panel(total):
+        panel_id = instance.panel_message_id
+        if panel_id is None:
+            return AW_PREVIEW
+        text = (
+            tr("wizard.render_photos.udalit_vse_fotografii_etogo")
+            if clear_confirm
+            else announcement_controls.panel_text()
+        )
+        if notice and not answered:
+            # Панель — единственный текст управления: пояснение показывается
+            # в ней, отдельного сообщения не появляется.
+            text = f"{notice}\n\n{text}"
+        try:
+            await delivery.call_telegram(
+                lambda: context.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=int(panel_id),
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                    link_preview_options=announcement_controls.PANEL_LINK_PREVIEW,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — панель уже в чате
+            logger.info("Фото-режим не показан в панели #%s: %s", instance.id, exc)
+        return AW_PREVIEW
+    message_id = delivery.caption_message_id(instance.message_ids)
+    if message_id is None:
+        return AW_PREVIEW
+    try:
+        await delivery.call_telegram(
+            lambda: context.bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=int(message_id),
+                reply_markup=keyboard,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — клавиатура анонса не критична
+        logger.info("Фото-режим не показан у анонса #%s: %s", instance.id, exc)
+    if notice and not answered:
+        await _photo_mode_notice(update, context, notice)
+    return AW_PREVIEW
+
+
+async def _show_photos(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    *,
+    instance_id: int | None = None,
+    notice: str | None = None,
+    page: int | None = None,
+    clear_confirm: bool = False,
+    answered: bool = False,
+) -> int:
+    """
+    Показывает фотографии текущего анонса в правильном месте.
+
+    Доставленный анонс — фото-режим на его собственном управлении (§6,
+    2.5.3). Черновик до отправки — прежний экран шага: у живого блока
+    клавиатуры нет (§4), поэтому кнопки живут на служебном экране.
+    """
+    if details.publication_sent:
+        return await _render_photo_mode(
+            update,
+            context,
+            details,
+            instance_id=instance_id,
+            notice=notice,
+            page=page or 0,
+            clear_confirm=clear_confirm,
+            answered=answered,
+        )
+    return await _render_photos(
+        update,
+        context,
+        details,
+        notice=notice,
+        page=page,
+        clear_confirm=clear_confirm,
+    )
+
+
 async def _render_photos(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -4855,7 +5133,13 @@ async def _render_photos(
     page: int | None = None,
     clear_confirm: bool = False,
 ) -> int:
-    """Экран отдельной коллекции фото: просмотр списка, добавление, удаление."""
+    """
+    Экран шага фото ЧЕРНОВИКА: приём снимков, удаление лишних.
+
+    «📥 Добавить фото» здесь тоже нет: фото принимаются обычным сообщением,
+    о чём говорит текст экрана (§6, 2.5.3). Экран остаётся только до
+    отправки — у доставленного анонса кнопки живут на нём самом.
+    """
     ui = _ui(context)
     _set_details(ui, details)
     _clear_active(ui)
@@ -4942,13 +5226,6 @@ async def _render_photos(
                 tr("wizard.render_photos.fotografiy_poka_net_anons"),
             ]
         )
-    if details.publication_sent:
-        lines.extend(
-            [
-                "",
-                tr("wizard.render_photos.izmeneniya_primenyayutsya_srazu"),
-            ]
-        )
     if _edit_blocked(details):
         lines.extend(
             [
@@ -4957,27 +5234,20 @@ async def _render_photos(
             ]
         )
 
-    # §34–37: раскладка зависит от числа фото и пересчитывается после
-    # каждого изменения (экран рисуется заново, поэтому клавиатура всегда
-    # соответствует фактической коллекции). «🏠 В меню» здесь нет: выход с
-    # экрана фотографий — «◀️ Назад» к управлению текущим анонсом.
+    # §6 (2.5.3): кнопки «📥 Добавить фото» больше нет — снимки принимаются
+    # обычным сообщением, о чём говорит текст экрана. Раскладка зависит от
+    # числа фото и пересчитывается после каждого изменения. «🏠 В меню» здесь
+    # нет: выход с экрана фотографий — «◀️ Назад» к обзору черновика.
     editable = not _edit_blocked(details)
     rows: list[list[InlineKeyboardButton]] = []
-    add_button = InlineKeyboardButton(
-        tr("buttons.wizard.dobavit_foto"),
-        callback_data=f"aw_photo_add:{details.draft_id}:{details.revision}",
-    )
     if not editable:
         pass
-    elif total == 0:
-        # §35: ноль фото — только добавление. Кнопок удаления нет.
-        rows.append([add_button])
     elif total == 1:
-        # §36: одна фотография — добавление и удаление в одной строке;
+        # §36: одна фотография — удаление и подсказка в одной строке;
         # нумерованных удалений и «удалить все» быть не должно.
         rows.append(
             [
-                add_button,
+                _photo_hint_button("wizard.photos.mode_more"),
                 InlineKeyboardButton(
                     tr("buttons.wizard.udalit_edinstvennoe_foto"),
                     callback_data=(
@@ -4986,10 +5256,9 @@ async def _render_photos(
                 ),
             ]
         )
-    else:
-        # §37: две и более — добавление, удаление конкретных фото по две в
-        # строке и отдельное «удалить все» с подтверждением.
-        rows.append([add_button])
+    elif total > 1:
+        # §37: две и более — удаление конкретных фото по две в строке и
+        # отдельное «удалить все» с подтверждением.
         start = page * PHOTO_PAGE_SIZE
         current: list[InlineKeyboardButton] = []
         for offset in range(min(PHOTO_PAGE_SIZE, max(0, total - start))):
@@ -6826,7 +7095,7 @@ async def _add_photo_to_delivered(
     except (AnnouncementError, TemplateError, TemplateCompileError, BrickError) as exc:
         # Ввод остаётся в чате: пользователь видит, что именно не принято.
         screen.track_failed_input(user_data, f"aw-photo:{details.draft_id}", message)
-        return await _render_photos(
+        return await _show_photos(
             update,
             context,
             details,
@@ -6845,7 +7114,7 @@ async def _add_photo_to_delivered(
     if batch.changed or batch.duplicate:
         # Ввод удаляется только после подтверждённой доставки.
         await screen.drop_user_input(update, context)
-    return await _render_photos(
+    return await _show_photos(
         update,
         context,
         fresh or batch.details,
@@ -6896,7 +7165,7 @@ async def _close_photo_batch(
         if result.rejected:
             # Лимит 10: принятые снимки уже применены одной заменой, ввод
             # остаётся в чате — автор видит, что именно не принято.
-            return await _render_photos(
+            return await _show_photos(
                 update,
                 context,
                 fresh,
@@ -6904,7 +7173,7 @@ async def _close_photo_batch(
             )
         if result.changed or result.duplicate:
             await screen.cleanup_messages(context.bot, ctx.chat(update).id, inputs)
-        return await _render_photos(
+        return await _show_photos(
             update,
             context,
             fresh,
@@ -7899,7 +8168,7 @@ async def handle_preview_callback(
             return await _stale(update, context)
         _ui_data, details = guarded
         await _answer(update)
-        return await _render_photos(update, context, details, page=int(parts[3]))
+        return await _show_photos(update, context, details, page=int(parts[3]))
     if action == "aw_photo_back" and len(parts) == 3:
         # U2b: «Назад» с шага фото — к предыдущему шагу (последний кирпичик),
         # без потери уже сохранённых фото и значений. Механизм тот же, что у
@@ -8012,7 +8281,7 @@ async def handle_preview_callback(
                 )
         except AnnouncementError as exc:
             await _answer(update, str(exc), alert=True)
-            return await _render_photos(
+            return await _show_photos(
                 update,
                 context,
                 details,
@@ -8029,12 +8298,13 @@ async def handle_preview_callback(
         _set_details(_ui(context), updated)
         await _answer(update, tr("alerts.wizard.foto_udaleno"))
         await screen.cleanup_preview(context, ctx.chat(update).id, ctx.data(context))
-        return await _render_photos(
+        return await _show_photos(
             update,
             context,
             updated,
             notice=tr("wizard.handle_preview_callback.foto_udaleno_chtoby_zamenit"),
             page=index // PHOTO_PAGE_SIZE,
+            answered=True,
         )
     if action == "aw_photo_clear" and len(parts) == 3:
         guarded = _guided()
@@ -8047,7 +8317,7 @@ async def handle_preview_callback(
             )
             return await _render_publish_status(update, context, details)
         await _answer(update)
-        return await _render_photos(update, context, details, clear_confirm=True)
+        return await _show_photos(update, context, details, clear_confirm=True)
     if action == "aw_photo_clear_yes" and len(parts) == 3:
         guarded = _guided()
         if guarded is None:
@@ -8068,13 +8338,14 @@ async def handle_preview_callback(
                 )
         except AnnouncementError as exc:
             await _answer(update, str(exc), alert=True)
-            return await _render_photos(
+            return await _show_photos(
                 update,
                 context,
                 details,
                 notice=tr(
                     "wizard.handle_preview_callback.foto_udaleny", exc=_short(exc, 300)
                 ),
+                answered=True,
             )
         if updated.publication_sent:
             # H3: очистка коллекции применяется сразу, как и удаление одного
@@ -8084,11 +8355,12 @@ async def handle_preview_callback(
         _set_details(_ui(context), updated)
         await _answer(update, tr("alerts.wizard.vse_fotografii_udaleny"))
         await screen.cleanup_preview(context, ctx.chat(update).id, ctx.data(context))
-        return await _render_photos(
+        return await _show_photos(
             update,
             context,
             updated,
             notice=tr("wizard.handle_preview_callback.vse_fotografii_udaleny"),
+            answered=True,
         )
     if action == "aw_photo_show" and len(parts) == 3:
         guarded = _guided()
@@ -8100,11 +8372,12 @@ async def handle_preview_callback(
             return await _render_publish_status(update, context, details)
         await _answer(update)
         ok, notice = await _show_media_preview(update, context, details)
-        return await _render_photos(
+        return await _show_photos(
             update,
             context,
             details,
             notice=notice if ok else f"⚠️ {notice}",
+            answered=True,
         )
     if action == "aw_media_preview" and len(parts) == 3:
         guarded = _guided()

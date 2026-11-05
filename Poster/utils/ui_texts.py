@@ -156,6 +156,9 @@ DEFAULTS: dict[str, str] = {
     "wizard.date_rule.horizon": "в пределах {months} мес.",
     # --- конструктор: шаг фотографий ---------------------------------------
     "wizard.photos.title": "📷 Фотографии анонса",
+    # Фото-режим доставленного анонса (2.5.3 §6): информационные подписи.
+    "wizard.photos.mode_empty": "📷 Пришлите фото",
+    "wizard.photos.mode_more": "📷 Можно прислать ещё",
     "wizard.photos.hint": (
         "Пришлите фото или альбом. Всего можно добавить до {limit} фото."
     ),
@@ -1243,7 +1246,6 @@ DEFAULTS: dict[str, str] = {
     "buttons.wizard.bez_fotografiy": "🚫 Без фотографий",
     "buttons.wizard.chernovik_sohranen": "✅ Черновик сохранён",
     "buttons.wizard.da_udalit_vse": "🗑 Да, удалить все",
-    "buttons.wizard.dobavit_foto": "📥 Добавить фото",
     "buttons.wizard.dopolnitelnye_kirpichiki": "➕ Дополнительные поля",
     "buttons.wizard.fotografii": "📷 Фотографии ({count_photos})",
     "buttons.wizard.gotovo": "✅ Готово",
@@ -1621,7 +1623,6 @@ DEFAULTS: dict[str, str] = {
     "wizard.render_photos.dobavleno_foto_neobyazatelny": "Добавлено фото: {total}. Они необязательны, отправляются отдельными вложениями и не входят в шаблон.",
     "wizard.render_photos.foto_dobavleno": "{number}. Фото добавлено",
     "wizard.render_photos.fotografiy_poka_net_anons": "Фото пока нет. Анонс придёт без вложений.",
-    "wizard.render_photos.izmeneniya_primenyayutsya_srazu": "Каждое изменение сразу обновляет анонс в чате. Новая версия заменяет предыдущую.",
     "wizard.render_photos.mozhno_otpravit_odinochnye_snimki": "Отправляйте фото по одному или альбомами, можно несколько раз подряд. Фото с одинаковым идентификатором Telegram повторно не добавляются.",
     "wizard.render_photos.otpravka_nachata_kollekciya": "⚠️ Анонс уже отправляется. Пока добавлять и удалять фото нельзя.",
     "wizard.render_photos.stranica": "Страница {value} из {pages}:",

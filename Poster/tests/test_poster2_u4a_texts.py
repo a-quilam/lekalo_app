@@ -631,6 +631,14 @@ class DeadKeyScreenTests(_TempCatalog):
         await _start_to_template(h, _place_id)
         await _choose_personal(h, template_id)
         await h.text("Значение")
+        # Экран шага фото ЧЕРНОВИКА (§6, 2.5.3): он существует до отправки, и
+        # его заголовок берётся из каталога (`wizard.photos.title`), а выход —
+        # «◀️ Назад» из `buttons.nav.back`, не литерал.
+        self.assertTrue(
+            h.screen_text().startswith(ui_texts.DEFAULTS["wizard.photos.title"]),
+            h.screen_text(),
+        )
+        self.assertIn("НАЗАД-КАТАЛОГ", [label for label, _ in h.screen_buttons()])
         await h.callback(_callback(h, "aw_photo_none"))
         # 2.5.2 §2: после доставки служебного экрана нет — категории правки
         # открываются кнопкой «📝 Данные» на самом анонсе.
@@ -647,21 +655,25 @@ class DeadKeyScreenTests(_TempCatalog):
             "МЕНЮ-КАТАЛОГ", [label for label, _ in h.live_buttons()], h.live_buttons()
         )
 
-        # Экран правки фотографий — тот же ключ заголовка, что шаг фото.
-        # §34–37: на экране фото выход — «◀️ Назад», а не «В меню»;
-        # подпись тоже берётся из каталога (`buttons.nav.back`), не литерал.
+        # Фото-режим доставленного анонса (§6, 2.5.3) — клавиатура самого
+        # анонса; выход из него тоже подписан из каталога (`buttons.nav.back`).
         photos_control = h.control_callback("photos")
         self.assertIsNotNone(photos_control, "у анонса нет кнопки «Фото»")
         assert photos_control is not None
         await h.callback(photos_control)
-        self.assertTrue(
-            h.screen_text().startswith(ui_texts.DEFAULTS["wizard.photos.title"])
-        )
-        self.assertIn("НАЗАД-КАТАЛОГ", [label for label, _ in h.screen_buttons()])
+        self.assertIsNone(h.screen_message_id(), "у фото-режима нет экрана")
+        mode_labels = [label for label, _ in h.live_buttons()]
+        self.assertIn("НАЗАД-КАТАЛОГ", mode_labels)
+        self.assertNotIn("МЕНЮ-КАТАЛОГ", mode_labels)
 
     @scenario_test
     async def test_photos_edit_screen_title_follows_catalog(self, h: Harness) -> None:
-        """U4a-fix D3: заголовок экрана правки фото — из каталога, не литерал."""
+        """U4a-fix D3: заголовок шага фотографий — из каталога, не литерал.
+
+        2.5.3 §6: у ДОСТАВЛЕННОГО анонса фото-режим — клавиатура самого
+        анонса, текста у него нет. Заголовок `wizard.photos.title` остаётся
+        у экрана шага фото ЧЕРНОВИКА, и он обязан приходить из каталога.
+        """
         from tests.test_stage27b_announcement_ui import (
             _callback,
             _choose_personal,
@@ -679,13 +691,23 @@ class DeadKeyScreenTests(_TempCatalog):
         await _start_to_template(h, place_id)
         await _choose_personal(h, template_id)
         await h.text("Значение")
+        self.assertTrue(h.screen_text().startswith("📷 СНИМКИ-ПРАВКА"), h.screen_text())
         await h.callback(_callback(h, "aw_photo_none"))
-        # 2.5.2 §2: экран правки фото открывается управлением самого анонса.
+        # 2.5.3 §6: фото-режим доставленного анонса — не экран и не текст:
+        # подменённый заголовок в чате больше не всплывает.
         photos_control = h.control_callback("photos")
         self.assertIsNotNone(photos_control, "у анонса нет кнопки «Фото»")
         assert photos_control is not None
         await h.callback(photos_control)
-        self.assertTrue(h.screen_text().startswith("📷 СНИМКИ-ПРАВКА"))
+        self.assertIsNone(h.screen_message_id(), "у фото-режима нет экрана")
+        self.assertNotIn("📷 СНИМКИ-ПРАВКА", " ".join(h.screen_texts()))
+        self.assertTrue(
+            any(
+                (data or "").startswith(("noop:", "aw_photo_"))
+                for _label, data in h.live_buttons()
+            ),
+            f"фото-режим не показан: {h.live_buttons()}",
+        )
 
 
 if __name__ == "__main__":

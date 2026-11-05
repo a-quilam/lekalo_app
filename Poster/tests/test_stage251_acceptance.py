@@ -509,28 +509,30 @@ class PhotoGridAcceptanceTests(unittest.TestCase):
 
         # 2.5.2 §2: после публикации служебного экрана нет — коллекция фото
         # открывается управлением самого анонса (`anp_photos`).
+        # 2.5.3 §6: фото-режим — клавиатура панели альбома, отдельного экрана
+        # больше нет, поэтому раскладка читается из живых кнопок чата.
         photos_control = h.control_callback("photos")
         self.assertIsNotNone(photos_control, "у анонса нет кнопки «Фото»")
         assert photos_control is not None
         await h.callback(photos_control)
-        self.assertIn("Страница 1 из 1", h.screen_text())
+        self.assertIsNone(h.screen_message_id(), "служебного экрана нет")
         self.assertEqual(
-            len(_callbacks(h, "aw_photo_del:")),
+            len(h.live_callbacks("aw_photo_del:")),
             8,
             "все восемь фото на одной странице",
         )
         self.assertEqual(
-            [
-                data
-                for _label, data in h.screen_buttons()
-                if (data or "").startswith("aw_photos:")
-            ],
+            h.live_callbacks("aw_photos:"),
             [],
             "на восьми фото навигации по страницам нет",
         )
-        labels = [label for label, _data in h.screen_buttons()]
+        labels = [label for label, _data in h.live_buttons()]
         self.assertNotIn("▶️", labels)
-        self.assertNotIn("◀️", labels)
+        self.assertTrue(
+            not any(label == "◀️" for label in labels),
+            f"стрелки страниц нет: {labels}",
+        )
+        self.assertIn("◀️ Назад", labels, "выход из фото-режима на месте")
 
 
 class ConditionalSnapshotAcceptanceTests(TemplateDatabaseTestCase):

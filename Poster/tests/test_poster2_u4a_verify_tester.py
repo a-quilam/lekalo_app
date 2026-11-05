@@ -577,6 +577,12 @@ class CompletenessTests(_Case):
         await _start_to_template(h, place_id)
         await _choose_personal(h, template_id)
         await h.text("Значение")
+        # Экран шага фото черновика: заголовок и «◀️ Назад» — из каталога.
+        self.assertTrue(
+            h.screen_text().startswith(ui_texts.DEFAULTS["wizard.photos.title"]),
+            h.screen_text(),
+        )
+        self.assertIn("НАЗАД-КАТАЛОГ", [label for label, _ in h.screen_buttons()])
         await h.callback(_callback(h, "aw_photo_none"))
 
         # 2.5.2 §2 / 2.5.3 §5: после доставки служебного экрана нет —
@@ -597,7 +603,11 @@ class CompletenessTests(_Case):
         self.assertIsNotNone(photos_control, "у анонса нет кнопки «Фото»")
         assert photos_control is not None
         await h.callback(photos_control)
-        collected = [label for label, _data in h.screen_buttons()]
+        # 2.5.3 §6: у доставленного анонса фото-режим — клавиатура самого
+        # анонса (или его панели); экрана нет, поэтому подпись «Назад»
+        # проверяется в фактических кнопках чата.
+        self.assertIsNone(h.screen_message_id(), "у фото-режима нет экрана")
+        collected = [label for label, _data in h.live_buttons()]
         self.assertIn("НАЗАД-КАТАЛОГ", collected)
         self.assertNotIn("МЕНЮ-КАТАЛОГ", collected)
 

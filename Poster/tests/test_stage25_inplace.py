@@ -45,7 +45,6 @@ try:
         _stored,
     )
     from tests.test_stage27b_announcement_ui import (
-        _callback,
         _latest_draft,
         _open_control,
         _open_field_question,
@@ -56,8 +55,40 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
     INTEGRATION_IMPORT_ERROR = str(exc)
 
 
-PHOTO_STEP_TITLE = "📷 Фотографии анонса"
 UPDATED_TEXT = "Обновлённое"
+
+# 2.5.3 §6: отдельного экрана «📷 Фотографии анонса» больше нет — фото-режим
+# живёт на клавиатуре самого анонса (0–1 фото) или его единственной панели
+# (2–10). Признак открытого режима — живые кнопки чата.
+PHOTO_MODE_HINT = "noop:0:0"
+
+
+def _photo_mode_callbacks(h) -> list[str]:
+    """`callback_data` живых кнопок фото-режима (§6)."""
+    return [data or "" for _label, data in h.live_buttons()]
+
+
+def _photo_mode_open(h) -> bool:
+    """Открыт ли фото-режим: «◀️ Назад» (`anf_back:`) и подсказка/удаление."""
+    callbacks = _photo_mode_callbacks(h)
+    has_back = any(data.startswith("anf_back:") for data in callbacks)
+    has_photo = any(
+        data == PHOTO_MODE_HINT
+        or data.startswith("aw_photo_del:")
+        or data.startswith("aw_photo_clear:")
+        for data in callbacks
+    )
+    return has_back and has_photo
+
+
+def _live_button(h, prefix: str, suffix: str | None = None) -> str:
+    """Callback живой кнопки чата (не служебного экрана)."""
+    for data in h.live_callbacks(prefix):
+        if suffix is None or data.endswith(suffix):
+            return data
+    raise AssertionError(
+        f"нет живой кнопки {prefix!r}{suffix or ''}: {h.live_buttons()}"
+    )
 
 
 # --- помощники -------------------------------------------------------------
@@ -312,8 +343,8 @@ class PhotoCountChangeTests(unittest.TestCase):
         открытого экрана — сообщение уже удалено.
         """
         await _open_control(h, "photos")
-        if PHOTO_STEP_TITLE not in h.screen_text():
-            raise AssertionError(f"Не коллекция фото: {h.screen_text()}")
+        if not _photo_mode_open(h):
+            raise AssertionError(f"Не фото-режим: {h.live_buttons()}")
 
     async def _add_photo(self, h, file_id: str) -> None:
         """Коллекция фото доставленного анонса: одно фото применяется сразу."""
@@ -322,7 +353,7 @@ class PhotoCountChangeTests(unittest.TestCase):
 
     async def _delete_photo(self, h, index: int = 0) -> None:
         await self._open_photo_collection(h)
-        await h.callback(_callback(h, "aw_photo_del", f":{index}"))
+        await h.callback(_live_button(h, "aw_photo_del", f":{index}"))
 
     @scenario_test
     async def test_zero_to_one_photo_replaces_instance(self, h) -> None:
@@ -454,8 +485,8 @@ class PhotoCountChangeTests(unittest.TestCase):
         groups_before = len(_content_calls(h, "media_group"))
 
         await _open_control(h, "photos")
-        await h.callback(_callback(h, "aw_photo_clear"))
-        await h.callback(_callback(h, "aw_photo_clear_yes"))
+        await h.callback(_live_button(h, "aw_photo_clear"))
+        await h.callback(_live_button(h, "aw_photo_clear_yes"))
 
         active = _only_active(h, draft.id)
         self.assertNotEqual(active.id, first.id)
@@ -516,7 +547,7 @@ class StructureChangeFailureTests(unittest.TestCase):
 
     async def _add_photo_unchecked(self, h, file_id: str) -> None:
         """Добавляет фото в доставленный анонс (сбой доставки гасит ошибка)."""
-        if PHOTO_STEP_TITLE not in h.screen_text():
+        if not _photo_mode_open(h):
             await _open_control(h, "photos")
         await h.photo(file_id)
 

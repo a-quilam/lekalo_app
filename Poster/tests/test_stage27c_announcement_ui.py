@@ -43,6 +43,7 @@ try:
         _choose_personal,
         _draft_by_id,
         _latest_draft,
+        _live_callback,
         _no_photos,
         _open_control,
         _open_edit,
@@ -111,15 +112,63 @@ async def _standard_delivered(h):
 
 async def _open_photos(h) -> None:
     """
-    Открывает коллекцию фото доставленного анонса.
+    Открывает фото-режим доставленного анонса.
 
-    2.5.2 §2: после публикации служебного экрана в чате нет — управление
-    живёт на самом анонсе (`anp_photos`). Если открыт список текстовых полей
-    (2.5.3 §5), сначала возвращаем управление «◀️ Назад».
+    2.5.3 §6: отдельного экрана «📷 Фотографии анонса» больше нет — режим
+    живёт на самом управлении: у 0–1 фото это клавиатура сообщения анонса
+    (`editMessageReplyMarkup`), у 2–10 — единственная панель медиагруппы.
+    Поэтому признак открытого режима — живые кнопки чата: «◀️ Назад» списка
+    полей (`anf_back:{instance_id}`) плюс либо информационная подсказка
+    (`noop:0:0`), либо удаление снимков (`aw_photo_del:`/`aw_photo_clear:`).
     """
     await _open_control(h, "photos")
-    if "Фотографии анонса" not in h.screen_text():
-        raise AssertionError(f"Не экран фотографий: {h.screen_text()}")
+    _assert_photo_mode(h)
+
+
+def _assert_photo_mode(h) -> None:
+    """Проверяет, что открыт именно фото-режим (§6), а не управление/поля."""
+    callbacks = [data or "" for _label, data in h.live_buttons()]
+    if not any(data.startswith("anf_back:") for data in callbacks):
+        raise AssertionError(f"Нет «◀️ Назад» фото-режима: {h.live_buttons()}")
+    if not any(
+        data == "noop:0:0"
+        or data.startswith("aw_photo_del:")
+        or data.startswith("aw_photo_clear:")
+        for data in callbacks
+    ):
+        raise AssertionError(f"Фото-режим не показан: {h.live_buttons()}")
+
+
+def _photo_mode_text(h) -> str:
+    """
+    Текст фото-режима: пояснение панели медиагруппы (§6, 2.5.3).
+
+    У 0–1 фото текста нет вовсе (правится только клавиатура анонса), и
+    короткие пояснения уходят ответом на нажатие. Для 2–10 фото все
+    уведомления видны в единственной панели.
+    """
+    from tests.integration_harness import is_panel_record
+
+    texts = [
+        call.get("text") or ""
+        for call in h.calls
+        if call["type"] == "edit_message" and is_panel_record(call)
+    ]
+    return texts[-1] if texts else ""
+
+
+def _photo_mode_notice(h) -> str:
+    """
+    Всё, чем фото-режим объясняет себя автору (§6, 2.5.3).
+
+    Для 2–10 фото это текст панели, для 0–1 — короткий ответ на нажатие
+    (`answerCallbackQuery`): служебного сообщения в чате не появляется.
+    """
+    answers = [
+        str(call["args"][0]) if call["args"] else str(call.get("text") or "")
+        for call in h.answers()
+    ]
+    return "\n".join([_photo_mode_text(h), *answers])
 
 
 def _post_types(h, types: set[str]) -> list[dict]:
@@ -272,7 +321,9 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
         # Удаление одного фото и добавление нового — замена без фото-кирпичиков.
         await _open_photos(h)
         before_delete = _stored(h, draft.id)
-        await h.callback(_callback(h, "aw_photo_del"))
+        # 2.5.3 §6: кнопки удаления живут на управлении анонса/панели, а не
+        # на служебном экране.
+        await h.callback(_live_callback(h, "aw_photo_del:"))
         after_delete = _draft_by_id(h, draft.id)
         self.assertEqual(tuple(json.loads(after_delete.photos)), ("photo-2",))
         # H3: удаление тоже применено сразу, прошлая версия заменена.
@@ -400,9 +451,9 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
             tuple(json.loads(stored.photos)),
             tuple(f"group-photo-{index}" for index in range(10)),
         )
-        # Отказ объяснён на экране, а принятые фото не потеряны.
-        self.assertIn("больше добавить нельзя", h.screen_text())
-        self.assertIn("1", h.screen_text())
+        # Отказ объяснён, а принятые фото не потеряны.
+        self.assertIn("больше добавить нельзя", _photo_mode_notice(h))
+        self.assertIn("1", _photo_mode_notice(h))
         # Сообщение, которым прислали 11-е фото, не удалено: автор видит,
         # что именно не принято.
         self.assertNotIn(update.message.message_id, h.deleted_ids())
