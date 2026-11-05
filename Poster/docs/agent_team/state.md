@@ -1,6 +1,45 @@
 # State — Poster
 
-## 2026-11-05 — Poster 2.5.3: E5 закрыт, приёмка и ревизия пройдены (poster-manager)
+## 2026-11-05 — Poster 2.5.3: РЕЛИЗ ЗАВЕРШЁН (poster-manager)
+
+Push: `f8fd26d..2efefcd` (10 коммитов релиза, список ниже), CI
+run 42065591768 — success (make check, Python 3.13 + 3.14).
+
+Коммиты: 42ab56c, 2d35182 (E1 условные части), 7fedaaa, 2ab2e62 (E2 текстовые
+поля), 4d36131 (E3 фото), bb470d0 (E4 длинный текст), 2841241 (R1–R3 +
+гигиена), e08f964 (приёмка J–L/E4-confirm), e0c827e (mypy), 2efefcd (чек-пойнт).
+
+Релизный цикл (19:43 MSK 2026-11-05):
+- `make db-maintain-clean`: integrity ok → проверенный бэкап
+  `post_bot.db.backup-20261105T164315649483Z-p1238927` → rebuild → миграции
+  1..28, bricks=10 системных → атомарная замена, прежняя база
+  `post_bot.db.replaced-20261105T164316050482Z`; user_counts_after: все 0,
+  кроме bricks=10; integrity_after ok, smoke ok.
+- Независимая пост-проверка `make db-maintain-report`: ok, второй проверенный
+  бэкап `post_bot.db.backup-20261105T164320266925Z-p1238940`.
+- Служба `poster-bot.service`: stop → clean → start; active (running),
+  MainPID 1238967, NRestarts=0, «Application started» 19:43:26;
+  после старта ERROR/Traceback: 0; polling жив (25 ESTAB на :443).
+  Единственные ошибки в журнале 19:43:11 — штатный graceful shutdown
+  СТАРОГО процесса при stop (suppressing error, ожидаемо).
+- За владельцем: живая визуальная приёмка в Telegram (сценарии §9 2.5.3,
+  прежде всего 0/1/2+ фото на анонсе, текстовые поля, длинный текст).
+
+Итог по приёмке 2.5.3: тесты A–L закрыты (E1: A–C; E2: D, K; E3: E–F;
+E4: G–I; R1–R3: тесты minors; финал: J, K, E4-confirm, L —
+tests/test_stage253_acceptance_final.py). Reviewer APPROVED.
+
+Показатели 2.5.3 (полные): вызовы Dev 11 / Tester 4 / Reviewer 1;
+повторы из-за steps: Tester 3, Dev 4; HTTP 502 — 1 (восстановлено без потерь);
+permission.rejected 2 (edit — запрещено роли, обошёл ролью Developer;
+edit внешнего каталога — работа из Poster/); дефектов продукта найдено и
+закрыто 6; make check — 1 полный прогон на границе + CI.
+
+Остатки (не блокируют релиз): MINOR-2 Reviewer — мёртвый фолбэк aw_edit в
+_photo_mode_keyboard (гигиена следующего релиза); визуальная приёмка
+владельца в Telegram.
+
+## 2026-11-05 (архив) — Poster 2.5.3: E5 закрыт, приёмка и ревизия пройдены (poster-manager)
 
 HEAD e0c827e. Полный список коммитов релиза (f8fd26d..HEAD):
 42ab56c, 2d35182 (E1), 7fedaaa, 2ab2e62 (E2), 4d36131 (E3), bb470d0 (E4),
