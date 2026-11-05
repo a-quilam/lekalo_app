@@ -192,7 +192,9 @@ def _live_button(h, prefix: str, suffix: str | None = None) -> str:
             and (suffix is None or data.endswith(suffix))
         ):
             return data
-    raise AssertionError(f"нет живой кнопки {prefix!r}{suffix or ''}: {h.live_buttons()}")
+    raise AssertionError(
+        f"нет живой кнопки {prefix!r}{suffix or ''}: {h.live_buttons()}"
+    )
 
 
 def _control_photos(h) -> str:
@@ -819,7 +821,9 @@ class StaleAfterRestartTests(unittest.TestCase):
         self.assertEqual(_only_active(h, draft.id).id, active.id)
         layout = _photo_layout(h, active)
         self.assertTrue(layout, f"фото-режим не открылся: {h.live_buttons()}")
-        self.assertNotIn(REMOVED_PHOTO_ADD, _all_labels(layout), "кнопки добавления нет")
+        self.assertNotIn(
+            REMOVED_PHOTO_ADD, _all_labels(layout), "кнопки добавления нет"
+        )
         self.assertEqual(layout[-1], [BACK], "выход из режима — «◀️ Назад»")
         self.assertNotIn(READY_SCREEN, " ".join(_outgoing_texts(h)))
 

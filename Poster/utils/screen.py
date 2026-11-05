@@ -230,8 +230,15 @@ async def cleanup_messages(bot, chat_id: int, message_ids: list[int]) -> None:
     Удаляет сообщения best-effort: ошибки Telegram (уже удалено, слишком
     старое, запрет в чате) логируются и не прерывают сценарий — данные
     уже сохранены, диалог не должен ломаться из-за очистки.
+
+    Неположительный `message_id` (0/минус) — не адрес сообщения, а признак
+    «id ещё не получен»: Telegram API отвечает на такой запрос Bad Request,
+    поэтому он пропускается без обращения к сети.
     """
     for message_id in message_ids:
+        if int(message_id) <= 0:
+            logger.debug("Сообщение %s не удаляем: id не настоящий.", message_id)
+            continue
         try:
             await bot.delete_message(chat_id, message_id)
         except TelegramError as e:

@@ -148,7 +148,7 @@ async def _delivered_personal(h, *, fields: int, photos: int = 0):
     `photos` — 0 («Без фотографий»), 1 (одно фото) или 2 (альбом).
     """
     place_id, _alias_id = _seed_place(h)
-    specs = [
+    specs: list[tuple[str, str, str, dict[str, object]]] = [
         (f"f{index}", f"Поле {index}", "short_text", {}) for index in range(fields)
     ]
     content = "\n".join(f"Строка {index}: [f{index}]" for index in range(fields))

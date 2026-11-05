@@ -1127,10 +1127,10 @@ class Harness:
                 "edit_caption",
                 "edit_media",
             }:
-                message_id = call.get("message_id")
-                if message_id is None or int(message_id) in deleted:
+                edited_id = call.get("message_id")
+                if edited_id is None or int(edited_id) in deleted:
                     continue
-                latest[int(message_id)] = call.get("reply_markup")
+                latest[int(edited_id)] = call.get("reply_markup")
         out: list[tuple[str, str | None]] = []
         for message_id in sorted(latest):
             out.extend(inline_buttons(latest[message_id]))

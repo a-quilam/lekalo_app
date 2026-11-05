@@ -900,22 +900,31 @@ def _delete_personal_template(
     telegram_user_id: int,
     template_id: int,
     expected_revision: int,
-) -> str:
+) -> tuple[str, TemplateDetails | None]:
     """
     Удаляет личный шаблон без истории версий/снимков/анонсов.
 
-    Возвращает исход: `deleted`, `stale`, `blocked`, `not_found`.
+    Возвращает исход (`deleted`, `stale`, `blocked`, `not_found`) и свежий
+    шаблон для отрисовки карточки (None — строки уже нет). Загрузка одна:
+    после `rollback()` объект перечитывается здесь, а вызывающий слой не
+    делает второй запрос.
     Вся проверка и удаление — в одной транзакции: чужая правка, снимок или
     анонс не дают удалить шаблон по устаревшему экрану.
     """
-    template = get_personal_template(session, telegram_user_id, template_id)
+
+    def reload() -> TemplateDetails | None:
+        # rollback() истёк загруженный объект: карточке нужны актуальные
+        # данные, а удалённая строка не должна давать ObjectDeletedError.
+        return get_personal_template(session, telegram_user_id, template_id)
+
+    template = reload()
     if template is None:
-        return "not_found"
+        return "not_found", None
     if template.revision != expected_revision:
-        return "stale"
+        return "stale", template
     snapshots, drafts = _template_usage(session, template_id)
     if snapshots or drafts:
-        return "blocked"
+        return "blocked", template
     try:
         result = session.execute(
             delete(Template).where(
@@ -926,16 +935,16 @@ def _delete_personal_template(
         )
     except IntegrityError:
         session.rollback()
-        return "blocked"
+        return "blocked", reload()
     if getattr(result, "rowcount", 0) != 1:
         session.rollback()
-        return "stale"
+        return "stale", reload()
     try:
         session.commit()
     except IntegrityError:
         session.rollback()
-        return "blocked"
-    return "deleted"
+        return "blocked", reload()
+    return "deleted", None
 
 
 def _text_edit_content(
@@ -2446,7 +2455,7 @@ async def handle_delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     text = ""
     keyboard: InlineKeyboardMarkup | None = None
     try:
-        outcome = _delete_personal_template(
+        outcome, template = _delete_personal_template(
             session,
             telegram_user_id=telegram_user_id,
             template_id=template_id,
@@ -2457,54 +2466,42 @@ async def handle_delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # в состоянии сохраняется новая последняя, а не пустая.
         templates = list_personal_templates(session, telegram_user_id)
         page = pagination.clamp_page(page, len(templates))
-        if outcome == "deleted":
+        if outcome in ("deleted", "not_found") or template is None:
             new_state = _new_hub(page)
             text, keyboard = _hub_content(templates, page)
-            notice = tr("templates.handle_delete_yes.shablon_udalen")
-        elif outcome == "not_found":
-            new_state = _new_hub(page)
-            text, keyboard = _hub_content(templates, page)
-            notice = tr("templates.handle_delete_yes.shablon_udalen_2")
+            notice = tr(
+                (
+                    "templates.handle_delete_yes.shablon_udalen"
+                    if outcome == "deleted"
+                    else "templates.handle_delete_yes.shablon_udalen_2"
+                )
+            )
         elif outcome == "stale":
-            template = get_personal_template(session, telegram_user_id, template_id)
-            if template is None:
-                new_state = _new_hub(page)
-                templates = list_personal_templates(session, telegram_user_id)
-                text, keyboard = _hub_content(templates, page)
-                notice = tr("templates.handle_delete_yes.shablon_udalen_2")
-            else:
-                new_state = _card_state(
-                    template,
-                    origin=_template_origin(template),
-                    page=page,
-                )
-                text, keyboard = _card_content(
-                    template,
-                    place_name=_place_name(session, template.place_id),
-                    session=session,
-                    telegram_user_id=telegram_user_id,
-                )
-                notice = tr("templates.handle_delete_yes.udalenie_vypolneno_shablon")
+            new_state = _card_state(
+                template,
+                origin=_template_origin(template),
+                page=page,
+            )
+            text, keyboard = _card_content(
+                template,
+                place_name=_place_name(session, template.place_id),
+                session=session,
+                telegram_user_id=telegram_user_id,
+            )
+            notice = tr("templates.handle_delete_yes.udalenie_vypolneno_shablon")
         else:  # blocked
-            template = get_personal_template(session, telegram_user_id, template_id)
-            if template is None:
-                new_state = _new_hub(page)
-                templates = list_personal_templates(session, telegram_user_id)
-                text, keyboard = _hub_content(templates, page)
-                notice = tr("templates.handle_delete_yes.shablon_udalen_2")
-            else:
-                new_state = _card_state(
-                    template,
-                    origin=_template_origin(template),
-                    page=page,
-                )
-                text, keyboard = _card_content(
-                    template,
-                    place_name=_place_name(session, template.place_id),
-                    session=session,
-                    telegram_user_id=telegram_user_id,
-                )
-                notice = DELETE_BLOCKED_TEXT
+            new_state = _card_state(
+                template,
+                origin=_template_origin(template),
+                page=page,
+            )
+            text, keyboard = _card_content(
+                template,
+                place_name=_place_name(session, template.place_id),
+                session=session,
+                telegram_user_id=telegram_user_id,
+            )
+            notice = DELETE_BLOCKED_TEXT
     except Exception as exc:  # noqa: BLE001
         logger.exception("Не удалось удалить шаблон: %s", exc)
         alert = tr("templates.handle_delete_yes.ne_udalos_udalit_shablon")

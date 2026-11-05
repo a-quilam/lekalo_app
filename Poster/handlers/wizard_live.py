@@ -286,6 +286,10 @@ async def _edit_caption(
 async def _delete_old(bot: "Bot", chat_id: int, old_ids: tuple[int, ...]) -> None:
     """Удаляет прошлую версию блока best-effort (только после успеха новой)."""
     for message_id in old_ids:
+        if int(message_id) <= 0:
+            # 0/минус — не адрес сообщения: Telegram API ответит Bad Request.
+            logger.debug("Прошлая версия блока (%s): id не настоящий.", message_id)
+            continue
         try:
             await bot.delete_message(chat_id, message_id)
         except Exception as exc:  # noqa: BLE001 — удаление не сбой доставки

@@ -345,6 +345,7 @@ class PanelRoutingTests(PanelTestMixin, unittest.TestCase):
             self.assertIsNotNone(
                 creator, f"{action}: удалено чужое сообщение {message_id}"
             )
+            assert creator is not None  # для типов: assertIsNotNone не сужает
             self.assertTrue(
                 is_screen_record(creator),
                 f"{action}: удалено не служебное сообщение ({message_id})",

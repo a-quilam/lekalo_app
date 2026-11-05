@@ -428,9 +428,7 @@ class SnapshotRulesFreezeTests(TemplateDatabaseTestCase):
             extended_content=CONTENT_V1,
         )
         self.assertTrue(updated.ok, updated.message)
-        self.assertEqual(
-            self._add_rule(section="extended_content").status, "created"
-        )
+        self.assertEqual(self._add_rule(section="extended_content").status, "created")
         updated = update_template_content(
             self.session,
             actor_telegram_user_id=OWNER_TG,

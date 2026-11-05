@@ -44,6 +44,7 @@ try:
     import announcement_controls as controls
     from announcement_store import (
         FIELD_STATUS_KNOWN,
+        AnnouncementFieldState,
         build_announcement_fields,
         set_announcement_stage,
     )
@@ -120,11 +121,7 @@ def _texts_since(h, index: int) -> list[str]:
 
 
 def _answers_since(h, index: int) -> list[dict]:
-    return [
-        call
-        for call in h.calls[index:]
-        if call["type"] == "callback_answer"
-    ]
+    return [call for call in h.calls[index:] if call["type"] == "callback_answer"]
 
 
 def _field_buttons(h) -> list[tuple[str, str]]:
@@ -151,7 +148,7 @@ async def _open_field_list(h, instance_id: int) -> None:
 async def _delivered_personal(h, *, fields: int, photos: int, extended: bool = False):
     """Личный шаблон с `fields` полями → вопросы → шаг фото → доставка."""
     place_id, _alias = _seed_place(h)
-    specs = [
+    specs: list[tuple[str, str, str, dict[str, object]]] = [
         (f"f{index}", f"Поле {index}", "short_text", {}) for index in range(fields)
     ]
     content = "\n".join(f"Строка {index}: [f{index}]" for index in range(fields))
@@ -245,7 +242,7 @@ def _value_rows(h, draft_id: int) -> list[tuple[int, str, str | None]]:
     return [(int(row[0]), str(row[1]), row[2]) for row in rows]
 
 
-def _field_map(h, draft_id: int) -> dict[str, object]:
+def _field_map(h, draft_id: int) -> dict[str, AnnouncementFieldState]:
     """Поля анонса по коду кирпичика (для проверки «поле есть в анонсе»)."""
     with h.session_factory() as session:
         fields = build_announcement_fields(
@@ -460,7 +457,9 @@ class TextFieldsOnAnnouncementAcceptanceTests(unittest.TestCase):
         # Сразу видно в чате и совпадает с сохранённым текстом.
         stored = _stored(h, draft.id)
         self.assertIn(NEW_VALUE, stored.publication_text)
-        self.assertEqual(h.bot.content_text(h.chat_id, message_id), stored.publication_text)
+        self.assertEqual(
+            h.bot.content_text(h.chat_id, message_id), stored.publication_text
+        )
 
         # Рестарт службы: сообщение чата и значение остаются.
         await h.restart()
@@ -629,7 +628,9 @@ class TextFieldsOnAnnouncementAcceptanceTests(unittest.TestCase):
         self.assertTrue(description_rows, "текстовое поле не записалось")
         self.assertIn(DESCRIPTION_VALUE, description_rows[0][2] or "")
         self.assertIn(DESCRIPTION_VALUE, _stored(h, draft.id).publication_text or "")
-        address_after = [row for row in _value_rows(h, draft.id) if row[0] == address_id]
+        address_after = [
+            row for row in _value_rows(h, draft.id) if row[0] == address_id
+        ]
         self.assertIsNone(address_after[0][2], "адрес всё ещё без значения")
 
     @scenario_test
@@ -646,9 +647,7 @@ class TextFieldsOnAnnouncementAcceptanceTests(unittest.TestCase):
         await _open_field_list(h, active.id)
         _assert_field_list(h)
         description_data = next(
-            data
-            for label, data in _field_buttons(h)
-            if "Описание" in label
+            data for label, data in _field_buttons(h) if "Описание" in label
         )
         created_before = _created_count(h)
         await h.callback(description_data)

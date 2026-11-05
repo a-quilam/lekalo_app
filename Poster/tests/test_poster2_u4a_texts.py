@@ -513,7 +513,7 @@ class CatalogScreenTests(_TempCatalog):
         self.assertEqual(ui_texts.tr("buttons.finished.data"), "📝 Данные-каталог")
         # Тело списка полей собирается из строк каталога, а не из литералов.
         self.assertEqual(
-            announcement_wizard._field_list_text([object()]),
+            announcement_wizard._field_list_text([mock.Mock()]),
             "📝 Поля-каталог\n\nВыберите поле-каталог.",
         )
         # Ключей удалённого экрана завершения в каталоге больше нет.

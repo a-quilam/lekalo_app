@@ -3658,15 +3658,16 @@ def _draft_extras_available(draft_id: int) -> bool:
     Тот же предикат по id черновика — для управления готовым анонсом.
 
     Панель и клавиатура экземпляра живут вне диалога (`anp_`), поэтому
-    детали черновика читаются из БД. Сбой чтения не должен отнимать
-    управление: возвращаем True, и кнопка остаётся как прежде.
+    детали черновика читаются из БД. Сбой чтения закрывает кнопку: экран
+    без доступных определений был бы пустым, а его отсутствие безопаснее
+    ложного обещания «🧩 Дополнительные поля».
     """
     try:
         with SessionLocal() as session:
             return extras_available_for_draft(session, int(draft_id))
-    except Exception as exc:  # noqa: BLE001 — управление важнее предиката
+    except Exception as exc:  # noqa: BLE001 — пустой экран хуже скрытой кнопки
         logger.info("Доп. поля анонса #%s не проверены: %s", draft_id, exc)
-        return True
+        return False
 
 
 def _extras_with_definitions(details, telegram_user_id: int):
@@ -6067,7 +6068,7 @@ async def _archive_instance_controls(bot, chat_id: int, instance) -> None:
     всегда даёт править клавиатуру, а доставка новой версии уже состоялась.
     """
     panel_id = getattr(instance, "panel_message_id", None)
-    if panel_id:
+    if panel_id and int(panel_id) > 0:
         try:
             await delivery.call_telegram(
                 lambda: bot.delete_message(chat_id=chat_id, message_id=panel_id)
@@ -6464,8 +6465,8 @@ async def _ensure_delivered_instance(
         await _archive_instance_controls(bot, chat_id, previous)
     photos_count = len(photos)
     # Poster 2.5.2 §4: панель/клавиатура экземпляра подчиняются тому же
-    # предикату, что и экраны редактора. Ошибка чтения не лишает управления:
-    # тогда кнопка доп. полей остаётся, как раньше.
+    # предикату, что и экраны редактора. Ошибка чтения скрывает кнопку:
+    # пустой экран доп. полей хуже её отсутствия.
     show_extras = _draft_extras_available(draft_id)
     if delivery.needs_control_panel(photos_count):
         # Панель — отдельная операция строго после контента (§22). Уже
