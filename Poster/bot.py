@@ -40,6 +40,37 @@ logger = logging.getLogger(__name__)
 # создаёт нагрузки. Ошибки задачи логируются и НЕ останавливают бота.
 ANNOUNCEMENT_CLEANUP_INTERVAL_SECONDS = 3600
 
+# Poster 2.5.4 §8: таймауты HTTP рассчитаны на сбои VPN-прокси.
+# Бот работает через `HTTPS_PROXY=http://127.0.0.1:3130` (xray, drop-in
+# 50-vpn.conf), а дефолт PTB 22.8 — 5 с на connect/read/write и 1 с на pool.
+# Установка TLS через прокси изредка занимает больше 5 с: журнал 2026-11-05
+# (23:40:55) показывает `httpx.ConnectTimeout` → `telegram.error.TimedOut` на
+# обычном API-вызове, апдейт терялся. 15 с — запас на один медленный
+# TLS-handshake, но всё ещё меньше, чем время реакции пользователя на сбой.
+PROXY_CONNECT_TIMEOUT = 15.0
+PROXY_READ_TIMEOUT = 15.0
+PROXY_WRITE_TIMEOUT = 15.0
+PROXY_POOL_TIMEOUT = 5.0
+
+# getUpdates: PTB сам прибавляет серверный long-poll `timeout` (10 с в
+# `run_polling`) к read-таймауту запроса (telegram._bot.Bot.get_updates),
+# поэтому здесь тоже 15 с. Маленький read обрывал бы нормальное ожидание
+# апдейта, большой — не нужен: обрыв long-poll не роняет процесс, потому что
+# рабочий polling-цикл Updater идёт через network_retry_loop(max_retries=-1).
+POLLING_GET_UPDATES_CONNECT_TIMEOUT = 15.0
+POLLING_GET_UPDATES_READ_TIMEOUT = 15.0
+POLLING_GET_UPDATES_WRITE_TIMEOUT = 15.0
+POLLING_GET_UPDATES_POOL_TIMEOUT = 5.0
+
+# Инцидент 2026-11-05 (PID 1254306): у `Application.run_polling` PTB 22.8
+# `bootstrap_retries=0`, то есть НОЛЬ попыток на bootstrap. Один сбой TLS
+# через прокси в момент старта давал
+# «Network Retry Loop (Bootstrap Initialize Application) ... Aborting» и
+# завершал процесс (спасал только systemd `Restart=on-failure`).
+# -1 — бесконечный retry bootstrap: недоступный Telegram при старте больше
+# не убивает процесс, а systemd Restart остаётся последней линией защиты.
+POLLING_BOOTSTRAP_RETRIES = -1
+
 
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Неизвестная команда — подсказываем /help."""
@@ -183,6 +214,20 @@ def build_application() -> Application:
         ApplicationBuilder()
         .token(TELEGRAM_BOT_TOKEN)
         .job_queue(None)
+        # Таймауты HTTP — на сбои VPN-прокси (2.5.4 §8). Значения подробно
+        # объяснены у констант `PROXY_*`/`POLLING_GET_UPDATES_*`: 15 с вместо
+        # дефолтных 5 с даёт запас на медленный TLS-handshake через прокси,
+        # а вечный retry polling от этого не зависит.
+        .connect_timeout(PROXY_CONNECT_TIMEOUT)
+        .read_timeout(PROXY_READ_TIMEOUT)
+        .write_timeout(PROXY_WRITE_TIMEOUT)
+        .pool_timeout(PROXY_POOL_TIMEOUT)
+        # Свой набор для getUpdates обязателен: PTB строит отдельный HTTPXRequest
+        # для long-polling, и без явных значений там остались бы дефолты 5/1 с.
+        .get_updates_connect_timeout(POLLING_GET_UPDATES_CONNECT_TIMEOUT)
+        .get_updates_read_timeout(POLLING_GET_UPDATES_READ_TIMEOUT)
+        .get_updates_write_timeout(POLLING_GET_UPDATES_WRITE_TIMEOUT)
+        .get_updates_pool_timeout(POLLING_GET_UPDATES_POOL_TIMEOUT)
         .post_init(post_init_announcement_cleanup)
         .post_shutdown(post_shutdown_announcement_cleanup)
         .build()
@@ -270,7 +315,17 @@ def main() -> None:
     # наследует любую прошлую серверную настройку. Инцидент P0: подписка
     # «только callback_query» пережила перезапуск — сообщения (/start, ввод
     # полей) перестали доставляться при формально здоровом polling.
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    #
+    # bootstrap_retries=-1 (2.5.4 §8) — бесконечный retry bootstrap. Дефолт
+    # PTB 22.8 равен 0: один сбой инициализации через VPN-прокси в момент
+    # старта (инцидент 2026-11-05, «Bootstrap Initialize Application ...
+    # Aborting») завершал процесс, и поднимал бота только systemd
+    # `Restart=on-failure`. Сигнал остановки по-прежнему обрабатывается
+    # штатно, поэтому бесконечное ожидание не мешает выключению службы.
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        bootstrap_retries=POLLING_BOOTSTRAP_RETRIES,
+    )
 
 
 if __name__ == "__main__":
