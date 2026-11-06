@@ -54,7 +54,6 @@ import unittest
 try:
     from telegram.error import BadRequest
 
-    import announcement_controls as controls
     from announcement_store import FIELD_STATUS_KNOWN, build_announcement_fields
     from brick_types import SYSTEM_BRICKS_BY_CODE
     from template_store import get_standard_template, update_template_content
@@ -199,7 +198,11 @@ def _control_keyboards(h) -> dict[int, list[str]]:
     """
     deleted = {int(mid) for mid in h.deleted_ids()}
     found: dict[int, list[str]] = {}
-    for (_chat_id, message_id), (_kind, _text, markup) in h.bot._message_content.items():
+    for (_chat_id, message_id), (
+        _kind,
+        _text,
+        markup,
+    ) in h.bot._message_content.items():
         if int(message_id) in deleted or not markup:
             continue
         callbacks = re.findall(r"an[pfq]_[a-z_]+", str(markup))
@@ -352,12 +355,8 @@ class TimeFieldInPlaceTests(unittest.TestCase):
         await h.callback(_field_callback(h, START_ID))
 
         # Нового sendMessage нет, служебного экрана-вопроса тоже.
-        self.assertEqual(
-            _created_since(h, start), [], "выбор поля создал сообщение"
-        )
-        self.assertEqual(
-            _created_count(h), created, "выбор поля создал сообщение"
-        )
+        self.assertEqual(_created_since(h, start), [], "выбор поля создал сообщение")
+        self.assertEqual(_created_count(h), created, "выбор поля создал сообщение")
         self.assertIsNone(h.screen_message_id(), "появился экран-вопрос")
         self.assertEqual(
             _only_active(h, draft.id).message_ids,
@@ -391,8 +390,7 @@ class TimeFieldInPlaceTests(unittest.TestCase):
         self.assertEqual([button.text for button in rows[1]], list(PRESETS))
         for button in rows[1]:
             self.assertTrue(
-                button.callback_data
-                and button.callback_data.startswith("anq_time:"),
+                button.callback_data and button.callback_data.startswith("anq_time:"),
                 button.callback_data,
             )
 
@@ -413,9 +411,7 @@ class TimeFieldInPlaceTests(unittest.TestCase):
         message_id = _announcement_id(active)
         await _open_input(h, active.id, START_ID)
 
-        presets = [
-            button for button in _rows(_markup_for(h, message_id))[1]
-        ]
+        presets = [button for button in _rows(_markup_for(h, message_id))[1]]
         target = next(button for button in presets if button.text == "18:30")
 
         start = len(h.calls)
@@ -434,9 +430,7 @@ class TimeFieldInPlaceTests(unittest.TestCase):
             "message_id анонса изменился",
         )
         self.assertEqual(stored.delivered_message_ids, (message_id,))
-        self.assertEqual(
-            _created_since(h, start), [], "сохранение создало сообщение"
-        )
+        self.assertEqual(_created_since(h, start), [], "сохранение создало сообщение")
         self.assertEqual(
             _answer_texts_since(h, start),
             [],
@@ -478,17 +472,13 @@ class TimeFieldInPlaceTests(unittest.TestCase):
             (message_id,),
             "message_id анонса изменился",
         )
-        self.assertEqual(
-            _created_since(h, start), [], "ввод текста создал сообщение"
-        )
+        self.assertEqual(_created_since(h, start), [], "ввод текста создал сообщение")
         self.assertEqual(
             _answer_texts_since(h, start),
             [],
             "показано сообщение об успехе",
         )
-        self.assertEqual(
-            _messages_since(h, start), [], "появилось сообщение"
-        )
+        self.assertEqual(_messages_since(h, start), [], "появилось сообщение")
         self.assertFalse(h.live_callbacks("anq_"), "ввод поля не закрылся")
         labels = [text for text, _data in _field_buttons(h)]
         self.assertTrue(
@@ -525,9 +515,7 @@ class TimeFieldInPlaceTests(unittest.TestCase):
             h.live_callbacks("anq_time:"),
             "клавиатура ввода потеряна после ошибки",
         )
-        self.assertGreaterEqual(
-            len(h.calls), start, "сбой не должен ломать сценарий"
-        )
+        self.assertGreaterEqual(len(h.calls), start, "сбой не должен ломать сценарий")
         _assert_one_control(h, message_id, "после неверного ввода")
 
     @scenario_test
@@ -556,9 +544,7 @@ class TimeFieldInPlaceTests(unittest.TestCase):
             ],
             "повтор показан ошибкой",
         )
-        self.assertEqual(
-            _created_since(h, start), [], "повтор создал сообщение"
-        )
+        self.assertEqual(_created_since(h, start), [], "повтор создал сообщение")
         self.assertTrue(_field_buttons(h), "список полей не вернулся")
         _assert_one_control(h, message_id, "после повторного нажатия")
 
@@ -600,17 +586,11 @@ class TextFieldInPlaceTests(unittest.TestCase):
             stored.publication_text,
             "анонс не обновлён на месте",
         )
-        self.assertEqual(
-            _created_since(h, start), [], "ввод описания создал сообщение"
-        )
+        self.assertEqual(_created_since(h, start), [], "ввод описания создал сообщение")
         # Никакого «Теперь введите описание» — сообщений нет вовсе.
         self.assertEqual(_messages_since(h, start), [])
         self.assertFalse(
-            [
-                text
-                for text in h.answer_texts()
-                if "Теперь введите" in text
-            ],
+            [text for text in h.answer_texts() if "Теперь введите" in text],
             "появился служебный вопрос «Теперь введите…»",
         )
         self.assertTrue(_field_buttons(h), "список полей не вернулся")
@@ -698,9 +678,7 @@ class BackSkipAndAlbumTests(unittest.TestCase):
 
         start = len(h.calls)
         await h.callback(_field_callback(h, START_ID))
-        self.assertEqual(
-            _created_since(h, start), [], "выбор поля создал сообщение"
-        )
+        self.assertEqual(_created_since(h, start), [], "выбор поля создал сообщение")
         self.assertEqual(len(_panel_sends(h)), 1, "появилась вторая панель")
         rows = _rows(_markup_for(h, panel_id))
         self.assertEqual(
@@ -717,9 +695,7 @@ class BackSkipAndAlbumTests(unittest.TestCase):
 
         stored = _stored(h, draft.id)
         self.assertIn("18:30", stored.publication_text)
-        self.assertEqual(
-            _created_since(h, start), [], "сохранение создало сообщение"
-        )
+        self.assertEqual(_created_since(h, start), [], "сохранение создало сообщение")
         self.assertEqual(len(_panel_sends(h)), 1, "появилась вторая панель")
         self.assertEqual(
             _only_active(h, draft.id).panel_message_id,
@@ -766,7 +742,10 @@ class DateAndContactTests(unittest.TestCase):
         self.assertEqual(rows[-1][0].text, BACK)
         self.assertEqual(rows[-1][1].text, SKIP)
         callbacks = [
-            button.callback_data for row in rows for button in row if button.callback_data
+            button.callback_data
+            for row in rows
+            for button in row
+            if button.callback_data
         ]
         self.assertTrue(
             any(data.startswith("anq_day:") for data in callbacks),
@@ -918,9 +897,7 @@ class RestartTests(unittest.TestCase):
             # «Назад» восстанавливает список без состояния диалога.
             await fresh.callback(fresh.live_callbacks("anq_back:")[0])
             self.assertTrue(_field_buttons(fresh), "список полей не открылся")
-            self.assertEqual(
-                _created_count(fresh), created, "список создал сообщение"
-            )
+            self.assertEqual(_created_count(fresh), created, "список создал сообщение")
             _assert_one_control(fresh, message_id, "список после рестарта")
 
             await fresh.callback(_field_callback(fresh, START_ID))
@@ -1048,7 +1025,9 @@ class InPlaceFailureTests(unittest.TestCase):
     """Сбой Telegram: значение не теряется, место управления остаётся одно."""
 
     @scenario_test
-    async def test_n_caption_edit_failure_keeps_value_and_single_control(self, h) -> None:
+    async def test_n_caption_edit_failure_keeps_value_and_single_control(
+        self, h
+    ) -> None:
         await h.text("/start")
         draft, _place_id = await _delivered_standard(h, photos=1)
         active = _only_active(h, draft.id)
@@ -1072,9 +1051,7 @@ class InPlaceFailureTests(unittest.TestCase):
 
         # Восстановление не оставляет двух мест управления.
         found = _control_keyboards(h)
-        self.assertEqual(
-            len(found), 1, f"управляющих клавиатур {len(found)}: {found}"
-        )
+        self.assertEqual(len(found), 1, f"управляющих клавиатур {len(found)}: {found}")
         new_active = _only_active(h, draft.id)
         new_id = _announcement_id(new_active)
         self.assertEqual(
