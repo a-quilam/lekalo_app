@@ -329,7 +329,8 @@ class MyAnnouncementsTests(unittest.TestCase):
         await h.callback("my_announcements")
         text = h.screen_text()
         self.assertIn("Мои анонсы", text)
-        self.assertIn("готовый анонс отправлен", text)
+        # 2.5.4 §6: состояние готовой записи в списке — просто «готов».
+        self.assertIn("(готов)", text)
         opens = [d for _l, d in _btns(h) if d and d.startswith("aw_open:")]
         self.assertIn(f"aw_open:{first.draft_id}", opens, "A остаётся в истории")
         self.assertIn(f"aw_open:{second.draft_id}", opens, "B тоже в списке")

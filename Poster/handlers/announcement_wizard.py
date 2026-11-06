@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date
 from functools import partial
 from typing import Any, Callable
@@ -105,6 +105,7 @@ from announcement_wizard import (
     WizardStage,
     answer_payload_to_raw,
     extra_candidate_brick_ids,
+    snapshot_brick_ids_by_code,
 )
 from brick_store import BrickError
 from brick_types import (
@@ -203,6 +204,15 @@ PREVIEW_VISIBLE_LIMIT = 1800
 FIELD_DISPLAY_LIMIT = 120
 MAX_PREVIEW_FIELDS = 12
 MAX_PREVIEW_EXTRAS = 6
+
+# 2.5.4 §6: заголовок мероприятия — системный кирпичик `[название]`. Код,
+# а не ID: в рабочей базе brick_id берётся из снимка анонса.
+TITLE_BRICK_CODE = "название"
+# Подпись строки «Мои анонсы»: заголовок сокращается первым, поэтому место
+# ограничено отдельно — так место и состояние видны в любом случае (§6.3).
+ENTRY_LABEL_LIMIT = 62
+ENTRY_PLACE_LIMIT = 34
+ENTRY_TITLE_MIN = 8
 
 STAGE_LABELS = {
     WizardStage.PLACE.value: tr("wizard.module.mesto"),
@@ -1269,14 +1279,14 @@ def _draft_status_label(draft) -> str:
     )
 
 
-def _draft_display_name(draft) -> str:
+def _draft_place_name(draft) -> str:
     """
-    Человеческое название анонса для «Мои анонсы» (без HTML-экранирования).
+    Понятное имя места анонса для «Мои анонсы» (без HTML-экранирования).
 
-    У анонса по площадке показываем подтверждённое место (оно и есть название
-    анонса), у анонса по личному шаблону площадки нет — имя шаблона из
-    снимка, иначе нейтральное «Анонс». Экранирует вызывающий слой: текст
-    экрана — HTML, подпись кнопки — обычный текст.
+    У анонса по площадке показываем подтверждённое место, у анонса по
+    личному шаблону площадки нет — имя шаблона из снимка. Если имени нет
+    вовсе, остаётся нейтральная подпись источника. Экранирует вызывающий
+    слой: текст экрана — HTML, подпись кнопки — обычный текст.
     """
     snapshot = getattr(draft, "template_snapshot", None)
     name = getattr(draft, "place_display_name", None)
@@ -1292,18 +1302,59 @@ def _draft_display_name(draft) -> str:
     return str(name)
 
 
-def _entry_label(index: int, draft) -> str:
-    """
-    Подпись строки списка «Мои анонсы»: номер, название и статус.
+def _draft_display_name(draft) -> str:
+    """Имя места анонса для экрана подтверждения удаления (P3)."""
+    return _draft_place_name(draft)
 
-    Название берётся из снимка/места, статус — из `publication_status`/
-    этапа. Подпись кнопки — обычный текст, поэтому HTML не экранируется.
+
+def _draft_title(draft) -> str:
     """
-    label = f"▶️ {index}. {_short(_draft_display_name(draft), 38)}"
-    stage = _draft_status_label(draft)
-    if stage:
-        label += f" — {stage}"
-    return _short(label, 62)
+    Заголовок мероприятия анонса (кирпичик `[название]`), без HTML.
+
+    2.5.4 §6: в списке «Мои анонсы» первым идёт именно название события, а
+    не место. Значение берётся по реальному brick_id снимка (в рабочей базе
+    он не обязан совпадать с каноническим ID каталога); непустой текст
+    показывается как есть, пустое/отсутствующее значение — «Без названия».
+    """
+    snapshot = getattr(draft, "template_snapshot", None)
+    if snapshot is not None:
+        brick_id = snapshot_brick_ids_by_code(snapshot).get(TITLE_BRICK_CODE)
+        if brick_id is not None:
+            value = draft.value_for(brick_id)
+            payload = getattr(value, "payload", None)
+            if isinstance(payload, Mapping):
+                raw = payload.get("text")
+                if isinstance(raw, str) and raw.strip():
+                    return " ".join(raw.split())
+    return tr("wizard.draft_title.bez_nazvaniya")
+
+
+def _draft_short_status(draft) -> str:
+    """
+    Состояние записи для списка «Мои анонсы»: только «готов» или «черновик».
+
+    2.5.4 §6: технические состояния (`sending`/`partial`/`failed`) — это
+    всегда незавершённый черновик; пользователю они не показываются.
+    """
+    if getattr(draft, "publication_status", None) == PUBLICATION_STATUS_SENT:
+        return tr("wizard.draft_status_label.gotov")
+    return tr("wizard.draft_status_label.chernovik")
+
+
+def _entry_label(draft) -> str:
+    """
+    Подпись строки списка «Мои анонсы»: `Заголовок — Место (состояние)`.
+
+    2.5.4 §6: номер и эмодзи убраны (номер остаётся в тексте экрана), на
+    первом месте — название мероприятия, затем место и простое состояние.
+    При обрезке первым сокращается заголовок: место и состояние терять
+    нельзя. Подпись кнопки — обычный текст, поэтому HTML не экранируется.
+    """
+    place = _short(_draft_place_name(draft), ENTRY_PLACE_LIMIT)
+    status = _draft_short_status(draft)
+    tail = f" — {place} ({status})"
+    budget = max(ENTRY_LABEL_LIMIT - len(tail), ENTRY_TITLE_MIN)
+    return f"{_short(_draft_title(draft), budget)}{tail}"
 
 
 def _home_content(user_id: int, page: int) -> tuple[str, InlineKeyboardMarkup, int]:
@@ -1327,8 +1378,9 @@ def _home_content(user_id: int, page: int) -> tuple[str, InlineKeyboardMarkup, i
     if shown:
         lines.extend(["", tr("wizard.home.vashi_anonsy")])
         for number, draft in enumerate(shown, start=1):
-            stage = _draft_status_label(draft)
-            lines.append(f"{number}. {_h(_draft_display_name(draft))} — {stage}")
+            # 2.5.4 §6: номер остаётся только в тексте экрана (кнопки — без
+            # нумерации), формат названия — тот же, что у кнопки.
+            lines.append(f"{number}. {_h(_entry_label(draft))}")
     elif drafts:
         lines.extend(["", tr("wizard.home.na_etoy_stranice_anonsov")])
     else:
@@ -1344,14 +1396,12 @@ def _home_content(user_id: int, page: int) -> tuple[str, InlineKeyboardMarkup, i
     # открытие + «🗑» удаление.
     buttons: list[list[InlineKeyboardButton]] = keyboard_layouts.list_rows(
         (
-            keyboard_layouts.button(
-                _entry_label(index + 1, draft), f"aw_open:{draft.draft_id}"
-            ),
+            keyboard_layouts.button(_entry_label(draft), f"aw_open:{draft.draft_id}"),
             keyboard_layouts.button(
                 tr("buttons.wizard.udalit_anons"), f"aw_del:{draft.draft_id}"
             ),
         )
-        for index, draft in enumerate(shown)
+        for draft in shown
     )
     nav = pagination.nav_keyboard(
         page, page_slice.total_pages, "aw_home_page", as_offset=False

@@ -366,7 +366,7 @@ class PhotoAndRestartSingleCopyTests(unittest.TestCase):
         await h.callback("aw_start")
         self.assertIn("📂 Мои анонсы", h.screen_text())
         self.assertIn(
-            "готовый анонс отправлен",
+            "(готов)",
             h.screen_text(),
             "в списке нет доставленного анонса",
         )

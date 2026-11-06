@@ -328,13 +328,16 @@ def _hub_content() -> tuple[str, InlineKeyboardMarkup]:
     text = f"{tr('places.hub.title')}\n\n{tr('places.hub.intro')}"
     keyboard = InlineKeyboardMarkup(
         [
+            # Poster 2.5.4 §4: поиск и добавление — ОДНОЙ строкой, как в
+            # выборе площадки при создании анонса (2.5 §16). Ниже — список
+            # всех мест и возврат, без изменений.
             [
                 InlineKeyboardButton(
                     tr("buttons.places.search"), callback_data="pl_search"
-                )
+                ),
+                InlineKeyboardButton(tr("buttons.places.add"), callback_data="pl_add"),
             ],
             [InlineKeyboardButton(tr("buttons.places.all"), callback_data="pl_all")],
-            [InlineKeyboardButton(tr("buttons.places.add"), callback_data="pl_add")],
             [InlineKeyboardButton(tr("buttons.nav.back"), callback_data="main_menu")],
         ]
     )

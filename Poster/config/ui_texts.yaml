@@ -981,6 +981,10 @@
 "wizard.close_wizard.konstruktor_anonsa_zakryt": "Создание анонса закрыто. Черновик сохранён — его можно продолжить в «📂 Мои анонсы»."
 "wizard.draft_display_name.anons": "Анонс"
 "wizard.draft_display_name.anons_lichnomu_shablonu": "Анонс по личному шаблону"
+# 2.5.4 §6: заголовок мероприятия в «Мои анонсы» и простое состояние записи
+# (технические статусы публикации пользователю не показываются).
+"wizard.draft_title.bez_nazvaniya": "Без названия"
+"wizard.draft_status_label.gotov": "готов"
 "wizard.draft_status_label.chastichno_otpravlen": "частично отправлен"
 "wizard.draft_status_label.gotovyy_anons_otpravlen": "готовый анонс отправлен"
 "wizard.draft_status_label.oshibka_otpravki": "ошибка отправки"
