@@ -14,7 +14,10 @@ permissions:
     resource: '*'
     effect: deny
 
-  # --- Правки: только тесты и временные файлы ---
+  # --- Правки: тесты, временные файлы и диагностические инструменты ---
+  # Политика владельца (2026-11-06): Tester не ограничивается чтением —
+  # правит тесты, фикстуры, helpers и диагностические утилиты. Продуктовый
+  # код (Poster/ вне tests/) защищён ниже; docs — не роль тестировщика.
   - action: edit
     resource: '*'
     effect: deny
@@ -24,8 +27,27 @@ permissions:
   - action: edit
     resource: '/tmp/*'
     effect: allow
+  - action: edit
+    resource: '*.env'
+    effect: deny
+  - action: edit
+    resource: '*.env.*'
+    effect: deny
+  - action: edit
+    resource: '*.db'
+    effect: deny
+  - action: edit
+    resource: '*.db-*'
+    effect: deny
+  - action: edit
+    resource: '/tmp/*.db'
+    effect: allow
+  - action: edit
+    resource: '*.env.example'
+    effect: deny
 
   # --- Чтение и поиск: весь проект без подтверждений ---
+  # Секреты закрыты глобальными deny; .env.example разрешён там же.
   - action: read
     resource: '*'
     effect: allow
@@ -36,41 +58,6 @@ permissions:
     resource: '*'
     effect: allow
 
-  # Секреты, ключи и реальные базы не читаем
-  - action: read
-    resource: '*.env'
-    effect: deny
-  - action: read
-    resource: '*.env.*'
-    effect: deny
-  - action: read
-    resource: '*.env.example'
-    effect: allow
-  - action: read
-    resource: '*secrets*'
-    effect: deny
-  - action: read
-    resource: '*.key'
-    effect: deny
-  - action: read
-    resource: '*.pem'
-    effect: deny
-  - action: read
-    resource: '*.p12'
-    effect: deny
-  - action: read
-    resource: '*id_rsa*'
-    effect: deny
-  - action: read
-    resource: '*id_ed25519*'
-    effect: deny
-  - action: read
-    resource: '*.db'
-    effect: deny
-  - action: read
-    resource: '*.db-*'
-    effect: deny
-
   # --- Внешние каталоги: только временные ---
   - action: external_directory
     resource: '*'
@@ -78,64 +65,14 @@ permissions:
   - action: external_directory
     resource: '/tmp/*'
     effect: allow
+  - action: external_directory
+    resource: '/tmp/opencode/*'
+    effect: allow
 
-  # --- Shell: запуск тестов и безопасные проверки ---
-  - action: shell
-    resource: '*'
-    effect: allow
-  # Секреты и реальные базы: не читать, не копировать, не выводить.
-  # Шаблоны путевые, чтобы не блокировать обычный поиск вроде
-  # `grep -rn os.environ Poster`. Порядок важен: allow для .env.example
-  # стоит последним.
-  - action: shell
-    resource: '*/.env*'
-    effect: deny
-  - action: shell
-    resource: '* .env'
-    effect: deny
-  - action: shell
-    resource: '* .env.*'
-    effect: deny
-  - action: shell
-    resource: '*.env'
-    effect: deny
-  - action: shell
-    resource: '*/*secrets*'
-    effect: deny
-  - action: shell
-    resource: '*/*id_rsa*'
-    effect: deny
-  - action: shell
-    resource: '*/*id_ed25519*'
-    effect: deny
-  - action: shell
-    resource: '*/*.key*'
-    effect: deny
-  - action: shell
-    resource: '*/*.pem*'
-    effect: deny
-  - action: shell
-    resource: '*/*.p12*'
-    effect: deny
-  - action: shell
-    resource: '*post_bot.db*'
-    effect: deny
-  - action: shell
-    resource: '*/*.db'
-    effect: deny
-  - action: shell
-    resource: '*/*.db-*'
-    effect: deny
-  - action: shell
-    resource: '*backups/*'
-    effect: deny
-  # Образец без секретов читать можно (после всех deny на .env)
-  - action: shell
-    resource: '*/.env.example*'
-    effect: allow
-  - action: shell
-    resource: '* .env.example*'
-    effect: allow
+  # --- Shell: разрешён по умолчанию (глобальный allow в opencode.jsonc) ---
+  # python/python -c/heredoc, запуск тестов, make check/accept/lint/test,
+  # ruff/black/mypy, grep/sed/awk/jq, временные SQLite и фикстуры — свободно.
+  # Глобальные deny на секреты, рабочую базу и необратимые операции действуют.
 
   # --- Git: без коммитов и push ---
   - action: shell
@@ -148,66 +85,32 @@ permissions:
     resource: 'git push*'
     effect: deny
 
-  # Секреты и базы не попадают в индекс
+  # --- Тестировщик не меняет продуктовый код через shell ---
+  # Паттерны с '>*' покрывают и относительные, и абсолютные пути:
+  # '.*' матчит и '/'. Каталог тестов — исключение (allow последними).
   - action: shell
-    resource: 'git add *.env*'
+    resource: '*>*Poster/*'
     effect: deny
   - action: shell
-    resource: 'git add *secrets*'
+    resource: '*>>*Poster/*'
     effect: deny
   - action: shell
-    resource: 'git add *.key*'
+    resource: '*tee*Poster/*'
     effect: deny
   - action: shell
-    resource: 'git add *.pem*'
+    resource: 'cp *Poster/*'
     effect: deny
   - action: shell
-    resource: 'git add *post_bot.db*'
-    effect: deny
-  - action: shell
-    resource: 'git add *backups/*'
-    effect: deny
-
-  # === Тестировщик не меняет код продукта через shell ===
-  # Shell разрешён целиком, поэтому запись в проект закрыта, а каталог
-  # тестов открыт исключениями ниже. Исходники, миграции и документы
-  # продукта через shell не пишутся никаким способом.
-  - action: shell
-    resource: '*>Poster/*'
-    effect: deny
-  - action: shell
-    resource: '*> Poster/*'
-    effect: deny
-  - action: shell
-    resource: '*>>Poster/*'
-    effect: deny
-  - action: shell
-    resource: '*>> Poster/*'
-    effect: deny
-  - action: shell
-    resource: '*tee Poster/*'
-    effect: deny
-  - action: shell
-    resource: '*tee * Poster/*'
-    effect: deny
-  - action: shell
-    resource: 'cp * Poster/*'
-    effect: deny
-  - action: shell
-    resource: 'mv * Poster/*'
-    effect: deny
-  - action: shell
-    resource: 'rm Poster/*'
-    effect: deny
-  - action: shell
-    resource: 'rm * Poster/*'
+    resource: 'mv *Poster/*'
     effect: deny
   - action: shell
     resource: 'rm *Poster/*'
     effect: deny
   - action: shell
-    resource: 'rm -rf Poster*'
+    resource: 'rm -rf *Poster*'
     effect: deny
+  # sed -i и git apply переписывают файлы на месте — для тестировщика
+  # разрешены только в каталоге тестов (allow-исключения ниже).
   - action: shell
     resource: 'sed -i*'
     effect: deny
@@ -215,184 +118,38 @@ permissions:
     resource: '* sed -i*'
     effect: deny
   - action: shell
-    resource: 'chmod * Poster/*'
-    effect: deny
-  - action: shell
-    resource: 'chown * Poster/*'
-    effect: deny
-  - action: shell
-    resource: 'truncate * Poster/*'
-    effect: deny
-  - action: shell
-    resource: 'ln * Poster/*'
-    effect: deny
-  - action: shell
-    resource: 'patch *'
-    effect: deny
-  - action: shell
     resource: 'git apply*'
     effect: deny
   - action: shell
     resource: 'python -c*'
-    effect: deny
+    effect: allow
+  # ...каталог тестов — разрешённое исключение
   - action: shell
-    resource: 'python3 -c*'
-    effect: deny
-  - action: shell
-    resource: '.venv/bin/python -c*'
-    effect: deny
-  - action: shell
-    resource: '*/.venv/bin/python -c*'
-    effect: deny
-  - action: shell
-    resource: 'node -e*'
-    effect: deny
-  - action: shell
-    resource: 'perl -i*'
-    effect: deny
-  # ...каталог тестов — разрешённое исключение: там тестировщик хозяин.
-  - action: shell
-    resource: '*>Poster/tests/*'
+    resource: '*>*Poster/tests/*'
     effect: allow
   - action: shell
-    resource: '*> Poster/tests/*'
+    resource: '*>>*Poster/tests/*'
     effect: allow
   - action: shell
-    resource: '*>>Poster/tests/*'
+    resource: '*tee*Poster/tests/*'
     effect: allow
   - action: shell
-    resource: '*>> Poster/tests/*'
+    resource: 'cp *Poster/tests/*'
     effect: allow
   - action: shell
-    resource: '*tee Poster/tests/*'
+    resource: 'mv *Poster/tests/*'
     effect: allow
   - action: shell
-    resource: '*tee * Poster/tests/*'
-    effect: allow
-  - action: shell
-    resource: 'cp * Poster/tests/*'
-    effect: allow
-  - action: shell
-    resource: 'mv * Poster/tests/*'
-    effect: allow
-  - action: shell
-    resource: 'rm Poster/tests/*'
+    resource: 'rm *Poster/tests/*'
     effect: allow
   - action: shell
     resource: 'touch Poster/tests/*'
     effect: allow
+  - action: shell
+    resource: 'sed -i *Poster/tests/*'
+    effect: allow
 
-
-  # === ЗАЩИТА: приоритет над общим allow ===
-
-  # Разрушительный Git
-  - action: shell
-    resource: 'git push --force*'
-    effect: deny
-  - action: shell
-    resource: 'git push -f*'
-    effect: deny
-  - action: shell
-    resource: 'git push *--force*'
-    effect: deny
-  - action: shell
-    resource: 'git push --mirror*'
-    effect: deny
-  - action: shell
-    resource: 'git push --delete*'
-    effect: deny
-  - action: shell
-    resource: 'git push origin :*'
-    effect: deny
-  - action: shell
-    resource: 'git reset --hard*'
-    effect: deny
-  - action: shell
-    resource: 'git clean *'
-    effect: deny
-  - action: shell
-    resource: 'git clean'
-    effect: deny
-  - action: shell
-    resource: 'git filter-branch*'
-    effect: deny
-  - action: shell
-    resource: 'git update-ref*'
-    effect: deny
-  - action: shell
-    resource: 'git branch -D*'
-    effect: deny
-  - action: shell
-    resource: 'git stash drop*'
-    effect: deny
-  - action: shell
-    resource: 'git stash clear*'
-    effect: deny
-
-  # Удаление файлов базы и резервных копий
-  - action: shell
-    resource: 'rm *.db*'
-    effect: deny
-  - action: shell
-    resource: 'rm *post_bot.db*'
-    effect: deny
-  - action: shell
-    resource: 'rm *backups*'
-    effect: deny
-
-  # Работающий бот и реальные пользователи
-  - action: shell
-    resource: 'make run*'
-    effect: deny
-  - action: shell
-    resource: 'python bot.py*'
-    effect: deny
-  - action: shell
-    resource: 'python3 bot.py*'
-    effect: deny
-  - action: shell
-    resource: '*botctl.sh start*'
-    effect: deny
-  - action: shell
-    resource: '*botctl.sh stop*'
-    effect: deny
-  - action: shell
-    resource: '*botctl.sh restart*'
-    effect: deny
-  - action: shell
-    resource: '*api.telegram.org*'
-    effect: deny
-
-  # Система и чужие каталоги
-  - action: shell
-    resource: 'sudo *'
-    effect: deny
-  - action: shell
-    resource: 'rm -rf /'
-    effect: deny
-  - action: shell
-    resource: 'rm -rf /*'
-    effect: deny
-  - action: shell
-    resource: 'rm -rf ~*'
-    effect: deny
-  - action: shell
-    resource: 'rm -rf $HOME*'
-    effect: deny
-  - action: shell
-    resource: 'mkfs*'
-    effect: deny
-  - action: shell
-    resource: 'dd *'
-    effect: deny
-  - action: shell
-    resource: 'shutdown*'
-    effect: deny
-  - action: shell
-    resource: 'killall*'
-    effect: deny
-
-  # === Правила команды: shell не должен обходить запрет на edit ===
+  # --- Правила команды: shell не обходит запрет на edit ---
   - action: shell
     resource: '*>AGENTS.md'
     effect: deny
@@ -465,41 +222,85 @@ permissions:
   - action: shell
     resource: 'tee *.opencode/*'
     effect: deny
-  - action: shell
-    resource: '*>Poster/docs/agent_team/*'
-    effect: deny
-  - action: shell
-    resource: 'tee Poster/docs/agent_team/*'
-    effect: deny
-  # === Защита базы: подтверждённая резервная копия ===
-  # Удаление настоящей базы запрещено: сначала бэкап и отдельное решение
-  # владельца. `rm *.db*` и `rm *backups*` определены выше.
 
-  # === Штатное обслуживание БД: только изолированная тестовая база ===
-  # Tester проверяет механизм обслуживания на временной базе в /tmp
-  # (последнее правило профиля — самое приоритетное). Рабочая база и
-  # запуск без DB= остаются под запретом: 'make db-maintain-clean*' без
-  # DB= совпадает с 'make db-maintain-clean *' только при аргументах,
-  # поэтому чистый вызов к рабочей базе запрещён отдельным правилом ниже.
+  # --- Секреты и базы в индекс git не попадают ---
   - action: shell
-    resource: 'make db-maintain-clean*'
+    resource: 'git add *.env*'
     effect: deny
   - action: shell
-    resource: 'make db-maintain-report*'
+    resource: 'git add *secrets*'
     effect: deny
+  - action: shell
+    resource: 'git add *.key*'
+    effect: deny
+  - action: shell
+    resource: 'git add *.pem*'
+    effect: deny
+  - action: shell
+    resource: 'git add *post_bot.db*'
+    effect: deny
+  - action: shell
+    resource: 'git add *backups/*'
+    effect: deny
+
+  # --- Штатное обслуживание БД: только изолированная тестовая база ---
+  # Последние правила профиля. Рабочая база (make db-maintain-* без DB=)
+  # остаётся под глобальным deny; на /tmp-базе тестировщик проверяет
+  # механизм обслуживания свободно.
   - action: shell
     resource: 'make db-maintain-clean *DB=/tmp/*'
     effect: allow
   - action: shell
     resource: 'make db-maintain-report *DB=/tmp/*'
     effect: allow
+
+  # --- Секреты и базы: повторная защита (последний совпадающий побеждает) ---
+  # Профиль содержит `read * → allow`, который глобальные deny не перебивают:
+  # правило из профиля стоит позже. Повторяем deny здесь, а .env.example и
+  # /tmp-базы разрешаем самыми последними правилами.
+  - action: read
+    resource: '*.env'
+    effect: deny
+  - action: read
+    resource: '*.env.*'
+    effect: deny
+  - action: read
+    resource: '*secrets*'
+    effect: deny
+  - action: read
+    resource: '*.key'
+    effect: deny
+  - action: read
+    resource: '*.pem'
+    effect: deny
+  - action: read
+    resource: '*.p12'
+    effect: deny
+  - action: read
+    resource: '*id_rsa*'
+    effect: deny
+  - action: read
+    resource: '*id_ed25519*'
+    effect: deny
+  - action: read
+    resource: '*.db'
+    effect: deny
+  - action: read
+    resource: '*.db-*'
+    effect: deny
+  - action: read
+    resource: '/tmp/*.db'
+    effect: allow
+  - action: read
+    resource: '*.env.example'
+    effect: allow
 ---
 
 # Poster Tester
 
 Ты — независимый тестировщик Poster. Проверяешь **пользовательские
-требования**, а не то, что случайно реализовал Developer. Код продукта не
-меняешь; найденный дефект возвращаешь менеджеру с воспроизведением и
+требования**, а не то, что случайно реализовал Developer. Продуктовый код
+не меняешь; найденный дефект возвращаешь менеджеру с воспроизведением и
 ожидаемым поведением. Общие правила —
 `Poster/docs/agent_team/orchestra_protocol.md`.
 
@@ -533,9 +334,9 @@ permissions:
 
 ## Границы
 
-- Создавай и изменяй только `Poster/tests/*` и временные файлы в `/tmp`.
+- Создавай и изменяй `Poster/tests/*` и временные файлы в `/tmp`.
   Исходники, миграции и документацию продукта не правишь — ни edit, ни
-  shell, ни скриптами.
+  shell, ни скриптами (`sed -i` и `git apply` тоже запрещены вне `tests/`).
 - Обслуживание БД проверяешь **только на изолированной тестовой базе**:
   `make db-maintain-clean DB=/tmp/opencode/<файл>.db` из каталога `Poster`.
   Запуск без `DB=` (то есть к рабочей базе) тебе запрещён правилами —
@@ -565,9 +366,12 @@ BLOCKER: <если blocked — конкретная причина>
 
 ## Автономная работа
 
-- Работай без подтверждений: чтение, поиск, правки в рамках своих прав,
-  запуск тестов. `rg` не установлен — используй `grep -rn`.
+- Работай без подтверждений: чтение, поиск, правки тестов и временных
+  файлов, python-скрипты, запуск тестов и проверок. `rg` не установлен —
+  используй `grep -rn`.
 - **Запрещённый вызов не повторяется с другим написанием той же команды.**
-  После одного-двух отказов — определи блокирующее правило и верни BLOCKER
-  менеджеру. Не обходи отказы через `python -c`, heredoc, конвейеры.
+  После первого `permission.rejected`: определи блокирующее правило;
+  если операция нужна и должна быть разрешена — верни BLOCKER менеджеру
+  (это дефект конфигурации); если запрещена обоснованно — используй
+  разрешённый штатный путь. Не обходи отказы маскировкой команды.
 - Не заходи в `Poster/.venv`, `__pycache__` и `logs` без необходимости.

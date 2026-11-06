@@ -31,88 +31,125 @@
     "max_bytes": 32768
   },
 
-  // Разрешения проекта. Правила утверждены владельцем репозитория.
-  // Порядок важен: последнее совпадение побеждает, поэтому защита идёт
-  // после широких разрешений.
+  // ============================================================================
+  // Разрешения проекта (OpenCode 2.x: массив rules, ПОСЛЕДНЕЕ совпадение
+  // побеждает; правила агентов из .opencode/agents/*.md дописываются ПОСЛЕ
+  // этих, поэтому агентские allow могут сузить/расширить только то, что
+  // явно указано в профиле).
+  //
+  // Политика (утверждена владельцем, 2026-11-06): разрешать по умолчанию все
+  // штатные операции разработки — python, ruff, black, mypy, pytest/unittest,
+  // make, git (включая push в main), патчи, форматирование. Базовая политика
+  // OpenCode уже содержит { action: "*", resource: "*", effect: "allow" },
+  // поэтому здесь перечислены ТОЛЬКО исключения — небольшим списком:
+  //
+  //   1. секреты (.env, ключи) — не читать/не писать/не выводить;
+  //   2. рабочая база Poster/post_bot.db и каталог backups — закрыты;
+  //      штатное обслуживание — make db-maintain-* (отчёт всем, очистка —
+  //      менеджеру, тестировщику — только на DB=/tmp/...);
+  //   3. необратимые операции: force push, reset --hard, git clean,
+  //     rm -rf вне проекта;
+  //   4. живой бот и реальный Telegram;
+  //   5. git restore/checkout -- — ask: уничтожают незакоммиченные правки.
+  //
+  // Не добавляйте сюда широкие deny-шаблоны вида `*python*` или `*ruff*`:
+  // именно такая конфигурация вызвала 432 повторных отказа и ~36 минут
+  // зацикливания на релизе 2.5.4.
+  // ============================================================================
 
   "permissions": [
-    // 1. Локальные коммиты и обычный push — без подтверждения: команда
-    //    Poster работает автономно, включая ночные этапы.
-    { "action": "shell", "resource": "git commit*", "effect": "allow" },
-    { "action": "shell", "resource": "git push *", "effect": "allow" },
-
-    // 2. Разрушительные операции запрещены всегда. Идут после allow.
-    { "action": "shell", "resource": "git push --force*", "effect": "deny" },
-    { "action": "shell", "resource": "git push -f*", "effect": "deny" },
-    { "action": "shell", "resource": "git push --force-with-lease*", "effect": "deny" },
-    { "action": "shell", "resource": "git push --mirror*", "effect": "deny" },
-    { "action": "shell", "resource": "git reset --hard*", "effect": "deny" },
-    { "action": "shell", "resource": "git clean *", "effect": "deny" },
-
-    // 3. Удаление настоящей базы и резервных копий запрещено без отдельного
-    //    решения владельца.
-    { "action": "shell", "resource": "rm *.db*", "effect": "deny" },
-    { "action": "shell", "resource": "rm *backups*", "effect": "deny" },
-    // Прямой доступ к рабочей базе минуя штатный механизм обслуживания
-    // (Poster/db_maintenance.py): любое чтение/копирование/запись запрещено.
-    { "action": "shell", "resource": "*post_bot.db*", "effect": "deny" },
-
-    // 4. Секреты: не читать, не менять, не выводить. Шаблоны путевые,
-    //    чтобы обычный текст (например, сообщение коммита со словом .env)
-    //    не блокировался.
+    // --- 1. Секреты: не читать, не менять, не выводить ----------------------
+    // Шаблоны путевые/с разделителями, чтобы обычные команды
+    // (grep -rn os.environ Poster, python -c "...") не блокировались.
     { "action": "read", "resource": "*.env", "effect": "deny" },
     { "action": "read", "resource": "*.env.*", "effect": "deny" },
-    { "action": "shell", "resource": "*/.env*", "effect": "deny" },
-    { "action": "shell", "resource": "* .env", "effect": "deny" },
-    { "action": "shell", "resource": "* .env *", "effect": "deny" },
     { "action": "edit", "resource": "*.env", "effect": "deny" },
     { "action": "edit", "resource": "*.env.*", "effect": "deny" },
-
-    // 5. .env.example — безопасный образец. Должен идти ПОСЛЕ deny-правил
-    //    выше, иначе его перехватит "*.env.* → deny".
+    { "action": "read", "resource": "*secrets*", "effect": "deny" },
+    { "action": "read", "resource": "*.key", "effect": "deny" },
+    { "action": "read", "resource": "*.pem", "effect": "deny" },
+    { "action": "read", "resource": "*.p12", "effect": "deny" },
+    { "action": "read", "resource": "*id_rsa*", "effect": "deny" },
+    { "action": "read", "resource": "*id_ed25519*", "effect": "deny" },
+    { "action": "shell", "resource": "* .env", "effect": "deny" },
+    { "action": "shell", "resource": "* .env *", "effect": "deny" },
+    { "action": "shell", "resource": "*/.env", "effect": "deny" },
+    { "action": "shell", "resource": "*/.env *", "effect": "deny" },
+    { "action": "shell", "resource": "*/*secrets*", "effect": "deny" },
+    { "action": "shell", "resource": "*/*.key*", "effect": "deny" },
+    { "action": "shell", "resource": "*/*.pem*", "effect": "deny" },
+    { "action": "shell", "resource": "*/*.p12*", "effect": "deny" },
+    { "action": "shell", "resource": "*/*id_rsa*", "effect": "deny" },
+    { "action": "shell", "resource": "*/*id_ed25519*", "effect": "deny" },
+    // .env.example — безопасный образец: разрешён (после deny выше).
     { "action": "read", "resource": "*.env.example", "effect": "allow" },
+    { "action": "edit", "resource": "*.env.example", "effect": "allow" },
     { "action": "shell", "resource": "*/.env.example*", "effect": "allow" },
     { "action": "shell", "resource": "* .env.example*", "effect": "allow" },
-    { "action": "edit", "resource": "*.env.example", "effect": "allow" },
 
-    // 6. Штатные безопасные операции без подтверждений: чтение истории,
-    //    утверждённые проверки и целевые тесты. Эти команды не пишут код и
-    //    не касаются секретов. В профилях агентов (.opencode/agents/*.md)
-    //    запреты на чтение секретов и запись в код стоят ПОСЛЕ глобальных
-    //    правил, поэтому здесь ничего не ослабляется. Приложение
-    //    (Poster/post_bot.db) и каталог backups по-прежнему закрыты
-    //    правилами 3–4 и повторными deny в профилях агентов.
-    { "action": "shell", "resource": "git status*", "effect": "allow" },
-    { "action": "shell", "resource": "git diff*", "effect": "allow" },
-    { "action": "shell", "resource": "git log*", "effect": "allow" },
-    { "action": "shell", "resource": "git show --stat*", "effect": "allow" },
-    { "action": "shell", "resource": "make check*", "effect": "allow" },
-    { "action": "shell", "resource": "make accept*", "effect": "allow" },
-    { "action": "shell", "resource": "make lint*", "effect": "allow" },
-    { "action": "shell", "resource": "make test*", "effect": "allow" },
-    { "action": "shell", "resource": ".venv/bin/python -m unittest*", "effect": "allow" },
-    { "action": "shell", "resource": "ruff --check*", "effect": "allow" },
-    { "action": "shell", "resource": ".venv/bin/ruff --check*", "effect": "allow" },
-    { "action": "shell", "resource": "black --check*", "effect": "allow" },
-    { "action": "shell", "resource": ".venv/bin/black --check*", "effect": "allow" },
-    { "action": "shell", "resource": "mypy*", "effect": "allow" },
-    { "action": "shell", "resource": ".venv/bin/mypy*", "effect": "allow" },
-
-    // 7. Штатное обслуживание тестовой БД после релиза (утверждено
-    //    владельцем: очистка тестовых данных после каждого релиза до
-    //    первого публичного выпуска Poster). Разрешена одна команда
-    //    (Poster/db_maintenance.py через make) — не набор shell-команд:
-    //    без проверенного бэкапа очистка не выполняется. Agent-профили
-    //    дописываются ПОСЛЕ проектных правил, поэтому точные allow
-    //    для конкретных ролей (менеджер, tester на /tmp-базе) стоят
-    //    в конце каждого профиля и выигрывают у deny выше; остальные
-    //    роли не имеют исключений и наследуют этот deny.
-    //    2026-11-01, владелец: build-агенту дополнительно разрешён
-    //    read-only отчёт (integrity_check + проверенный бэкап, без
-    //    очистки) — задание «довести очистку тестовой БД до
-    //    утверждённого контракта», п. 1. Очистка (clean) остаётся
-    //    запрещённой: точный allow на report стоит ПОСЛЕ deny на clean.
+    // --- 2. Рабочая база и резервные копии ----------------------------------
+    // Прямой доступ к рабочей базе минуя штатный механизм обслуживания
+    // (Poster/db_maintenance.py через make db-maintain-*) запрещён.
+    // Временные тестовые базы в /tmp НЕ затронуты — с ними работают свободно.
+    { "action": "shell", "resource": "*post_bot.db*", "effect": "deny" },
+    { "action": "shell", "resource": "*backups/*", "effect": "deny" },
+    { "action": "shell", "resource": "rm *backups*", "effect": "deny" },
+    // Содержимое SQLite-файлов агентам не нужно (чтение/правка через
+    // read/edit); тестовые базы в /tmp — исключение. Профили агентов со
+    // своим read */edit * allow повторяют эти deny локально.
+    { "action": "read", "resource": "*.db", "effect": "deny" },
+    { "action": "read", "resource": "*.db-*", "effect": "deny" },
+    { "action": "edit", "resource": "*.db", "effect": "deny" },
+    { "action": "edit", "resource": "*.db-*", "effect": "deny" },
+    { "action": "read", "resource": "/tmp/*.db", "effect": "allow" },
+    { "action": "edit", "resource": "/tmp/*.db", "effect": "allow" },
+    // Очистка рабочей базы — только утверждённый релизный цикл менеджера
+    // (allow в профиле poster-manager стоит после этого deny). Отчёт
+    // (integrity + проверенный бэкап, без удаления данных) разрешён всем.
     { "action": "shell", "resource": "make db-maintain-clean*", "effect": "deny" },
-    { "action": "shell", "resource": "make db-maintain-report*", "effect": "allow" }
+    { "action": "shell", "resource": "make db-maintain-report*", "effect": "allow" },
+
+    // --- 3. Необратимые операции --------------------------------------------
+    { "action": "shell", "resource": "git push --force*", "effect": "deny" },
+    { "action": "shell", "resource": "git push -f*", "effect": "deny" },
+    { "action": "shell", "resource": "git push *--force*", "effect": "deny" },
+    { "action": "shell", "resource": "git push --mirror*", "effect": "deny" },
+    { "action": "shell", "resource": "git push --delete*", "effect": "deny" },
+    { "action": "shell", "resource": "git push origin :*", "effect": "deny" },
+    { "action": "shell", "resource": "git reset --hard*", "effect": "deny" },
+    { "action": "shell", "resource": "git clean *", "effect": "deny" },
+    { "action": "shell", "resource": "git clean", "effect": "deny" },
+    { "action": "shell", "resource": "git filter-branch*", "effect": "deny" },
+    { "action": "shell", "resource": "git update-ref*", "effect": "deny" },
+    { "action": "shell", "resource": "git branch -D*", "effect": "deny" },
+    { "action": "shell", "resource": "git stash drop*", "effect": "deny" },
+    { "action": "shell", "resource": "git stash clear*", "effect": "deny" },
+    // Уничтожают незакоммиченные правки — требуют подтверждения последствий.
+    { "action": "shell", "resource": "git restore*", "effect": "ask" },
+    { "action": "shell", "resource": "git checkout --*", "effect": "ask" },
+    // Вне проекта ничего не стираем; .git — уничтожение репозитория.
+    { "action": "shell", "resource": "rm -rf /", "effect": "deny" },
+    { "action": "shell", "resource": "rm -rf /*", "effect": "deny" },
+    { "action": "shell", "resource": "rm -rf ~*", "effect": "deny" },
+    { "action": "shell", "resource": "rm -rf $HOME*", "effect": "deny" },
+    { "action": "shell", "resource": "rm -rf .git*", "effect": "deny" },
+    { "action": "shell", "resource": "sudo *", "effect": "deny" },
+    { "action": "shell", "resource": "mkfs*", "effect": "deny" },
+    { "action": "shell", "resource": "dd *", "effect": "deny" },
+    { "action": "shell", "resource": "shutdown*", "effect": "deny" },
+    { "action": "shell", "resource": "killall*", "effect": "deny" },
+
+    // --- 4. Живой бот и реальный Telegram -----------------------------------
+    // Продакшн-бот управляется штатно (Poster/botctl.sh); право start/stop/
+    // restart выдано менеджеру allow-правилом в его профиле, остальные роли
+    // бота не трогают. Прямые вызовы Telegram API запрещены всем — бот ходит
+    // туда сам, тесты работают через FakeBot.
+    { "action": "shell", "resource": "make run*", "effect": "deny" },
+    { "action": "shell", "resource": "python bot.py*", "effect": "deny" },
+    { "action": "shell", "resource": "python3 bot.py*", "effect": "deny" },
+    { "action": "shell", "resource": "*botctl.sh start*", "effect": "deny" },
+    { "action": "shell", "resource": "*botctl.sh stop*", "effect": "deny" },
+    { "action": "shell", "resource": "*botctl.sh restart*", "effect": "deny" },
+    { "action": "shell", "resource": "*api.telegram.org*", "effect": "deny" }
   ]
 }
