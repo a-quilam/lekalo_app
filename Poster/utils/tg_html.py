@@ -681,7 +681,74 @@ def _contains_brick_token(text: str) -> bool:
     )
 
 
-def _escape_template_text(text: str, *, keep_bricks: bool = True) -> str:
+# Символы, которые экранирование изменило бы внутри адреса ссылки, но
+# грамматика их в адресе не представляет. Скобки вокруг такого текста
+# остаются литеральными.
+_UNSAFE_LINK_CHARS = "()[]\\{}"
+
+
+def _link_group_end(text: str, offset: int, *, after_brick: bool) -> int | None:
+    """
+    Конец группы `(...)`, содержимое которой грамматика читает как ссылку.
+
+    Возвращает позицию закрывающей скобки, если группа — не литерал, а часть
+    авторской записи с адресом-кирпичиком (`[место]([ссылка_места])`,
+    `[место] ([ссылка_места])` §42-В) либо литеральный URL с явной схемой
+    (`http(s)`, `tg://`, `t.me/`, `www.`) вплотную к кирпичику.
+
+    Такую группу нельзя экранировать: иначе `[место]([ссылка_места])` в
+    сообщении с entities сохранялся бы как `[место]\\([ссылка_места]\\)`
+    и ссылка разрушалась (2.5.4 §5).
+
+    Всё остальное — литерал, и экранирование там по-прежнему нужно:
+    `(тут)`, `(100.50)`, URL с квадратными/круглыми/фигурными скобками,
+    обратным слэшем или пробелом внутри, а также скобки после обычного
+    слова (`foo(https://…)`) — иначе правка шаблона с entities незаметно
+    превращала бы прозу в гиперссылку.
+    """
+    if offset >= len(text) or text[offset] != "(":
+        return None
+    close = text.find(")", offset + 1)
+    if close < 0:
+        return None
+    inner = text[offset + 1 : close]
+    stripped = inner.strip()
+    if not stripped:
+        return None
+    if _BRICK_TOKEN_RE.fullmatch(stripped) is not None:
+        # Адрес-кирпичик: экранировать внутри нечего, а грамматика читает
+        # группу однозначно в обе стороны. Вплотную к подписи — ссылка
+        # (`[место]([ссылка_места])`), после пробела — проза §42-В
+        # (`[место] ([ссылка_места])`): значение кирпичика выходит
+        # в скобках. Слэши в обоих случаях только ломали бы авторский вид.
+        return close
+    if not after_brick:
+        return None
+    if any(char in inner for char in _UNSAFE_LINK_CHARS):
+        return None
+    # Только явный адрес: `https://`, `http://`, `tg://`, `t.me/`, `www.`.
+    # Иначе `[цена](100.50)` грамматика приняла бы за домен и превратила
+    # литеральные скобки в ссылку — этого прежнее экранирование не делало.
+    if not _looks_like_explicit_url(stripped):
+        return None
+    if _link_is_expressible(stripped):
+        return close
+    return None
+
+
+def _looks_like_explicit_url(value: str) -> bool:
+    """Адрес с явной схемой (или `www.`): не путается с прозой в скобках."""
+    lowered = value.lower()
+    return lowered.startswith(("http://", "https://", "tg://", "t.me/", "www."))
+
+
+def _escape_template_text(
+    text: str,
+    *,
+    keep_bricks: bool = True,
+    keep_links: bool = True,
+    prefix: str = "",
+) -> str:
     """
     Экранирует литеральный текст секции, чтобы он не стал оформлением.
 
@@ -692,22 +759,176 @@ def _escape_template_text(text: str, *, keep_bricks: bool = True) -> str:
     экранируется, а всё остальное (в том числе пользовательские `[[`/`]]`,
     которые уже означают литеральную скобку) — экранируется как раньше.
 
+    Скобки `(…)` с адресом-кирпичиком или явным URL остаются собой: иначе
+    ввод `[место]([ссылка_места])` с форматированием сохранялся бы
+    с обратными слешами и ссылка терялась (2.5.4 §5). Это скобка вплотную
+    к кирпичику (подпись + адрес) и проза §42-В `[место] ([ссылка_места])`
+    со значением-кирпичиком внутри. Все прочие скобки — литеральные и
+    неоднозначные — экранируются как прежде: `(тут)`, `(100.50)`,
+    `Сайт (https://…)`, `foo(https://…)` остаются текстом.
+
     `keep_bricks=False` — для содержимого code/pre: буквальный спан не
-    содержит кирпичиков, и `[main]` в нём остаётся текстом.
+    содержит кирпичиков и ссылок, и `[main]` в нём остаётся текстом.
+    `keep_links=False` — для текста, который сам станет подписью ссылки:
+    вложенная гиперссылка недопустима, поэтому группа `(…)` там остаётся
+    литералом и экранируется как прежде.
+
+    `prefix` — уже выданный текст перед этим фрагментом (он может
+    заканчиваться кирпичиком, если граница entity разрезала конструкцию
+    ссылки). Нужен, чтобы скобка `(` в начале фрагмента правильно считалась
+    примыкающей к кирпичику, как в едином тексте.
     """
     out: list[str] = []
     offset = 0
     length = len(text)
+    # Примыкает ли текущая позиция к кирпичику слева. Граница entity может
+    # разрезать `[место]([ссылка])`, поэтому учитывается и `prefix`.
+    after_brick = False
+    if prefix.endswith("]"):
+        start = prefix.rfind("[")
+        token = _brick_token_at(prefix, start) if start >= 0 else None
+        after_brick = token is not None and start + len(token) == len(prefix)
     while offset < length:
         if keep_bricks:
             brick = _brick_token_at(text, offset)
             if brick is not None:
                 out.append(brick)
                 offset += len(brick)
+                after_brick = True
                 continue
+            if text[offset] == "(" and keep_links:
+                group_end = _link_group_end(text, offset, after_brick=after_brick)
+                if group_end is not None:
+                    # Группа-ссылка переносится дословно: адрес и кирпичик
+                    # внутри неё экранировать нельзя.
+                    out.append(text[offset : group_end + 1])
+                    offset = group_end + 1
+                    after_brick = False
+                    continue
+        after_brick = False
         out.append(_TEMPLATE_ESCAPES.get(text[offset], text[offset]))
         offset += 1
     return "".join(out)
+
+
+# Форматирование видимого текста. Скобки-ссылки ему не принадлежат: адрес
+# виден только как href, поэтому оформление адреса на ссылку не влияет.
+_FORMAT_ENTITY_TYPES = frozenset(
+    {
+        MessageEntity.BOLD,
+        MessageEntity.ITALIC,
+        MessageEntity.UNDERLINE,
+        MessageEntity.STRIKETHROUGH,
+        MessageEntity.SPOILER,
+    }
+)
+
+
+def _attached_link_groups(text: str) -> list[tuple[int, int, int]]:
+    """
+    Границы конструкций-ссылок, которые грамматика прочтёт как ссылку (§5).
+
+    Возвращает тройки «начало подписи — начало `(` — конец `)`» в код-юнитах
+    UTF-16. Подпись — кирпичик `[код]` вплотную к скобке либо просто текст
+    перед ней; для прозы §42-В со пробелом перед скобкой
+    (`[место] ([ссылка_места])`) конструкция сюда не попадает: там
+    форматирование видимого значения трогать нельзя.
+    """
+    bounds = _character_bounds(text)
+    groups: list[tuple[int, int, int]] = []
+    for index, char in enumerate(text):
+        if char != "(" or index == 0 or text[index - 1].isspace():
+            continue
+        label_start = index
+        after_brick = False
+        if text[index - 1] == "]":
+            start = text.rfind("[", 0, index)
+            token = _brick_token_at(text, start) if start >= 0 else None
+            if token is not None and start + len(token) == index:
+                label_start = start
+                after_brick = True
+        # Только те группы, которые экранирование сохранит как ссылку:
+        # адрес-кирпичик либо явный URL вплотную к кирпичику.
+        close = _link_group_end(text, index, after_brick=after_brick)
+        if close is None:
+            continue
+        groups.append((bounds[label_start], bounds[index], bounds[close + 1]))
+    return groups
+
+
+def _normalize_link_formatting(
+    text: str, entities: Sequence[MessageEntity]
+) -> Sequence[MessageEntity]:
+    """
+    Форматирование части конструкции ссылку не разрушает (2.5.4 §5.3–5.4).
+
+    Автор выделяет жирным (курсивом, подчёркиванием, зачёркиванием,
+    спойлером) только подпись `[место]`, только адрес `[ссылка_места]` или
+    всю конструкцию — во всех случаях в анонсе обязана остаться ссылка
+    с подписью-значением и адресом-значением.
+
+    Правила:
+
+    - оформление, целиком попавшее в адрес `(…)`, отбрасывается: адрес
+      виден только как href, его стиль грамматике недоступен, а маркеры
+      внутри скобок разрушали бы ссылку;
+    - любое другое оформление, пересекающее конструкцию (в том числе
+      оборванное на границе кирпичика-подписи), расширяется до всей
+      конструкции: видимый текст тот же, подпись сохраняет стиль, ссылка
+      остаётся целой;
+    - оформление, уже покрывающее конструкцию целиком, не меняется.
+
+    Настоящие Telegram-ссылки (`text_link`) не трогаются: там семантику
+    задаёт entity, а не грамматика `подпись(URL)`, — оформление внутри
+    такой ссылки сохраняет прежнее поведение. Форматирование вне
+    конструкций (в том числе прозы `[место] ([ссылка])`) тоже остаётся
+    как есть.
+    """
+    groups = _attached_link_groups(text)
+    if not groups:
+        return entities
+    occupied = [
+        (entity.offset, entity.offset + entity.length)
+        for entity in entities
+        if entity.type in _LINK_ENTITY_TYPES
+    ]
+    adjusted: list[MessageEntity] = []
+    changed = False
+    for entity in entities:
+        if entity.type not in _FORMAT_ENTITY_TYPES:
+            adjusted.append(entity)
+            continue
+        start = entity.offset
+        end = start + entity.length
+        if any(
+            start < other_end and end > other_start
+            for other_start, other_end in occupied
+        ):
+            adjusted.append(entity)
+            continue
+        new_start = start
+        new_end = end
+        drop = False
+        touched = [group for group in groups if end > group[0] and start < group[2]]
+        for span_start, url_start, span_end in touched:
+            if len(touched) == 1 and start >= url_start and end <= span_end:
+                # Оформление адреса или самих скобок: в href его нет.
+                drop = True
+                break
+            # Подпись, её часть, смешанный диапазон или несколько ссылок —
+            # расширяем до целых конструкций: маркер не должен попасть
+            # внутрь `[кирпичик]([кирпичик])`.
+            new_start = min(new_start, span_start)
+            new_end = max(new_end, span_end)
+        if drop:
+            changed = True
+            continue
+        if new_start != start or new_end != end:
+            changed = True
+            adjusted.append(_copy_entity(entity, new_start, new_end - new_start))
+            continue
+        adjusted.append(entity)
+    return adjusted if changed else entities
 
 
 def entities_to_template_markup(
@@ -731,6 +952,10 @@ def entities_to_template_markup(
       роняет ввод: текст сохраняется, оформление — по целому эмодзи;
     - вложенность entities сохраняется: `**` + text_link на том же диапазоне
       дают `**{подпись}(URL)**` (ссылка — внутри жирного), а не наоборот;
+    - форматирование части конструкции `[место]([ссылка_места])` ссылку не
+      разрушает (§5.3–5.4): стиль только на подписи расширяется до всей
+      ссылки, стиль только на адресе отбрасывается (в href он невидим),
+      результат совпадает с выделением всей конструкции;
     - `text_link` пишется как `подпись(URL)`, даже если URL нет в видимом
       тексте; схемы `tg://` сохраняются;
     - при равных смещениях entities порядок не важен: сортировка делает
@@ -746,7 +971,10 @@ def entities_to_template_markup(
       `|`, `(`, `)`, `{`, `}` обычного текста экранируются; квадратные скобки
       тоже, КРОМЕ валидного токена кирпичика `[код]` — он остаётся
       кирпичиком (`**Итог**: [main]`), иначе правка шаблона сообщением с
-      entities уничтожала бы привязки;
+      entities уничтожала бы привязки. Скобки `(…)`, которые грамматика
+      прочитает как часть ссылки (`[место]([ссылка_места])`,
+      `[место] ([ссылка_места])`), не экранируются: иначе ссылка
+      разрушалась бы обратными слешами (2.5.4 §5);
     - деградация text_link: `http(s)`, `tg://`, `t.me/…` и домены без схемы
       записываются ссылкой; URL со пробелами, скобками `(`/`)`,
       квадратными скобками или обратным слэшем, а также схемы вне
@@ -759,7 +987,7 @@ def entities_to_template_markup(
     if not text or not entities:
         return text
 
-    sliced = _aligned_slices(text, entities)
+    sliced = _aligned_slices(text, _normalize_link_formatting(text, entities))
     if not sliced:
         return text
     return _parse_template_markup(text, sliced)
@@ -788,6 +1016,7 @@ def _parse_template_markup(
     *,
     offset: int = 0,
     top_level: bool = True,
+    in_link_label: bool = False,
 ) -> str:
     """
     Рекурсивная сборка авторской записи: вложенность entities → маркеры.
@@ -797,6 +1026,9 @@ def _parse_template_markup(
     HTML-тегов пишет маркеры грамматики Stage 24. Порядок при равных
     смещениях задаёт `_template_entity_sort_key`: внешний слой — более
     длинный диапазон, ссылка внутри форматирования на том же диапазоне.
+
+    `in_link_label=True` — текст уже находится внутри подписи гиперссылки:
+    вложенная ссылка недопустима, поэтому группы `(…)` там экранируются.
     """
     utf16_text = message_text.encode("utf-16-le", "surrogatepass")
     markup = ""
@@ -821,13 +1053,26 @@ def _parse_template_markup(
         }
         parsed.extend(nested.keys())
 
+        kind = entity.type
+        # Текст подписи ссылки не может содержать вложенную ссылку: группа
+        # `(…)` внутри неё остаётся литералом и экранируется как прежде.
+        # Деградировавшая подпись (URL грамматика не берёт) — обычный текст,
+        # поэтому там скобки экранируются общим правилом.
+        link_label = in_link_label or (
+            kind == MessageEntity.TEXT_LINK
+            and bool(entity.url)
+            and _link_is_expressible(str(entity.url).strip())
+        )
+
         # Текст между предыдущей entities и текущей экранируется; кирпичики
         # `[код]` в нём сохраняются, иначе правка шаблона сообщением с
-        # entities уничтожала бы привязки.
+        # entities уничтожала бы привязки. `prefix` — уже выданная запись:
+        # граница entity может разрезать `[место]([ссылка_места])`.
         gap = _escape_template_text(
             utf16_text[last_offset * 2 : (entity.offset - offset) * 2].decode(
                 "utf-16-le"
-            )
+            ),
+            prefix=markup,
         )
         # Обычная запись `подпись(URL)` верна только когда подпись — весь
         # хвост секции перед скобкой, внутри неё нет разметки, а сама
@@ -844,30 +1089,38 @@ def _parse_template_markup(
             and not entity_text.endswith((" ", "\n", "\t"))
         )
 
-        kind = entity.type
         if kind in {MessageEntity.CODE, MessageEntity.PRE}:
             # Буквальный спан: содержимое не разбирается и не экранируется.
             # Обратная кавычка внутри сделала бы спан неоднозначным — тогда
             # деградируем в обычный экранированный текст.
             fence = _ENTITY_MARKERS[kind]
             if fence in entity_text:
-                wrapped = _escape_template_text(entity_text, keep_bricks=False)
+                wrapped = _escape_template_text(
+                    entity_text, keep_bricks=False, keep_links=False
+                )
             else:
                 wrapped = f"{fence}{entity_text}{fence}"
         elif nested:
             inner = _parse_template_markup(
-                entity_text, nested, offset=entity.offset, top_level=False
+                entity_text,
+                nested,
+                offset=entity.offset,
+                top_level=False,
+                in_link_label=link_label,
             )
             wrapped = _wrap_markup(entity, inner, plain_label=plain_label)
         else:
-            inner = _escape_template_text(entity_text)
+            inner = _escape_template_text(entity_text, keep_links=not link_label)
             wrapped = _wrap_markup(entity, inner, plain_label=plain_label)
 
         markup += gap
         markup += wrapped
         last_offset = entity.offset - offset + entity.length
 
-    markup += _escape_template_text(utf16_text[last_offset * 2 :].decode("utf-16-le"))
+    markup += _escape_template_text(
+        utf16_text[last_offset * 2 :].decode("utf-16-le"),
+        keep_links=not in_link_label,
+    )
     return markup
 
 
