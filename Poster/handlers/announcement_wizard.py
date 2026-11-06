@@ -5234,12 +5234,19 @@ async def _render_preview_error(
 
 
 def _length_refusal_text(check) -> str:
-    """КОРОТКАЯ ошибка превышения лимита (2.5.3 §7)."""
-    return tr(
-        "wizard.length_refusal.not_pomeschaetsya",
-        length=check.length,
-        limit=check.limit,
+    """
+    КОРОТКАЯ ошибка превышения лимита (2.5.3 §7, 2.5.4 §3.3).
+
+    Совет зависит от фактического вида сообщения: у подписи к фото («уберите
+    фото») он уместен, а у анонса БЕЗ фотографий предлагать убрать нечего —
+    там только «сократите текст». Посторонние действия не предлагаются.
+    """
+    key = (
+        "wizard.length_refusal.not_pomeschaetsya"
+        if getattr(check, "has_photos", False)
+        else "wizard.length_refusal.not_pomeschaetsya_bez_foto"
     )
+    return tr(key, length=check.length, limit=check.limit)
 
 
 def _length_check(update: Update, details, *, user_id: int | None = None):

@@ -235,6 +235,83 @@ class LongTextWithoutPhotosTests(unittest.TestCase):
         self.assertIn(LONG_NO_PHOTO, value_row[2] or "", "сохранён не весь текст")
 
 
+# --- C3. висящая длинная правка не предлагает убрать фото ------------------
+
+
+@unittest.skipIf(
+    INTEGRATION_IMPORT_ERROR is not None,
+    f"интеграционное окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
+)
+class PendingLongEditMessageTests(unittest.TestCase):
+    """
+    §3.3: пока висит незавершённая длинная правка, смена ДРУГОГО поля
+    получает короткую причину без посторонних действий.
+
+    Находка приёмки: у анонса БЕЗ фотографий совет «уберите фото» запрещён
+    (убирать нечего). Совет зависит от фактического вида сообщения.
+    """
+
+    @scenario_test
+    async def test_date_change_advice_has_no_photo_hint(self, h) -> None:
+        await h.text("/start")
+        place_id, _alias = _seed_place(h)
+        specs = [
+            ("f0", "Описание", "long_text", {}),
+            ("f1", "Дата", "date", {}),
+        ]
+        template_id, _revision, bricks = _seed_personal_template(
+            h, name="Шаблон §3.3", specs=specs, content="Строка 0: [f0]\nДата: [f1]"
+        )
+        await _start_to_template(h, place_id)
+        await _choose_personal(h, template_id)
+        for _ in range(len(specs) + 5):
+            if PHOTOS_TITLE in h.screen_text():
+                break
+            buttons = [data for _label, data in h.screen_buttons()]
+            day = next((data for data in buttons if data.startswith("aw_calday")), None)
+            if day is not None:
+                await h.callback(day)
+                continue
+            await h.text(OLD_DESCRIPTION if len(h.reply_texts()) <= 0 else "Значение")
+        if PHOTOS_TITLE not in h.screen_text():
+            raise AssertionError(f"Не шаг фото: {h.screen_text()[:200]!r}")
+        await h.callback(_photo_none(h))
+        draft = _latest_draft(h)
+        stored = _stored(h, draft.id)
+        self.assertEqual(stored.publication_status, "sent")
+        self.assertEqual(stored.publication_photos, (), "анонс должен быть без фото")
+        published = stored.publication_text
+
+        active = _only_active(h, draft.id)
+        await _open_description(h, active.id)
+        await h.text(LONG_NO_PHOTO)
+        self.assertTrue(_edit_refusals(h), "экран ошибки длины не показан")
+
+        # Автор открывает ДРУГОЕ поле (дата) старой кнопкой списка и меняет
+        # день: публикации нет, но и совет «уберите фото» неуместен.
+        await h.callback(f"anf_sel:{active.id}:{bricks['f1']}")
+        days = [
+            data
+            for _label, data in h.live_buttons()
+            if data and data.startswith("anq_day:")
+        ]
+        self.assertTrue(days, f"календаря нет: {h.live_buttons()}")
+        await h.callback(days[0])
+
+        shown = "\n".join(
+            text for text in h.answer_texts() if "текст не помещается" in text
+        )
+        self.assertTrue(shown, f"нет причины: {h.answer_texts()}")
+        self.assertIn(f"лимите {ANNOUNCEMENT_TEXT_LIMIT}", shown)
+        low = shown.lower()
+        self.assertNotIn("фото", low, f"совет про фото без фото: {shown!r}")
+        self.assertNotIn("уберите", low, f"постороннее действие в совете: {shown!r}")
+        # Публикация и сообщение анонса не изменились.
+        after = _stored(h, draft.id)
+        self.assertEqual(after.publication_text, published, "анонс переиздан")
+        self.assertEqual(after.publication_status, "sent")
+
+
 # --- D. одно фото: подпись >1024, рестарт, одно обновление -----------------
 
 
