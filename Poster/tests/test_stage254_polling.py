@@ -40,6 +40,8 @@ import tests  # noqa: F401
 try:
     import httpx
     from telegram import Update
+    from telegram.ext import Application
+    from telegram.request import BaseRequest
 
     import bot as bot_module
 
@@ -85,6 +87,10 @@ class ProxyTimeoutConstantsTest(unittest.TestCase):
 @unittest.skipIf(IMPORT_ERROR is not None, f"импорт недоступен: {IMPORT_ERROR}")
 class BuildApplicationTimeoutsTest(unittest.TestCase):
     """Собранное приложение реально применяет таймауты (без сети)."""
+
+    app: Application
+    get_updates_request: BaseRequest
+    request: BaseRequest
 
     @classmethod
     def setUpClass(cls) -> None:

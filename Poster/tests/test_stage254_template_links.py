@@ -51,7 +51,13 @@ import unittest
 
 from telegram import MessageEntity
 
-from template_parser import BrickNode, LinkNode, parse_template, render_to_html
+from template_parser import (
+    BrickNode,
+    FormatNode,
+    LinkNode,
+    parse_template,
+    render_to_html,
+)
 from utils.tg_html import entities_to_html, entities_to_template_markup
 
 
@@ -98,7 +104,9 @@ class ConverterLinkTests(unittest.TestCase):
 
         tokens = parse_template(markup)
         self.assertEqual(len(tokens), 1)
-        link = tokens[0].children[0]
+        root = tokens[0]
+        assert isinstance(root, FormatNode)
+        link = root.children[0]
         self.assertIsInstance(link, LinkNode)
         assert isinstance(link, LinkNode)
         self.assertEqual(
@@ -580,7 +588,9 @@ class PersonalTemplateLinkTests(unittest.TestCase):
         self.assertNotIn("\\(", extended or "")
         tokens = parse_template(extended or "")
         self.assertEqual(len(tokens), 1)
-        link = tokens[0].children[0]
+        root = tokens[0]
+        assert isinstance(root, FormatNode)
+        link = root.children[0]
         self.assertIsInstance(link, LinkNode)
         assert isinstance(link, LinkNode)
         self.assertIsInstance(link.url, BrickNode)

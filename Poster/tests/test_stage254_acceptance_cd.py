@@ -112,7 +112,7 @@ FORBIDDEN_LABELS = (
 # Типы вызовов, создающих НОВОЕ сообщение в чате.
 CREATE_TYPES = frozenset({"message", "photo", "media_group", "rich_message"})
 
-SPECS = [
+SPECS: list[tuple[str, str, str, dict[str, object]]] = [
     ("f0", "Описание", "long_text", {}),
     ("f1", "Подзаголовок", "short_text", {}),
 ]
@@ -454,6 +454,7 @@ class NoPhotoLengthErrorTests(unittest.TestCase):
         notice = _limit_notices(h, TEXT_LIMIT)[-1]
         match = re.search(r"(\d+)\s+символ", notice)
         self.assertIsNotNone(match, f"в ошибке нет числа символов: {notice!r}")
+        assert match is not None
         total = int(match.group(1))
         excess = total - TEXT_LIMIT
         self.assertGreater(excess, 0, "ошибка показана без превышения лимита")

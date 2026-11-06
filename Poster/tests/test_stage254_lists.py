@@ -150,6 +150,7 @@ def _place_with_title(h: Harness, *, place_name: str, title: str | None) -> int:
             expected_revision=confirmed.revision,
         )
         if title is not None:
+            assert chosen.template_snapshot is not None
             brick_id = snapshot_brick_ids_by_code(chosen.template_snapshot)[TITLE_CODE]
             chosen = save_announcement_value(
                 session,
@@ -178,6 +179,7 @@ def _personal_with_title(h: Harness, *, title: str | None) -> int:
             origin="personal",
         )
         if title is not None:
+            assert draft.template_snapshot is not None
             brick_id = snapshot_brick_ids_by_code(draft.template_snapshot)[TITLE_CODE]
             draft = save_announcement_value(
                 session,

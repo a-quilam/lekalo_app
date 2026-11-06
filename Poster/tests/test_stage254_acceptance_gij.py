@@ -290,6 +290,8 @@ class EntryLabelTests(unittest.TestCase):
         for status in ("sending", "partial", "failed"):
             with h.session_factory() as session:
                 row = session.get(AnnouncementDraft, draft_id)
+                self.assertIsNotNone(row)
+                assert row is not None
                 row.publication_status = status
                 row.publication_text = "Текст"
                 row.publication_photos = "[]"
@@ -662,6 +664,7 @@ class PollingApplicationTests(unittest.TestCase):
             app = bot_module.build_application()
 
         self.assertIsNotNone(app.updater, "Updater не создан")
+        assert app.updater is not None
         self.assertFalse(app.updater.running, "polling запущен при сборке")
         self.assertTrue(app.error_handlers, "error_handler не зарегистрирован")
         handlers = [handler for group in app.handlers.values() for handler in group]

@@ -94,7 +94,7 @@ LONG_CAPTION = "б" * 1100
 async def _delivered(h, *, photos: int):
     """Два поля («Описание» long_text, «Подзаголовок») и доставка анонса."""
     place_id, _alias = _seed_place(h)
-    specs = [
+    specs: list[tuple[str, str, str, dict[str, object]]] = [
         ("f0", "Описание", "long_text", {}),
         ("f1", "Подзаголовок", "short_text", {}),
     ]
@@ -255,7 +255,7 @@ class PendingLongEditMessageTests(unittest.TestCase):
     async def test_date_change_advice_has_no_photo_hint(self, h) -> None:
         await h.text("/start")
         place_id, _alias = _seed_place(h)
-        specs = [
+        specs: list[tuple[str, str, str, dict[str, object]]] = [
             ("f0", "Описание", "long_text", {}),
             ("f1", "Дата", "date", {}),
         ]
