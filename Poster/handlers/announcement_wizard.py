@@ -7989,7 +7989,12 @@ async def _command_to_section(
     _clear_ui(context)
     _clear_other_sessions(_user_id(update))
     # H1: переход в другой раздел закрывает приём ввода конструктора.
-    _clear_resume(_user_id(update), ctx.data(context), ctx.chat(update).id)
+    # Справка выходом не является (контракт 2.5.1, так же как кнопка
+    # «Помощь» и `/help` после рестарта): её «◀️ Назад» возвращает на тот же
+    # шаг, поэтому resume-снимок сохраняется — иначе источник справки
+    # определился бы как «main» и шаг черновика терялся.
+    if target != "help":
+        _clear_resume(_user_id(update), ctx.data(context), ctx.chat(update).id)
     if target == "drafts":
         # Единый список анонсов вместо легаси-черновиков (S5).
         return await open_my_announcements(update, context)
