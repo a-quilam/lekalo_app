@@ -1,5 +1,134 @@
 # State — Poster
 
+## 2026-11-06 — 2.5.4: этап G — приёмка, ревизия, make check; релиз готов (poster-manager)
+
+- F1 (b338a3a, этап E): дефект закрыт — `/help` из конструктора больше не
+  стирает resume-снимок (`_command_to_section`: `if target != "help"`);
+  приёмка H 21 OK без изменения ожиданий.
+- Приёмки G/I/J (ef284b1): tests/test_stage254_acceptance_gij.py — 27 тестов
+  Tester (G=15 «Мои анонсы»+площадки, I=5 polling, J=7 сквозной), OK, 0
+  дефектов продукта. Tester упёрся в steps в первой сессии (разведка без
+  файла) — закрыто продолжением той же сессии (1 повтор).
+- Гигиена перед make check: a5b12ea — мёртвый импорт + black в acceptance_a;
+  4c9632c — mypy-чистка 6 тестовых наборов 2.5.4 (31 ошибка: аннотации,
+  assert not None), логика тестов не менялась, 99 OK.
+- Граница этапа: `make check PYTHON=.venv/bin/python` → EXIT=0
+  (ruff ok, black 250 файлов, mypy 250 файлов 0 ошибок,
+  Ran 2939 tests OK skipped=1, ui_texts ok keys=1171).
+- Reviewer сводного диффа b1fc504..HEAD (52 файла): APPROVED, BLOCKER/
+  IMPORTANT нет. MINOR (отложены): (1) `_field_value_snapshot` при сбое
+  чтения возвращает state="missing" — отмена удалит строку вместо отката,
+  практически недостижимо, доставленный пост не затронут; (2) `_entry_label`
+  может дать подпись чуть длиннее 62 символов — косметика.
+- Метрики 2.5.4 (с начала релиза): вызовы Dev ~17, Tester 7, Reviewer 2;
+  повторы из-за steps: Tester 1, Dev ~5; один цикл permission.rejected на
+  `ruff --fix`/`python -c` (~80 попыток в ранних этапах) — потеря ресурсов,
+  учесть в конфигурации; дефектов продукта найдено/закрыто: F1 + §5 BLOCKER;
+  вне объёма: F2 (две клавиатуры после возврата из справки у доставленного
+  анонса), HELP_RETURN_KEY только в памяти, дубль лимитов delivery.py:74,
+  посторонний ui_texts.yaml.before-text-edit.bak в config/.
+- Дальше (релизный цикл): push → CI → (после зелёного CI) make
+  db-maintain-clean → запуск/проверка службы → финальный отчёт владельцу.
+
+## 2026-11-06 — 2.5.4: этап F закрыт (poster-manager)
+
+- F (edd2bf9): устойчивость polling к сбоям VPN-прокси. Разведка по журналу
+  за 12 ч: (а) инцидент старта 23:29:05 — PTB `bootstrap_retries=0`
+  (дефолт) завершал процесс при первом сбои TLS через прокси
+  («Bootstrap Initialize Application … Aborting»), спасал только systemd
+  Restart; (б) 23:40:55 — `httpx.ConnectTimeout` на обычном API-вызове,
+  апдейт потерян; (в) рабочий polling вечный retry (network_retry_loop,
+  max_retries=-1) — устойчив сам по себе.
+- Фикс: константы PROXY_*/POLLING_GET_UPDATES_* (15 c connect/read/write,
+  5 с pool вместо 5/1) + `run_polling(bootstrap_retries=-1)`.
+  Тесты test_stage254_polling (10, контрактные, без сети); смежные 23+27+43 OK.
+- F2 (две клавиатуры после возврата из справки у доставленного анонса) —
+  перенесено в остатки: не блокирует §9, отдельно после релиза.
+- HEAD edd2bf9. NEXT: этап G — недостающие приёмки (G «Мои анонсы», I polling,
+  J сквозной), полный make check, Reviewer сводного диффа A–F, коммиты/push,
+  CI, db-maintain-clean, старт службы, отчёт.
+
+## 2026-11-06 — 2.5.4: этап E закрыт (F1 исправлен) (poster-manager)
+
+- F1 (b338a3a): дефект продукта закрыт — `_command_to_section` снимал
+  `_clear_resume` и для `/help`, из-за чего «Назад» из справки уходил в меню
+  вместо шага черновика. Фикс: `if target != "help"` — снимок сохраняется
+  (контракт 2.5.1: справка — не выход). main_menu.py не тронут.
+- Приёмка H (в том же коммите): tests/test_stage254_acceptance_h.py — 21 тест,
+  OK без изменения ожиданий (Rich «О проекте», навигация, рестарты, fallback).
+- Смежные регрессы: help_return+acceptance_a+cd 45 OK; H1/251 48 OK;
+  e2/transfer/25 47 OK; menu/admin 65 OK; u3b/u4a/r2 84 OK; h3/241 99 OK;
+  251/252 наборы 98 OK. ruff/black/mypy по файлу чисто.
+- Находка Tester/Developer вне задачи: `unittest discover -s tests -p
+  'test_stage25*.py'` падает на импорте (scenario_test) — артефакт discover
+  по каталогу tests (топ-левел импорты), по именам модулей всё зелёное;
+  full make check на границе этапа покажет, есть ли проблема в CI-режиме.
+- F2 (две клавиатуры после возврата из справки при доставленном анонсе) —
+  отдельная находка, решено НЕ включать в объём (не блокирует §7/§9).
+- HEAD b338a3a. NEXT: этап F (диагностика polling §8, тест I), затем этап G
+  (приёмка A–J, make check, Reviewer, коммиты/push, db-maintain-clean, релиз).
+
+## 2026-11-06 — 2.5.4: этап C закрыт (poster-manager)
+
+- C (28bc72a): BLOCKER §5 закрыт. Первопричина: `_escape_template_text`
+  экранировал скобки `(`→`\(` в gap/inner при наличии entities → связка
+  `](` разрушалась. Решение: `_link_group_end`/`_looks_like_explicit_url`
+  (не экранировать скобки авторской ссылки), `_normalize_link_formatting`
+  (частичный bold на подписи/адресе не разрушает ссылку: стиль на адресе
+  отбрасывается, на подписи расширяется до конструкции), `in_link_label`.
+  Случай Б (пробел) — проза, как было. code/pre — буквальные.
+- Разбор падений вне задачи (fe8a753): 5 наборов (h1_stability ×2, u1b ×1,
+  stage252_acceptance ×3) ждали удалённый A2 экран-вопрос — регрессия
+  ТЕСТОВ A2, не продукта; переведены на in-place контракт + 2 попутных
+  (acceptance_c, u2b_finish_tester). Полный discover 2810 OK.
+- Приёмка F (9dd6cf6): tests/test_stage254_acceptance_f.py — 27 тестов
+  Tester, pass: A/Б/В/Г + text_link/code/pre/URL-&/javascript-безопасность/
+  UTF-16/идемпотентность/lifecycle std+personal+extended.
+- Замечание Tester вне контракта (cosmetic): подтверждение сохранения шаблона
+  показывает `\*\*` для статических жирных строк — сохранённая версия
+  корректна; отложено.
+- Контракт решён менеджером: entities-чтение; литеральные `**` без entities
+  вне контракта.
+- HEAD 9dd6cf6. NEXT: этап D (§4 клавиатура площадок + §6 «Мои анонсы», LOW-MED).
+
+## 2026-11-06 — 2.5.4: этап B закрыт (poster-manager)
+
+- B (4674118): экран ошибки длины на пути field_input — клавиатура анонса
+  ровно 2 строки: disabled `⏳ Ожидаю текст короче` + danger `Отменить`
+  (`anq_cancel:{instance}:{brick}:{revision}`); незавершённая правка — снимок
+  значения до правки в user_states.payload (restore_announcement_value,
+  CAS по ревизии); поздний callback старой отмены → stale, откатов нет;
+  «message is not modified» не считается ошибкой; удалён мёртвый фолбэк
+  `_photo_mode_keyboard` (MINOR-2 2.5.3). Тексты yaml+DEFAULTS.
+- Фикс по находке приёмки (9c275a6): «уберите фото» только при наличии фото
+  (`not_pomeschaetsya_bez_foto`), покрывает все точки вызова.
+- Тесты: test_stage254_long_text_cancel (9: C/D/D2/Е/гонка/лимиты/совет),
+  приёмка C/D/E — test_stage254_acceptance_cd (17, Tester, pass).
+  Целевые 131 OK + смежные 46+75 OK; ruff/black/mypy чисто; ui_texts ok 1157.
+- Замечания Tester вне контракта (принято как есть): устаревшая anf_sel
+  принимается при висящем экране ошибки (правка целa, экран сменяется);
+  длинные сообщения автора накапливаются by design.
+- HEAD 9c275a6. NEXT: Reviewer по этапам A+B (один тематический дифф), затем
+  этап C (парсер ссылок §5, BLOCKER).
+
+## 2026-11-06 — 2.5.4: этап A закрыт (poster-manager)
+
+- A1 (8d39b0f): utils/inline_buttons.py — `disabled_button` (api_kwargs
+  {"disabled": {}}, без callback_data — проверено на реальном пути запроса
+  Bot.send_message) + style (primary/success/danger). 18 тестов.
+- A2 (75b49eb): редактор полей in-place — выбор поля меняет клавиатуру анонса
+  (протокол `anq_`, handlers/announcement_field_input.py), подсказка
+  `⏳ Ожидаю …` disabled-кнопкой, ready-варианты и Назад/Пропустить на анонсе,
+  сохранение in-place → возврат к списку полей; рестарт: resume-снимок с
+  chat_id (чужой чат отклоняется); «message is not modified» = успех.
+  Дефект, найденный тестом: _field_for_input получал внутренний id вместо
+  Telegram id — исправлен, есть регрессия. 17+14 тестов (включая приёмку A
+  ef42bea: 14 сценариев Tester, pass). Целевые 105 OK, смежные 181 OK.
+- Замечание Tester (minor, вне контракта): anq_-callback другого поля
+  применяется и закрывает открытый ввод — данные валидны, клавиатура одна;
+  не блокирует.
+- HEAD ef42bea. NEXT: этап B (длинный текст + отмена, §3, HIGH).
+
 ## 2026-11-06 — Poster 2.5.4: старт (poster-manager)
 
 База: HEAD b1fc504 (2.5.3 выпущен, дерево чистое, main = origin/main).
