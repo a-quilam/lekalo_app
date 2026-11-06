@@ -48,6 +48,7 @@ try:
         InputRichBlockSectionHeading,
         InputRichMessage,
         RichMessageError,
+        rich_text_plain,
         send_rich_message,
         validate_rich_message,
     )
@@ -65,10 +66,13 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
     IMPORT_ERROR = str(exc)
 
 
-# §53 + Poster 2.5.1: единственная кнопка возврата из справки — «◀️ Назад»
-# (`help_back`), старая «🏠 В меню» (`main_menu`) с Rich Message убрана.
+# §53 + Poster 2.5.1: кнопка возврата из справки — «◀️ Назад» (`help_back`),
+# старая «🏠 В меню» (`main_menu`) с Rich Message убрана. Poster 2.5.4 §7
+# добавил вторую кнопку в ТОЙ ЖЕ строке — «ℹ️ О проекте» (`help_about`).
 BACK_LABEL = "◀️ Назад"
 BACK_DATA = "help_back"
+ABOUT_LABEL = "ℹ️ О проекте"
+ABOUT_DATA = "help_about"
 
 
 class StubBot:
@@ -131,7 +135,7 @@ def _list_item_texts(block: InputRichBlockList) -> list[str]:
     for item in block.items:
         for child in item.blocks:
             if isinstance(child, InputRichBlockParagraph):
-                texts.append(child.text)
+                texts.append(rich_text_plain(child.text))
     return texts
 
 
@@ -181,7 +185,9 @@ class HelpStructureTests(unittest.TestCase):
         self.assertEqual(len(details), 10)
         for block in details:
             self.assertIsNone(block.is_open, "раздел должен быть свёрнут (§52)")
-            self.assertTrue(block.summary.strip(), "пустое название раздела")
+            self.assertTrue(
+                rich_text_plain(block.summary).strip(), "пустое название раздела"
+            )
 
     def test_details_are_real_expandable_blocks(self) -> None:
         payload = self.rich.to_dict()
@@ -197,7 +203,7 @@ class HelpStructureTests(unittest.TestCase):
             self.assertIn("summary", block)
 
     def test_section_titles_cover_spec(self) -> None:
-        titles = [block.summary for block in self._details()]
+        titles = [rich_text_plain(block.summary) for block in self._details()]
         for expected in (
             "Создание анонса",
             "Площадки",
@@ -214,14 +220,14 @@ class HelpStructureTests(unittest.TestCase):
 
     def test_section_texts_mention_expected_keywords(self) -> None:
         """§54: тексты разделов действительно рассказывают о своём предмете."""
-        by_title = {block.summary: block for block in self._details()}
+        by_title = {rich_text_plain(block.summary): block for block in self._details()}
 
         def text_of(title: str) -> str:
             block = by_title[title]
             parts = []
             for child in block.blocks:
                 if isinstance(child, InputRichBlockParagraph):
-                    parts.append(child.text)
+                    parts.append(rich_text_plain(child.text))
                 elif isinstance(child, InputRichBlockList):
                     parts.extend(_list_item_texts(child))
             return "\n".join(parts)
@@ -258,7 +264,7 @@ class HelpStructureTests(unittest.TestCase):
         with mock.patch.object(ui_texts, "_catalog", patched):
             rebuilt = build_help_rich_message()
         by_title = {
-            block.summary: block
+            rich_text_plain(block.summary): block
             for block in rebuilt.blocks or ()
             if isinstance(block, InputRichBlockDetails)
         }
@@ -267,7 +273,7 @@ class HelpStructureTests(unittest.TestCase):
             parts: list[str] = []
             for child in by_title[title].blocks:
                 if isinstance(child, InputRichBlockParagraph):
-                    parts.append(child.text)
+                    parts.append(rich_text_plain(child.text))
                 elif isinstance(child, InputRichBlockList):
                     parts.extend(_list_item_texts(child))
             return "\n".join(parts)
@@ -300,7 +306,7 @@ class HelpStructureTests(unittest.TestCase):
             for child in block.blocks:
                 values: list[str] = []
                 if isinstance(child, InputRichBlockParagraph):
-                    values.append(child.text)
+                    values.append(rich_text_plain(child.text))
                 elif isinstance(child, InputRichBlockList):
                     values.extend(_list_item_texts(child))
                 for value in values:
@@ -320,7 +326,11 @@ class HelpStructureTests(unittest.TestCase):
             "/admin",
             "/cancel",
         }
-        details = [block for block in self._details() if block.summary == "Команды"]
+        details = [
+            block
+            for block in self._details()
+            if rich_text_plain(block.summary) == "Команды"
+        ]
         self.assertEqual(len(details), 1)
         items: list[str] = []
         for child in details[0].blocks:
@@ -524,7 +534,9 @@ class HelpFlowTests(unittest.TestCase):
         self.assertTrue(all("is_open" not in block for block in details))
 
         labels = [label for label, _data in inline_buttons(record["reply_markup"])]
-        self.assertEqual(labels, [BACK_LABEL], "на справке должна быть одна кнопка")
+        # Poster 2.5.4 §7: на справке две кнопки в ОДНОЙ строке — возврат на
+        # экран-источник и переход к «О проекте».
+        self.assertEqual(labels, [BACK_LABEL, ABOUT_LABEL])
 
         # обычный sendMessage под видом Rich Message не отправлялся
         rich_calls = [c for c in h.calls if c["type"] == "rich_message"]

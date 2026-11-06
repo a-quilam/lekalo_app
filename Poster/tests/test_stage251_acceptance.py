@@ -89,6 +89,9 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 BACK_LABEL = "◀️ Назад"
 BACK_DATA = "help_back"
+# Poster 2.5.4 §7: вторая кнопка в той же строке — «ℹ️ О проекте».
+ABOUT_LABEL = "ℹ️ О проекте"
+ABOUT_DATA = "help_about"
 RICH_KEY = "help_rich_message_id"
 MENU_TEXT = "Что хотите сделать?"
 
@@ -207,13 +210,17 @@ class RichHelpAcceptanceTests(unittest.TestCase):
         self.assertNotIn("rich_temp", screen_utils.load_payload(h.user_id) or {})
 
     @scenario_test
-    async def test_help_keyboard_single_button(self, h: Harness) -> None:
+    async def test_help_keyboard_has_back_and_about_buttons(self, h: Harness) -> None:
+        """Poster 2.5.4 §7: возврат и «ℹ️ О проекте» — в одной строке."""
         await h.text("/start")
         await h.callback("help")
-        buttons = inline_buttons(h.bot.rich_records[-1]["reply_markup"])
+        record = h.bot.rich_records[-1]
+        buttons = inline_buttons(record["reply_markup"])
 
-        self.assertEqual(buttons, [(BACK_LABEL, BACK_DATA)])
-        self.assertEqual(len(buttons), 1, "на справке ровно одна кнопка")
+        self.assertEqual(buttons, [(BACK_LABEL, BACK_DATA), (ABOUT_LABEL, ABOUT_DATA)])
+        self.assertEqual(len(buttons), 2, "на справке две кнопки")
+        rows = record["reply_markup"].inline_keyboard
+        self.assertEqual(len(rows), 1, "кнопки должны стоять в одной строке")
         self.assertNotIn(
             "main_menu", [data for _label, data in buttons], "старая кнопка меню"
         )

@@ -86,6 +86,9 @@ SECTION_TITLES = (
 # §53 + Poster 2.5.1: кнопка возврата из справки на экран-источник.
 BACK_LABEL = "◀️ Назад"
 BACK_DATA = "help_back"
+# Poster 2.5.4 §7: «ℹ️ О проекте» — вторая кнопка в ТОЙ ЖЕ строке справки.
+ABOUT_LABEL = "ℹ️ О проекте"
+ABOUT_DATA = "help_about"
 # Прежняя кнопка «🏠 В меню» с Rich Message убрана (2.5.1).
 LEGACY_BACK_DATA = "main_menu"
 
@@ -310,9 +313,10 @@ class RichHelpDeliveryTests(unittest.TestCase):
         self.assertEqual(registered - listed, set(), "команда не описана в справке")
 
     @scenario_test
-    async def test_help_keyboard_has_single_back_button(self, h) -> None:
+    async def test_help_keyboard_has_back_and_about_buttons(self, h) -> None:
         """
-        §53 + 2.5.1: на Rich Message ровно одна кнопка «◀️ Назад» (help_back).
+        §53 + 2.5.1 + 2.5.4 §7: на Rich Message две кнопки в одной строке —
+        «◀️ Назад» (help_back) и «ℹ️ О проекте» (help_about).
 
         Кнопка «🏠 В меню» с Rich Message убрана: справка возвращает на
         реальный экран-источник, а не безусловно в меню.
@@ -322,8 +326,10 @@ class RichHelpDeliveryTests(unittest.TestCase):
         record = _rich_records(h)[0]
 
         buttons = inline_buttons(record["reply_markup"])
-        self.assertEqual(buttons, [(BACK_LABEL, BACK_DATA)])
-        self.assertEqual(len(buttons), 1, "на Rich Message должна быть одна кнопка")
+        self.assertEqual(buttons, [(BACK_LABEL, BACK_DATA), (ABOUT_LABEL, ABOUT_DATA)])
+        self.assertEqual(len(buttons), 2, "на Rich Message две кнопки")
+        rows = record["reply_markup"].inline_keyboard
+        self.assertEqual(len(rows), 1, "обе кнопки должны стоять в одной строке")
         self.assertNotIn(
             LEGACY_BACK_DATA,
             [data for _label, data in buttons],

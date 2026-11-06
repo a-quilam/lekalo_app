@@ -20,6 +20,12 @@
   Optional и передаётся ТОЛЬКО при True (отсутствие = свёрнуто);
 - `InputRichMessage`: ровно один способ содержимого (справка — `blocks`).
 
+Poster 2.5.4 §7 добавил второй Rich Message («О проекте») и `RichTextUrl`:
+поле `text` у `heading`/`paragraph` и `summary` у `details` — это `RichText`
+(строка, массив `RichText` или типизированный объект), а `RichTextUrl`
+(`type: "url"`, поля `text` и `url`) даёт кликабельную подпись вместо
+«голого» адреса. Контракт проверяется для ОБОИХ сообщений.
+
 Реальная сеть, Telegram, `.env` и `post_bot.db` не используются.
 """
 
@@ -37,6 +43,7 @@ from rich_message import (
     InputRichBlockParagraph,
     InputRichBlockSectionHeading,
     InputRichMessage,
+    InputRichTextUrl,
     RichMessageError,
     validate_rich_message,
 )
@@ -50,6 +57,8 @@ LIST_KEYS = {"type", "items"}
 LIST_ITEM_KEYS = {"blocks"}
 DIVIDER_KEYS = {"type"}
 DETAILS_KEYS = {"type", "summary", "blocks"}
+# RichTextUrl: подпись (RichText) и адрес ссылки.
+URL_KEYS = {"type", "text", "url"}
 
 
 def _payload() -> dict[str, Any]:
@@ -79,6 +88,28 @@ def _all_blocks(payload: dict[str, Any]) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     for block in _blocks(payload):
         found.extend(_walk(block))
+    return found
+
+
+def _rich_text_objects(value: Any) -> list[dict[str, Any]]:
+    """Типизированные объекты `RichText` (например `RichTextUrl`) внутри поля."""
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [obj for item in value for obj in _rich_text_objects(item)]
+    return []
+
+
+def _all_urls(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """Все `RichTextUrl` сообщения (внутри `text` и `summary`)."""
+    found: list[dict[str, Any]] = []
+    for block in _all_blocks(payload):
+        for field in ("text", "summary"):
+            found.extend(
+                obj
+                for obj in _rich_text_objects(block.get(field))
+                if obj.get("type") == "url"
+            )
     return found
 
 
@@ -184,7 +215,167 @@ class HelpRichOfficialSchemaTests(unittest.TestCase):
         self.assertIn("/help — эта справка", texts)
 
 
-# —— 2. Валидация: official-схема отвергает неверные значения ————————
+# —— 2. «О проекте» и RichTextUrl (Poster 2.5.4 §7) ——————————————————
+
+
+class AboutRichOfficialSchemaTests(unittest.TestCase):
+    """
+    Второй Rich Message проверяется по той же официальной схеме.
+
+    Ключевое отличие от справки — ссылки: `text`/`summary` остаются
+    `RichText`, а `RichTextUrl` передаётся объектом `{type, text, url}`, а не
+    строкой. Тест закрепляет имена полей и то, что в запросе нет ничего
+    лишнего (никаких `href`/`label`/`caption`).
+    """
+
+    def setUp(self) -> None:
+        from about_rich import build_about_rich_message
+
+        self.payload = build_about_rich_message().to_dict()
+
+    def test_payload_is_json_and_single_way(self) -> None:
+        self.assertEqual(list(self.payload), ["blocks"])
+        encoded = json.dumps(self.payload, ensure_ascii=False)
+        self.assertEqual(json.loads(encoded), self.payload)
+
+    def test_blocks_use_only_official_shapes(self) -> None:
+        allowed = {
+            "heading": HEADING_KEYS,
+            "paragraph": PARAGRAPH_KEYS,
+            "list": LIST_KEYS,
+            "divider": DIVIDER_KEYS,
+            "details": DETAILS_KEYS,
+        }
+        for block in _all_blocks(self.payload):
+            self.assertIn(block["type"], allowed, "неизвестный тип блока")
+            self.assertEqual(set(block), allowed[block["type"]], "лишние поля в блоке")
+            if block["type"] == "list":
+                for item in block["items"]:
+                    self.assertEqual(set(item), LIST_ITEM_KEYS)
+
+    def test_url_objects_have_official_fields(self) -> None:
+        urls = _all_urls(self.payload)
+        self.assertTrue(urls, "в «О проекте» нет RichTextUrl")
+        for item in urls:
+            self.assertEqual(set(item), URL_KEYS)
+            self.assertIsInstance(item["url"], str)
+            # Подпись — снова RichText: строка.
+            self.assertIsInstance(item["text"], str)
+            self.assertTrue(item["text"].strip())
+
+    def test_rich_text_array_is_a_list_of_strings_or_urls(self) -> None:
+        """Массив `RichText` (фраза со ссылкой) — плоский и непустой."""
+        for block in _all_blocks(self.payload):
+            for field in ("text", "summary"):
+                value = block.get(field)
+                if not isinstance(value, list):
+                    continue
+                self.assertTrue(value, "пустой массив RichText")
+                for part in value:
+                    self.assertIsInstance(part, (str, dict))
+                    if isinstance(part, dict):
+                        self.assertEqual(set(part), URL_KEYS)
+
+    def test_semantics_survive_serialization(self) -> None:
+        blocks = _blocks(self.payload)
+        self.assertEqual(blocks[0]["text"], DEFAULTS["about.rich.title"])
+        self.assertEqual(
+            [b["summary"] for b in blocks if b["type"] == "details"],
+            [DEFAULTS[f"about.rich.section{number}"] for number in range(1, 7)],
+        )
+
+
+class RichTextUrlFixtureTests(unittest.TestCase):
+    """RichTextUrl как вход адаптера: сериализация и проверка до сети."""
+
+    def test_url_serializes_by_schema(self) -> None:
+        block = InputRichBlockParagraph(
+            text=InputRichTextUrl(text="GitHub", url="https://github.com/x")
+        )
+        self.assertEqual(
+            block.to_dict(),
+            {
+                "type": "paragraph",
+                "text": {
+                    "type": "url",
+                    "text": "GitHub",
+                    "url": "https://github.com/x",
+                },
+            },
+        )
+        validate_rich_message(InputRichMessage(blocks=(block,)))
+
+    def test_string_paragraph_stays_string(self) -> None:
+        """Обычный текст не превращается в объект: запрос не растёт."""
+        self.assertEqual(
+            InputRichBlockParagraph(text="привет").to_dict(),
+            {"type": "paragraph", "text": "привет"},
+        )
+
+    def test_array_of_parts_serializes_in_order(self) -> None:
+        block = InputRichBlockParagraph(
+            text=(
+                "Код: ",
+                InputRichTextUrl(text="репозиторий", url="https://github.com/x"),
+                " — открыт.",
+            )
+        )
+        payload = block.to_dict()
+        self.assertIsInstance(payload["text"], list)
+        self.assertEqual(
+            [
+                part if isinstance(part, str) else part["type"]
+                for part in payload["text"]
+            ],
+            ["Код: ", "url", " — открыт."],
+        )
+
+    def test_url_requires_http_and_label(self) -> None:
+        for url in ("", "ftp://example.com", "example.com", " t.me/x"):
+            with self.subTest(url=url):
+                with self.assertRaises(RichMessageError):
+                    validate_rich_message(
+                        InputRichMessage(
+                            blocks=(
+                                InputRichBlockParagraph(
+                                    text=InputRichTextUrl(text="x", url=url)
+                                ),
+                            )
+                        )
+                    )
+
+    def test_url_requires_label(self) -> None:
+        with self.assertRaises(RichMessageError):
+            validate_rich_message(
+                InputRichMessage(
+                    blocks=(
+                        InputRichBlockParagraph(
+                            text=InputRichTextUrl(text="  ", url="https://e.com")
+                        ),
+                    )
+                )
+            )
+
+    def test_empty_array_is_rejected(self) -> None:
+        with self.assertRaises(RichMessageError):
+            validate_rich_message(
+                InputRichMessage(blocks=(InputRichBlockParagraph(text=()),))
+            )
+
+    def test_summary_accepts_rich_text(self) -> None:
+        """`summary` details — тоже RichText: строка и ссылка равноправны."""
+        block = InputRichBlockDetails(
+            summary=InputRichTextUrl(text="Ссылка", url="https://e.com"),
+            blocks=(InputRichBlockParagraph(text="текст"),),
+        )
+        validate_rich_message(InputRichMessage(blocks=(block,)))
+        self.assertEqual(
+            block.to_dict()["summary"],
+            {"type": "url", "text": "Ссылка", "url": "https://e.com"},
+        )
+
+
+# —— 3. Валидация: official-схема отвергает неверные значения ————————
 
 
 class OfficialSchemaValidationTests(unittest.TestCase):

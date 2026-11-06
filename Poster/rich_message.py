@@ -28,8 +28,13 @@ InputRichBlock):
 - `details` — `summary`, `blocks` и необязательный `is_open`: поле
   передаётся ТОЛЬКО при True, отсутствие означает «свёрнут».
 
-Rich Message используется ИСКЛЮЧИТЕЛЬНО для справки (§46): анонсы
-отправляются обычными сообщениями/альбомами.
+Поле `text` у `heading`/`paragraph` и `summary` у `details` по официальной
+схеме имеет тип `RichText`: строка простого текста, массив таких же
+значений либо типизированный объект. Poster использует два случая: строку
+и `RichTextUrl` (кликабельная подпись вместо «голого» адреса, §7 2.5.4).
+
+Rich Message используется только для служебных экранов «Помощь» и
+«О проекте» (§46): анонсы отправляются обычными сообщениями/альбомами.
 """
 
 from __future__ import annotations
@@ -73,25 +78,76 @@ class RichMessageError(ValueError):
 
 
 @dataclass(frozen=True)
+class InputRichTextUrl:
+    """
+    Ссылка с подписью (`RichTextUrl`, тип `url`).
+
+    По официальной схеме Bot API 10.1 это `RichText`: `text` — сама подпись
+    (снова `RichText`), `url` — адрес. Обычная строка со ссылкой тоже
+    допустима, но Telegram покажет её как автодетект адреса; здесь нужна
+    короткая кликабельная подпись («Открыть на GitHub»), поэтому тип
+    передаётся явно.
+    """
+
+    text: RichText
+    url: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "url",
+            "text": rich_text_to_dict(self.text),
+            "url": self.url,
+        }
+
+
+# Официальный `RichText`: строка, типизированный объект или их массив.
+# Poster использует один уровень вложенности (подпись ссылки — строка):
+# этого достаточно, а рекурсивный разбор не нужен и не проверяется.
+RichText = str | InputRichTextUrl | Sequence[str | InputRichTextUrl]
+
+
+def rich_text_to_dict(value: RichText) -> Any:
+    """Сериализует `RichText` в форму Bot API (строка остаётся строкой)."""
+    if isinstance(value, InputRichTextUrl):
+        return value.to_dict()
+    if isinstance(value, str):
+        return value
+    return [rich_text_to_dict(item) for item in value]
+
+
+def rich_text_plain(value: RichText) -> str:
+    """Плоский текст `RichText` (для проверок и логов, не для отправки)."""
+    if isinstance(value, InputRichTextUrl):
+        return rich_text_plain(value.text)
+    if isinstance(value, str):
+        return value
+    return "".join(rich_text_plain(item) for item in value)
+
+
+@dataclass(frozen=True)
 class InputRichBlockSectionHeading:
     """Заголовок раздела (`InputRichBlockSectionHeading`, `type: "heading"`)."""
 
-    text: str
+    text: RichText
     # 1 — самый крупный заголовок, 6 — самый мелкий (официальная схема).
     size: int = 1
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "heading", "text": self.text, "size": self.size}
+        return {
+            "type": "heading",
+            "text": rich_text_to_dict(self.text),
+            "size": self.size,
+        }
 
 
 @dataclass(frozen=True)
 class InputRichBlockParagraph:
     """Абзац текста (`InputRichBlockParagraph`, §49)."""
 
-    text: str
+    text: RichText
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "paragraph", "text": self.text}
+        return {"type": "paragraph", "text": rich_text_to_dict(self.text)}
 
 
 @dataclass(frozen=True)
@@ -143,14 +199,14 @@ class InputRichBlockDetails:
     свёрнуто). True передаётся как есть; False избыточно и не сериализуется.
     """
 
-    summary: str
+    summary: RichText
     blocks: Sequence[RichBlock] = field(default_factory=tuple)
     is_open: bool | None = None
 
     def to_dict(self, *, depth: int = 0) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "type": "details",
-            "summary": self.summary,
+            "summary": rich_text_to_dict(self.summary),
             "blocks": [block_to_dict(block, depth=depth + 1) for block in self.blocks],
         }
         if self.is_open:
@@ -227,6 +283,38 @@ def _require_text(value: Any, what: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise RichMessageError(f"{what}: ожидается непустая строка.")
     return value
+
+
+def _require_rich_text(value: Any, what: str) -> RichText:
+    """
+    Проверяет `RichText`: непустая строка, `RichTextUrl` или их массив.
+
+    Проверка ДО сети: тип `text`/`summary` по официальной схеме — `RichText`,
+    поэтому строка и ссылка с подписью равноправны, а случайный `None` или
+    число должны упасть здесь, а не отказом Telegram.
+    """
+    if isinstance(value, InputRichTextUrl):
+        _require_rich_text(value.text, f"{what}.text")
+        _require_url(value.url, f"{what}.url")
+        return value
+    if isinstance(value, str):
+        _require_text(value, what)
+        return value
+    if isinstance(value, (bytes, bytearray)) or not isinstance(value, Sequence):
+        raise RichMessageError(f"{what}: ожидается строка, RichTextUrl или их список.")
+    if not value:
+        raise RichMessageError(f"{what}: список RichText пуст.")
+    for item in value:
+        _require_rich_text(item, f"{what}[]")
+    return value
+
+
+def _require_url(value: Any, what: str) -> str:
+    """Адрес ссылки: непустая строка со схемой http(s) (схема Bot API)."""
+    text = _require_text(value, what)
+    if not text.startswith(("http://", "https://")):
+        raise RichMessageError(f"{what}: ожидается ссылка http(s)://…")
+    return text
 
 
 def validate_rich_message(message: InputRichMessage | Mapping[str, Any]) -> None:
@@ -308,10 +396,10 @@ def _validate_block(block: Any, *, depth: int) -> None:
             f"Неизвестный блок Rich Message: {type(block).__name__}."
         )
     if isinstance(block, InputRichBlockSectionHeading):
-        _require_text(block.text, "Heading.text")
+        _require_rich_text(block.text, "Heading.text")
         _require_size(block.size, "Heading.size")
     elif isinstance(block, InputRichBlockParagraph):
-        _require_text(block.text, "Paragraph.text")
+        _require_rich_text(block.text, "Paragraph.text")
     elif isinstance(block, InputRichBlockList):
         if isinstance(block.items, (str, bytes)) or not isinstance(
             block.items, Sequence
@@ -326,7 +414,7 @@ def _validate_block(block: Any, *, depth: int) -> None:
     elif isinstance(block, InputRichBlockDivider):
         return
     elif isinstance(block, InputRichBlockDetails):
-        _require_text(block.summary, "Details.summary")
+        _require_rich_text(block.summary, "Details.summary")
         if block.is_open is not None and not isinstance(block.is_open, bool):
             raise RichMessageError("Details.is_open: ожидается true/false.")
         if depth + 1 > MAX_DETAILS_DEPTH:

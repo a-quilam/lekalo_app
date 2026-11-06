@@ -56,6 +56,9 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 BACK_LABEL = "◀️ Назад"
 BACK_DATA = "help_back"
+# Poster 2.5.4 §7: «ℹ️ О проекте» — вторая кнопка в той же строке справки.
+ABOUT_LABEL = "ℹ️ О проекте"
+ABOUT_DATA = "help_about"
 LEGACY_BACK_DATA = "main_menu"
 RICH_KEY = "help_rich_message_id"
 MENU_TEXT = "Что хотите сделать?"
@@ -102,22 +105,27 @@ def _stored_value(h: Harness, draft_id: int, brick_id: int) -> dict | None:
     f"интеграционное окружение недоступно: {INTEGRATION_IMPORT_ERROR}",
 )
 class HelpKeyboardTests(unittest.TestCase):
-    """П.1: на Rich Message ровно одна кнопка возврата — «◀️ Назад»."""
+    """П.1 + 2.5.4 §7: на справке «◀️ Назад» и «ℹ️ О проекте» в одной строке."""
 
     @scenario_test
-    async def test_help_has_single_back_button(self, h: Harness) -> None:
+    async def test_help_has_back_and_about_buttons(self, h: Harness) -> None:
         await h.text("/start")
         await h.callback("help")
         record = _rich_records(h)[0]
 
         buttons = inline_buttons(record["reply_markup"])
-        self.assertEqual(buttons, [(BACK_LABEL, BACK_DATA)])
+        self.assertEqual(buttons, [(BACK_LABEL, BACK_DATA), (ABOUT_LABEL, ABOUT_DATA)])
         self.assertNotIn(
             LEGACY_BACK_DATA,
             [data for _label, data in buttons],
             "старая кнопка «🏠 В меню» осталась на Rich Message",
         )
-        self.assertEqual(len(buttons), 1, "на справке должна быть одна кнопка")
+        self.assertEqual(len(buttons), 2, "на справке две кнопки")
+        self.assertEqual(
+            len(record["reply_markup"].inline_keyboard),
+            1,
+            "кнопки справки должны стоять в одной строке",
+        )
 
 
 @unittest.skipIf(

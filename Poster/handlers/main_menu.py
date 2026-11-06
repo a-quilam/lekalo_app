@@ -34,6 +34,7 @@ from telegram.ext import (
     filters,
 )
 
+from about_rich import build_about_rich_message
 from admin_state import clear_admin_session, has_admin_session, load_admin_session
 from brick_state import clear_brick_session, has_brick_draft, load_brick_session
 from database import SessionLocal
@@ -391,40 +392,51 @@ def help_return_target(user_id: int, user_data: dict) -> str:
     return "main"
 
 
-async def render_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _render_help_screen(
+    context: ContextTypes.DEFAULT_TYPE,
+    user_id: int,
+    user_data: dict,
+    chat_id: int,
+    *,
+    keep_source: bool,
+) -> bool:
     """
-    Справка: настоящий Rich Message `sendRichMessage` (Poster 2.5 §46–53).
+    Отправляет Rich Message справки и запоминает его id (Poster 2.5.4 §7).
 
-    Порядок: запомнить экран-источник, закрыть его, отправить Rich Message с
-    кнопкой «◀️ Назад», запомнить message_id как служебный. Обычного
-    `sendMessage` здесь нет: подменять Rich Message текстом запрещено (§54).
-    При отказе Telegram справка не показывается «как будто всё хорошо»:
-    пользователь получает короткое сообщение в обычном экране, причина —
-    в лог.
+    Общий путь для первого открытия и для возврата с «О проекте». Порядок
+    обязателен: удалить прежний временный Rich Message (справку ИЛИ
+    «О проекте»), закрыть служебный экран, отправить справку, запомнить id.
 
-    Poster 2.5.1: источник НЕ стирается. Сессии разделов, resume-снимок и ui
-    конструктора остаются — их не удаляют ни `_drop_resume`, ни
-    `clear_*_session`: `help_back` перерисует предыдущий служебный экран из
-    сохранённого контекста. Закрывается только сам экран (Rich Message
-    нельзя рисовать рядом с активной клавиатурой — иначе в чате две
-    конкурирующие клавиатуры).
+    `keep_source=True` — возврат с «О проекте»: категория источника уже
+    записана при первом открытии справки, и пересчитывать её нельзя
+    (иначе «Назад» из справки ушёл бы не туда, откуда её открыли).
+
+    Возвращает False, если Telegram отверг структурированное сообщение:
+    тогда показан обычный экран с понятной причиной.
     """
-    # навигация сообщением ниже экрана → экран пересоздаётся рядом с вводом
-    await screen.reanchor_screen(update, context)
-    user_id = ctx.user(update).id
-    user_data = ctx.data(context)
-    chat_id = ctx.chat(update).id
-    # Категория источника — только в памяти: после рестарта возврат идёт в
-    # главное меню, а персистентный контекст (сессии/resume) при этом цел.
-    user_data[HELP_RETURN_KEY] = help_return_target(user_id, user_data)
-    # Повторное открытие справки не копит Rich Message: прежнее удаляется.
-    # user_id — чтобы найти id прежней справки в БД, если он потерян из
-    # user_data после рестарта службы (§53).
+    if not keep_source:
+        # Категория источника — только в памяти: после рестарта возврат идёт
+        # в главное меню, а персистентный контекст при этом цел.
+        user_data[HELP_RETURN_KEY] = help_return_target(user_id, user_data)
+    # Повторное открытие не копит Rich Message: прежнее удаляется.
+    # user_id — чтобы найти id в БД, если он потерян из user_data после
+    # рестарта службы (§53).
     await screen.drop_rich_temp(context.bot, chat_id, user_data, user_id)
     await _close_screen(context, user_data, user_id, chat_id)
 
+    # Poster 2.5.4 §7: обе кнопки в ОДНОЙ строке — возврат на экран-источник
+    # и переход к «О проекте» (второй и последний Rich Message).
     keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(tr("buttons.help_back"), callback_data="help_back")]]
+        [
+            [
+                InlineKeyboardButton(
+                    tr("buttons.help_back"), callback_data="help_back"
+                ),
+                InlineKeyboardButton(
+                    tr("buttons.help_about"), callback_data="help_about"
+                ),
+            ]
+        ]
     )
     try:
         message = await send_rich_message(
@@ -444,16 +456,46 @@ async def render_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             user_id=user_id,
         )
         screen.save_screen_ref(user_id, user_data, chat_id)
-        return
+        return False
 
     # Адаптер возвращает Message или (при неполном ответе) message_id —
     # обе формы равнозначны для навигации. id пишется и в user_data, и в
-    # `user_states` (§53): после рестарта службы справку иначе нечем удалить,
-    # и она осталась бы живой кнопкой рядом с новым экраном.
+    # `user_states` (§53): после рестарта службы Rich Message иначе нечем
+    # удалить, и он остался бы живой кнопкой рядом с новым экраном.
     if isinstance(message, Message):
         screen.remember_rich_temp(user_id, user_data, message.message_id)
     else:
         screen.remember_rich_temp(user_id, user_data, int(message))
+    return True
+
+
+async def render_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Справка: настоящий Rich Message `sendRichMessage` (Poster 2.5 §46–53).
+
+    Порядок: запомнить экран-источник, закрыть его, отправить Rich Message с
+    кнопками «◀️ Назад» и «ℹ️ О проекте» в одной строке, запомнить message_id
+    как служебный. Обычного `sendMessage` здесь нет: подменять Rich Message
+    текстом запрещено (§54). При отказе Telegram справка не показывается «как
+    будто всё хорошо»: пользователь получает короткое сообщение в обычном
+    экране, причина — в лог.
+
+    Poster 2.5.1: источник НЕ стирается. Сессии разделов, resume-снимок и ui
+    конструктора остаются — их не удаляют ни `_drop_resume`, ни
+    `clear_*_session`: `help_back` перерисует предыдущий служебный экран из
+    сохранённого контекста. Закрывается только сам экран (Rich Message
+    нельзя рисовать рядом с активной клавиатурой — иначе в чате две
+    конкурирующие клавиатуры).
+    """
+    # навигация сообщением ниже экрана → экран пересоздаётся рядом с вводом
+    await screen.reanchor_screen(update, context)
+    await _render_help_screen(
+        context,
+        ctx.user(update).id,
+        ctx.data(context),
+        ctx.chat(update).id,
+        keep_source=False,
+    )
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -465,6 +507,87 @@ async def menu_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Inline-кнопка «❓ Помощь» главного меню."""
     await ctx.query(update).answer()
     await render_help(update, context)
+
+
+def about_keyboard() -> InlineKeyboardMarkup:
+    """
+    Клавиатура «О проекте»: единственная кнопка — возврат к справке.
+
+    Та же кнопка стоит на плашке сбоя: Rich Message не отправился, но
+    пользователь не должен остаться без пути назад.
+    """
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(tr("buttons.about_back"), callback_data="about_help")]]
+    )
+
+
+async def render_about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    «ℹ️ О проекте»: второй Rich Message Poster (Poster 2.5.4 §7).
+
+    Порядок: удалить Rich Message справки (в чате не должно остаться двух
+    клавиатур), закрыть служебный экран, отправить «О проекте» с кнопкой
+    «◀️ К помощи», запомнить id как временный Rich Message.
+
+    `help_return` НЕ пересчитывается и не стирается: справка при открытии
+    уже записала экран-источник, и после возврата «◀️ Назад» должен вести
+    туда же — в раздел, на страницу списка или на шаг черновика.
+
+    Отказ Telegram не оставляет пользователя без выхода: показывается
+    обычный экран с понятной причиной и кнопкой возврата к справке.
+    """
+    await ctx.query(update).answer()
+    user_id = ctx.user(update).id
+    user_data = ctx.data(context)
+    chat_id = ctx.chat(update).id
+    # Справка — тоже временный Rich Message: удаляется перед «О проекте»
+    # (id ищется и в user_data, и в БД, поэтому работает после рестарта).
+    await screen.drop_rich_temp(context.bot, chat_id, user_data, user_id)
+    await _close_screen(context, user_data, user_id, chat_id)
+
+    try:
+        message = await send_rich_message(
+            context.bot,
+            chat_id,
+            build_about_rich_message(),
+            reply_markup=about_keyboard(),
+        )
+    except Exception as e:  # noqa: BLE001 — экран не должен ронять бота
+        # Токен в текст не попадает: адаптер его не читает и не печатает.
+        logger.warning("Rich Message «О проекте» не отправлено: %s", e)
+        await screen.render_screen(
+            context,
+            user_data,
+            chat_id,
+            tr("about.rich.unavailable"),
+            about_keyboard(),
+            user_id=user_id,
+        )
+        screen.save_screen_ref(user_id, user_data, chat_id)
+        return
+
+    if isinstance(message, Message):
+        screen.remember_rich_temp(user_id, user_data, message.message_id)
+    else:
+        screen.remember_rich_temp(user_id, user_data, int(message))
+
+
+async def about_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    «◀️ К помощи» на «О проекте» → Rich Message справки (Poster 2.5.4 §7).
+
+    Сначала удаляется «О проекте» (временный Rich Message), затем справка
+    отправляется заново. `help_return` сохраняется как есть: источник
+    записан при первом открытии справки, поэтому «◀️ Назад» на ней вернёт
+    пользователя туда, откуда он пришёл. При отказе Telegram работает общий
+    путь `_render_help_screen` — обычный экран с причиной и меню.
+    """
+    await ctx.query(update).answer()
+    user_id = ctx.user(update).id
+    user_data = ctx.data(context)
+    chat_id = ctx.chat(update).id
+    await screen.drop_rich_temp(context.bot, chat_id, user_data, user_id)
+    await _render_help_screen(context, user_id, user_data, chat_id, keep_source=True)
 
 
 async def _restore_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -806,6 +929,9 @@ def main_menu_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(menu_help, pattern="^help$"),
         # Poster 2.5.1: возврат из Rich Message справки на экран-источник.
         CallbackQueryHandler(help_back, pattern="^help_back$"),
+        # Poster 2.5.4 §7: «ℹ️ О проекте» со справки и возврат «◀️ К помощи».
+        CallbackQueryHandler(render_about, pattern="^help_about$"),
+        CallbackQueryHandler(about_back, pattern="^about_help$"),
         CallbackQueryHandler(open_manage, pattern="^manage$"),
         CallbackQueryHandler(manage_places, pattern="^manage_places$"),
         CallbackQueryHandler(manage_templates, pattern="^manage_templates$"),
