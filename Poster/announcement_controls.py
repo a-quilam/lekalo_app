@@ -83,6 +83,10 @@ FIELD_INPUT_ACTION_CALENDAR = "cal"
 FIELD_INPUT_ACTION_RANGE = "range"
 FIELD_INPUT_ACTION_MONTH = "month"
 FIELD_INPUT_ACTION_CALQUICK = "calquick"
+# 2.5.4 §3: отмена НЕОПУБЛИКОВАННОЙ правки поля с экрана ошибки длины.
+# Хвост несёт ревизию черновика: позднее/повторное нажатие после успешного
+# сохранения не откатывает новое значение (см. `_cancel_field_length_edit`).
+FIELD_INPUT_ACTION_CANCEL = "cancel"
 FIELD_INPUT_ACTIONS = (
     FIELD_INPUT_ACTION_BACK,
     FIELD_INPUT_ACTION_SKIP,
@@ -94,6 +98,7 @@ FIELD_INPUT_ACTIONS = (
     FIELD_INPUT_ACTION_RANGE,
     FIELD_INPUT_ACTION_MONTH,
     FIELD_INPUT_ACTION_CALQUICK,
+    FIELD_INPUT_ACTION_CANCEL,
 )
 
 # `anq_back:{instance_id}:{brick_id}` и остальные действия списка ввода.

@@ -532,6 +532,25 @@ def _save_payload_only(user_id: int, payload: dict | None) -> bool:
         session.close()
 
 
+def save_payload_key(user_id: int, key: str, value: object) -> bool:
+    """
+    Пишет ОДНУ отметку интерфейса в `user_states.payload`.
+
+    Отметки (id временного сообщения, запись о незавершённой правке поля)
+    меняются независимо от экрана и WIP-снимка конструктора: перезапись
+    `screen_message_id` из `user_data` была бы ложной. `value=None` убирает
+    ключ. Возвращает True при подтверждённой записи.
+    """
+    payload = load_payload(user_id) or {}
+    if value is None:
+        if key not in payload:
+            return True
+        payload.pop(key, None)
+    else:
+        payload[key] = value
+    return _save_payload_only(user_id, payload or None)
+
+
 def remember_rich_temp(user_id: int, user_data: dict, message_id: int) -> None:
     """
     Запоминает id временного Rich Message (справки) в user_data И в БД (§53).

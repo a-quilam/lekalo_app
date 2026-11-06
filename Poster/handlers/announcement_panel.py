@@ -275,6 +275,19 @@ async def handle_field_input_callback(
         return
 
     await wizard._answer(update)
+    if action == announcement_controls.FIELD_INPUT_ACTION_CANCEL:
+        # 2.5.4 §3: отмена НЕОПУБЛИКОВАННОЙ правки с экрана ошибки длины.
+        # Хвост — ревизия черновика: позднее/повторное нажатие после
+        # успешного сохранения не откатывает новое значение.
+        if len(tail) != 1 or not tail[0].isdigit():
+            await _stale_answer(update)
+            return
+        state = await wizard._cancel_field_length_edit(
+            update, context, details, instance, field, int(tail[0])
+        )
+        wizard.remember_conversation_state(update, context, state)
+        return
+
     if action in {
         announcement_controls.FIELD_INPUT_ACTION_BACK,
         announcement_controls.FIELD_INPUT_ACTION_SKIP,

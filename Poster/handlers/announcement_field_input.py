@@ -44,7 +44,7 @@ from brick_types import (
 )
 from handlers import wizard_questions
 from utils import calendar_view, keyboard_layouts
-from utils.inline_buttons import disabled_button
+from utils.inline_buttons import danger_button, disabled_button
 from utils.parsers import app_today
 from utils.ui_texts import tr, tr_plain
 
@@ -428,6 +428,39 @@ def _choice_rows(
     return rows
 
 
+def length_error_keyboard(
+    instance_id: int, brick_id: int, revision: int
+) -> InlineKeyboardMarkup:
+    """
+    Клавиатура экрана ошибки длины (2.5.4 §3): ровно две кнопки.
+
+    Строка 1 — неактивная подсказка «⏳ Ожидаю текст короче» (нажатие не
+    порождает callback), строка 2 — «Отменить» в стиле `danger`. Никаких
+    «Назад», «Пропустить», списков полей и чисел символов: экран отвечает на
+    один вопрос — что делать с непоместившимся текстом.
+
+    `revision` в хвосте `anq_cancel` — защита от гонки: позднее нажатие после
+    успешного сохранения уже не совпадёт с ревизией черновика и не откатит
+    новое значение.
+    """
+    return InlineKeyboardMarkup(
+        [
+            [disabled_button(tr_plain("wizard.length_refusal.edit_hint"))],
+            [
+                danger_button(
+                    tr_plain("wizard.length_refusal.edit_cancel"),
+                    announcement_controls.field_input_callback(
+                        announcement_controls.FIELD_INPUT_ACTION_CANCEL,
+                        instance_id,
+                        brick_id,
+                        int(revision),
+                    ),
+                )
+            ],
+        ]
+    )
+
+
 def _short(value: object, limit: int) -> str:
     text = " ".join(str(value or "").split())
     if len(text) <= limit:
@@ -556,6 +589,72 @@ async def apply_input_screen(
     return True
 
 
+async def apply_length_error_screen(
+    bot,
+    chat_id: int,
+    details: Any,
+    instance: Any,
+    field: AnnouncementFieldState,
+    *,
+    revision: int,
+    text: str,
+) -> bool:
+    """
+    Показывает ЭКРАН ОШИБКИ ДЛИНЫ на существующем управлении анонса (2.5.4 §3).
+
+    Текст анонса и подпись НЕ меняются: у 0–1 фото правится только
+    клавиатура сообщения (`editMessageReplyMarkup`), у медиагруппы — текст
+    единственной панели (`editMessageText`). Пользовательское сообщение с
+    длинным текстом остаётся в чате: данные уже сохранены в незавершённой
+    правке, поэтому удалять ввод не нужно.
+
+    `text` — короткая причина с применимым лимитом; у медиагруппы она
+    живёт в тексте единственной панели, у 0–1 фото показывается отдельным
+    коротким ответом на ввод (клавиатуру анонса этому не научить).
+    `True` — клавиатура обновлена; `False` — адреса нет или Telegram отказал
+    (данные не тронуты, повторное действие покажет экран снова).
+    """
+    keyboard = length_error_keyboard(instance.id, field.brick_id, revision)
+    if delivery.needs_control_panel(len(details.publication_photos)):
+        panel_id = instance.panel_message_id
+        if panel_id is None:
+            return False
+        try:
+            await delivery.call_telegram(
+                lambda: bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=int(panel_id),
+                    text=text,
+                    parse_mode="HTML",
+                    reply_markup=keyboard,
+                    link_preview_options=announcement_controls.PANEL_LINK_PREVIEW,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 — панель уже в чате
+            if delivery.is_not_modified(exc):
+                return True
+            logger.info("Ошибка длины не показана в панели #%s: %s", instance.id, exc)
+            return False
+        return True
+    message_id = delivery.caption_message_id(instance.message_ids)
+    if message_id is None:
+        return False
+    try:
+        await delivery.call_telegram(
+            lambda: bot.edit_message_reply_markup(
+                chat_id=chat_id,
+                message_id=int(message_id),
+                reply_markup=keyboard,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — клавиатура анонса не критична
+        if delivery.is_not_modified(exc):
+            return True
+        logger.info("Ошибка длины не показана у анонса #%s: %s", instance.id, exc)
+        return False
+    return True
+
+
 __all__ = [
     "CalendarView",
     "VIEW_MONTH",
@@ -563,8 +662,10 @@ __all__ = [
     "VIEW_QUICK",
     "VIEW_RANGE",
     "apply_input_screen",
+    "apply_length_error_screen",
     "calendar_rows",
     "hint_label",
     "input_keyboard",
+    "length_error_keyboard",
     "panel_text",
 ]

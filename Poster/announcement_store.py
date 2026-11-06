@@ -1823,6 +1823,109 @@ def save_announcement_value(
     return _details_by_id(session, actor, row.id)
 
 
+def announcement_value_snapshot(
+    session: Session,
+    *,
+    actor_telegram_user_id: int | None,
+    draft_id: int,
+    brick_id: int,
+) -> tuple[str, str | None]:
+    """
+    Текущее значение кирпичика «как в БД»: `(state, value_json)`.
+
+    `state='missing'` — строки нет. Нужно отмене незавершённой правки: по
+    этому снимку видно, что в поле лежит именно непоместившееся значение, а
+    не уже применённое новое (тогда откат был бы откатом успешной правки).
+    """
+    actor = _require_actor(session, actor_telegram_user_id)
+    row = _load_owned_draft(session, actor, draft_id)
+    if not _valid_positive_id(brick_id):
+        raise AnnouncementBrickError("Некорректный идентификатор кирпичика.")
+    value = session.scalar(
+        select(AnnouncementValue).where(
+            AnnouncementValue.draft_id == row.id,
+            AnnouncementValue.brick_id == int(brick_id),
+        )
+    )
+    if value is None:
+        return "missing", None
+    return value.state, value.value_json
+
+
+def restore_announcement_value(
+    session: Session,
+    *,
+    actor_telegram_user_id: int | None,
+    draft_id: int,
+    brick_id: int,
+    state: str,
+    value_json: str | None,
+    expected_revision: int | None = None,
+) -> AnnouncementDraftDetails:
+    """
+    Возвращает значение кирпичика к ранее сохранённому снимку (2.5.4 §3).
+
+    Нужно отмене НЕОПУБЛИКОВАННОЙ правки: слишком длинный текст заменяет
+    значение в `announcement_values`, но не попадает в доставленный анонс.
+    Отмена возвращает ровно ту строку, что была до правки (`state`/payload),
+    и НИЧЕГО не публикует: опубликованная версия и так не менялась.
+
+    `state='missing'` — строки не было вовсе: значение удаляется, кирпичик
+    снова считается незаполненным. Остальные состояния и payload
+    перепроверяются теми же ограничениями схемы, что и обычная запись.
+    """
+    actor = _require_actor(session, actor_telegram_user_id)
+    if not _valid_positive_id(brick_id):
+        raise AnnouncementBrickError("Некорректный идентификатор кирпичика.")
+    assert isinstance(brick_id, int)
+    row = _load_owned_draft(session, actor, draft_id)
+    _ensure_content_editable(row)
+    revision = _expected_revision(row, expected_revision)
+    if state == "missing":
+        checked_state: str | None = None
+        checked_json: str | None = None
+    elif state == "empty_optional":
+        checked_state = state
+        checked_json = None
+    elif state == "valid":
+        if not isinstance(value_json, str):
+            raise AnnouncementValueError("Снимок значения повреждён.")
+        try:
+            parsed = json.loads(value_json)
+        except (TypeError, ValueError) as exc:
+            raise AnnouncementValueError("Снимок значения повреждён.") from exc
+        if not isinstance(parsed, dict):
+            raise AnnouncementValueError("Снимок значения повреждён.")
+        checked_state = state
+        checked_json = value_json
+    else:
+        raise AnnouncementValueError("Неизвестное состояние значения для отмены.")
+    now = utcnow()
+    try:
+        _cas_update_draft(session, draft_id=row.id, revision=revision)
+        if checked_state is None:
+            session.execute(
+                delete(AnnouncementValue).where(
+                    AnnouncementValue.draft_id == row.id,
+                    AnnouncementValue.brick_id == brick_id,
+                )
+            )
+        else:
+            _upsert_value(
+                session,
+                draft_id=row.id,
+                brick_id=brick_id,
+                state=checked_state,
+                value_json=checked_json,
+                now=now,
+            )
+        _commit(session)
+    except Exception:
+        session.rollback()
+        raise
+    return _details_by_id(session, actor, row.id)
+
+
 def clear_announcement_value(
     session: Session,
     *,

@@ -68,11 +68,13 @@ from announcement_store import (
     PUBLICATION_STATUS_SENDING,
     PUBLICATION_STATUS_SENT,
     AnnouncementActorError,
+    AnnouncementConflictError,
     AnnouncementError,
     AnnouncementFieldState,
     AnnouncementNotFoundError,
     AnnouncementPreview,
     add_announcement_extra,
+    announcement_value_snapshot,
     begin_announcement_publication,
     build_announcement_fields,
     build_announcement_preview,
@@ -92,6 +94,7 @@ from announcement_store import (
     remove_announcement_extra,
     remove_announcement_photo,
     reset_failed_announcement_publication,
+    restore_announcement_value,
     resume_announcement_publication,
     save_announcement_value,
     set_announcement_live_message_ids,
@@ -108,7 +111,9 @@ from brick_types import (
     BRICK_SOURCE_PLACE,
     BRICK_TYPE_CHOICE,
     BRICK_TYPE_DATE,
+    BRICK_TYPE_LONG_TEXT,
     BRICK_TYPE_NUMBER,
+    BRICK_TYPE_SHORT_TEXT,
     BRICK_TYPE_TIME,
     SYSTEM_BRICKS,
     BrickValueResult,
@@ -3266,13 +3271,13 @@ async def _field_input_error(
     message: str,
 ) -> int:
     """
-    Ошибка входа значения БЕЗ потери данных (2.5.4 §1, п.6).
+    Ошибка входа значения БЕЗ потери данных (2.5.4 §1, п.6 / §3).
 
     Клавиатура ввода остаётся/восстанавливается на том же месте, введённое
-    значение не записывается (CAS в домене не прошёл). Полная переделка
-    текстов ошибок — отдельный этап; здесь только безопасный путь: нажатие
-    кнопки получает короткий alert, а текст — короткий ответ на сообщение
-    автора (без нового экрана и без потери клавиатуры).
+    значение не записывается (CAS в домене не прошёл). Превышение лимита
+    имеет отдельный экран (`_field_length_error`): там сохранённый ввод
+    предлагается сократить или отменить. Все прочие ошибки получают
+    короткий alert/ответ на сообщение автора — без нового экрана.
     """
     view = _field_input_view(_ui(context))
     await announcement_field_input.apply_input_screen(
@@ -3298,6 +3303,239 @@ def _field_input_view(ui: dict[str, Any]) -> announcement_field_input.CalendarVi
     if isinstance(value, announcement_field_input.CalendarView):
         return value
     return announcement_field_input.CalendarView()
+
+
+# —— 2.5.4 §3: экран ошибки длины и отмена незавершённой правки ————————
+#
+# Отдельного хранилища незавершённой правки нет: длинный текст уже лежит в
+# `announcement_values` (строка состояния `valid`), а опубликованная версия
+# и сообщение в чате не менялись. Поэтому достаточно запомнить СНИМОК
+# значения, которое было до правки (последнее опубликованное), — по нему
+# «Отменить» вернёт ровно это значение и ничего не опубликует.
+#
+# Снимок живёт в `user_states.payload` рядом с resume-ключом: он переживает
+# рестарт службы и не требует миграции. Ревизия черновика в снимке и в
+# `callback_data` отсекает поздние нажатия: после успешного сохранения
+# ревизия другая, и старая кнопка «Отменить» нового значения не откатывает.
+FIELD_LENGTH_EDIT_KEY = "announcement_field_length_edit"
+
+
+def _field_value_snapshot(user_id: int, details, brick_id: int) -> dict[str, object]:
+    """Снимок значения поля в БД ДО правки: `{state, value_json}`."""
+    try:
+        with SessionLocal() as session:
+            state, value_json = announcement_value_snapshot(
+                session,
+                actor_telegram_user_id=user_id,
+                draft_id=details.draft_id,
+                brick_id=brick_id,
+            )
+    except AnnouncementError:
+        return {"state": "missing", "value_json": None}
+    return {"state": state, "value_json": value_json}
+
+
+def _remember_length_edit(
+    user_id: int,
+    details,
+    instance_id: int,
+    brick_id: int,
+    snapshot: dict[str, object],
+) -> None:
+    """
+    Запоминает незавершённую правку для экрана ошибки длины (2.5.4 §3).
+
+    Снимок «до правки» берётся один раз за незавершённую правку: повторная
+    непоместившаяся попытка увеличивает ревизию, но «Отменить» обязана
+    вернуть последнее ОПУБЛИКОВАННОЕ значение, а не предыдущую неудачную
+    попытку. Поэтому у существующей отметки того же поля обновляется только
+    ревизия (она нужна для защиты от позднего callback), а `state`/
+    `value_json` остаются первыми.
+
+    Отметка снимается при успешном сохранении или отмене — тогда следующая
+    ошибка длины снова возьмёт свежий снимок опубликованного значения.
+    Сбой записи не ломает экран: отмена просто не сработает, данные целы.
+    """
+    existing = screen.load_payload(user_id) or {}
+    current = existing.get(FIELD_LENGTH_EDIT_KEY)
+    base_state = str(snapshot.get("state") or "missing")
+    base_json = snapshot.get("value_json")
+    if (
+        isinstance(current, dict)
+        and current.get("draft_id") == details.draft_id
+        and current.get("brick_id") == brick_id
+    ):
+        base_state = str(current.get("state") or base_state)
+        base_json = current.get("value_json", base_json)
+    screen.save_payload_key(
+        user_id,
+        FIELD_LENGTH_EDIT_KEY,
+        {
+            "draft_id": int(details.draft_id),
+            "brick_id": int(brick_id),
+            "instance_id": int(instance_id),
+            "revision": int(details.revision),
+            "state": base_state,
+            "value_json": base_json,
+        },
+    )
+
+
+def _drop_length_edit(user_id: int, draft_id: int, brick_id: int) -> None:
+    """Снимает отметку о незавершённой правке поля (успех/отмена)."""
+    payload = screen.load_payload(user_id) or {}
+    stored = payload.get(FIELD_LENGTH_EDIT_KEY)
+    if not isinstance(stored, dict):
+        return
+    if stored.get("draft_id") != draft_id or stored.get("brick_id") != brick_id:
+        return
+    screen.save_payload_key(user_id, FIELD_LENGTH_EDIT_KEY, None)
+
+
+def _load_length_edit(user_id: int, details, brick_id: int) -> dict[str, object] | None:
+    """Незавершённая правка поля из `user_states.payload` (None — её нет)."""
+    payload = screen.load_payload(user_id) or {}
+    stored = payload.get(FIELD_LENGTH_EDIT_KEY)
+    if not isinstance(stored, dict):
+        return None
+    if stored.get("draft_id") != details.draft_id:
+        return None
+    if stored.get("brick_id") != brick_id:
+        return None
+    return stored
+
+
+async def _field_length_error(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    instance,
+    field: AnnouncementFieldState,
+    check,
+    snapshot: dict[str, object],
+) -> int:
+    """
+    Экран ошибки длины для правки ДОСТАВЛЕННОГО анонса (2.5.4 §3).
+
+    Длинный текст уже сохранён в незавершённой правке (значение в БД), а
+    опубликованный пост и его сообщение в чате не тронуты. На самом
+    управлении анонса показывается короткая причина и ровно две кнопки:
+    неактивная подсказка «⏳ Ожидаю текст короче» и «Отменить». Никаких
+    списков полей, «Назад», «Обзора» и «уберите фото»: фото может не быть.
+
+    Пользовательское сообщение с длинным текстом НЕ удаляется — это и есть
+    сохранённый ввод, которым автор сократит текст.
+    """
+    _remember_length_edit(
+        _user_id(update),
+        details,
+        instance.id,
+        field.brick_id,
+        snapshot,
+    )
+    # Ревизия в состоянии должна совпадать с БД: иначе следующий (уже
+    # короткий) текст считался бы устаревшим и не заменил незавершённую
+    # правку.
+    _set_details(_ui(context), details)
+    text = tr(
+        "wizard.length_refusal.edit_not_applied",
+        length=check.length,
+        limit=check.limit,
+    )
+    has_panel = delivery.needs_control_panel(len(details.publication_photos))
+    shown = await announcement_field_input.apply_length_error_screen(
+        context.bot,
+        ctx.chat(update).id,
+        details,
+        instance,
+        field,
+        revision=details.revision,
+        text=text,
+    )
+    if shown and not has_panel:
+        # 0–1 фото: текст анонса и подпись не меняются, поэтому причина
+        # приходит отдельным коротким ответом на ввод (Telegram не умеет
+        # показать текст кнопкой). Клавиатура анонса заменена экраном из
+        # двух кнопок. Ответ best-effort: данные и ввод уже целы.
+        msg = update.effective_message
+        if msg is not None:
+            try:
+                notice = await msg.reply_text(text)
+            except Exception as exc:  # noqa: BLE001 — ответ не ломает ввод
+                logger.info("Ошибка длины не показана: %s", exc)
+            else:
+                screen.track_temp(ctx.data(context), notice)
+    if not shown:
+        # Адрес управления потерян: не оставляем «зависший» экран, короткая
+        # причина уходит ответом, данные и ввод целы.
+        if getattr(update, "callback_query", None) is not None:
+            await _answer(update, text, alert=True)
+        else:
+            msg = update.effective_message
+            if msg is not None:
+                try:
+                    notice = await msg.reply_text(text[:200])
+                except Exception as exc:  # noqa: BLE001 — ответ не ломает ввод
+                    logger.info("Ошибка длины не показана: %s", exc)
+                else:
+                    screen.track_temp(ctx.data(context), notice)
+        return AW_PREVIEW
+    _remember_resume(
+        _user_id(update), ctx.data(context), ctx.chat(update).id, _ui(context)
+    )
+    return AW_PREVIEW
+
+
+async def _cancel_field_length_edit(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    instance,
+    field: AnnouncementFieldState,
+    revision: int,
+) -> int:
+    """
+    «Отменить» на экране ошибки длины (2.5.4 §3).
+
+    Возвращает ТОЛЬКО значение этого поля к последнему опубликованному
+    (снимок до правки) и закрывает экран. Публикации нет: доставленная
+    версия и её сообщение не менялись, поэтому повторно применять нечего.
+    Другие поля не откатываются.
+
+    Устаревшая кнопка безопасна: если ревизия черновика другая (правка уже
+    применена или изменена другим действием), снимка нет или он про другое
+    поле, ничего не пишется, а клиент получает короткий alert «Кнопка
+    устарела».
+    """
+    user_id = _user_id(update)
+    stored = _load_length_edit(user_id, details, field.brick_id)
+    if stored is None or stored.get("revision") != int(revision):
+        await _answer(update, announcement_controls.STALE_INSTANCE_TEXT, alert=True)
+        return AW_PREVIEW
+    if int(details.revision) != int(revision):
+        # Позднее нажатие после успешного сохранения: ревизия сдвинулась,
+        # новое значение уже в анонсе — откатывать нечего.
+        await _answer(update, announcement_controls.STALE_INSTANCE_TEXT, alert=True)
+        return AW_PREVIEW
+    try:
+        with SessionLocal() as session:
+            raw_json = stored.get("value_json")
+            restored = restore_announcement_value(
+                session,
+                actor_telegram_user_id=user_id,
+                draft_id=details.draft_id,
+                brick_id=field.brick_id,
+                state=str(stored.get("state") or "missing"),
+                value_json=raw_json if isinstance(raw_json, str) else None,
+                expected_revision=details.revision,
+            )
+    except (AnnouncementError, AnnouncementConflictError) as exc:
+        logger.info("Отмена правки поля не выполнена: %s", exc)
+        await _answer(update, announcement_controls.STALE_INSTANCE_TEXT, alert=True)
+        return AW_PREVIEW
+    _drop_length_edit(user_id, restored.draft_id, field.brick_id)
+    _set_details(_ui(context), restored)
+    return await _return_to_field_list(update, context, restored, instance.id)
 
 
 async def _return_to_field_list(
@@ -3346,6 +3584,16 @@ async def _save_field_input_value(
     списку полей.
     """
     ui = _ui(context)
+    # 2.5.4 §3: снимок значения ДО правки — по нему «Отменить» на экране
+    # ошибки длины вернёт последнее опубликованное значение. Снимок берётся
+    # до записи, только для доставленного анонса и только для текста: у
+    # времени/даты/выбора лимита длины нет.
+    draft_edit_snapshot = (
+        _field_value_snapshot(_user_id(update), details, field.brick_id)
+        if details.publication_sent
+        and field.value_type in (BRICK_TYPE_SHORT_TEXT, BRICK_TYPE_LONG_TEXT)
+        else None
+    )
     try:
         with SessionLocal() as session:
             updated = save_announcement_value(
@@ -3372,6 +3620,19 @@ async def _save_field_input_value(
         fresh = _reload_details(update, updated)
         if applied is None:
             refusal = _length_check(update, fresh)
+            if refusal is not None and draft_edit_snapshot is not None:
+                # 2.5.4 §3: превышение лимита — отдельный экран с двумя
+                # кнопками. Длинный текст уже в незавершённой правке (БД),
+                # опубликованный анонс и сообщение не менялись.
+                return await _field_length_error(
+                    update,
+                    context,
+                    fresh,
+                    instance,
+                    field,
+                    refusal,
+                    draft_edit_snapshot,
+                )
             message = (
                 _length_refusal_text(refusal)
                 if refusal is not None
@@ -3383,6 +3644,10 @@ async def _save_field_input_value(
     if drop_input:
         # Ввод удаляется только после ПОДТВЕРЖДЁННОГО сохранения (2.5.3 §7).
         await _drop_accepted_input(update, context, f"aw:{field.brick_id}")
+    # 2.5.4 §3: правка применена — незавершённой правки этого поля больше
+    # нет, снимок «до правки» снимается (следующая ошибка длины возьмёт
+    # свежий, уже опубликованный снимок).
+    _drop_length_edit(_user_id(update), updated.draft_id, field.brick_id)
     if stay:
         # Множественный выбор: перерисовываем клавиатуру по СВЕЖЕМУ полю,
         # иначе отметки ✅ остались бы от значения до сохранения.
@@ -5155,13 +5420,12 @@ def _photo_mode_keyboard(
     editable = not _edit_blocked(details)
     # «Назад» возвращает управление анонсу тем же протоколом, что и список
     # текстовых полей: кнопка работает по id экземпляра и после рестарта,
-    # когда состояния диалога уже нет.
-    if instance is not None:
-        back = announcement_controls.field_callback(
-            announcement_controls.FIELD_ACTION_BACK, instance.id
-        )
-    else:
-        back = f"aw_edit:{details.draft_id}:{details.revision}"
+    # когда состояния диалога уже нет. Ветки «без экземпляра» нет: клавиатуру
+    # строит только `_render_photo_mode`, а он вызывается лишь при найденном
+    # активном экземпляре (§6, 2.5.3 MINOR-2).
+    back = announcement_controls.field_callback(
+        announcement_controls.FIELD_ACTION_BACK, instance.id
+    )
 
     if clear_confirm:
         return InlineKeyboardMarkup(

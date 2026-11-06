@@ -91,7 +91,9 @@ STALE_INSTANCE = controls.STALE_INSTANCE_TEXT
 STALE_WIZARD = tr("errors.stale.wizard")
 
 # 2.5.3 §7: короткая ошибка превышения лимита.
-LENGTH_REFUSAL = "Не отправлено: текст не помещается"
+# 2.5.4 §3: правка поля доставленного анонса отвечает «Анонс не обновлён»
+# (текст сохранён в незавершённой правке), а не «Не отправлено».
+LENGTH_REFUSAL = "Анонс не обновлён: текст не помещается"
 
 # Формулировки старого маршрута восстановления: их быть не должно.
 REMOVED_MARKERS = (
@@ -611,16 +613,18 @@ class LongTextInDeliveredAnnouncementTests(unittest.TestCase):
             "цикл устаревших кнопок",
         )
 
-        # «◀️ Назад» из ввода и рестарт: правка остаётся в БД.
-        backs = [
-            data
-            for data in h.live_callbacks("anq_back")
-            if data.endswith(f":{bricks['f0']}")
-        ]
-        self.assertEqual(len(backs), 1, f"нет «Назад» ввода: {h.live_buttons()}")
-        await h.callback(backs[0])
-        self.assertIsNone(h.screen_message_id(), "лишний экран ввода остался")
-        self.assertTrue(_field_buttons(h), "список полей не вернулся")
+        # 2.5.4 §3: экран ошибки — ровно две кнопки, «Назад»/«Пропустить» нет.
+        # Вернуться к списку полей можно только «Отменить» (откат) или
+        # прислав подходящий текст; незавершённая правка при этом цела.
+        self.assertEqual(
+            [label for label, _data in h.live_buttons()],
+            [
+                tr("wizard.length_refusal.edit_hint"),
+                tr("wizard.length_refusal.edit_cancel"),
+            ],
+            h.live_buttons(),
+        )
+        self.assertEqual(h.live_callbacks("anq_back"), [], "вернулся старый «Назад»")
 
         await h.restart()
         self.assertIsNone(
