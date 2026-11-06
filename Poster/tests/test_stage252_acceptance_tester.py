@@ -390,14 +390,15 @@ class SingleControlTests(unittest.TestCase):
         active = _only_active(h, draft.id)
         message_id = active.message_ids[0]
 
-        # 2.5.3 §5: «📝 Текстовые поля» — список на самом анонсе; отдельного
-        # экрана нет, выбор поля даёт ровно один временный вопрос.
+        # 2.5.3 §5 + 2.5.4 §1: «📝 Текстовые поля» — список на самом анонсе;
+        # отдельного экрана нет, выбор поля переключает клавиатуру анонса в
+        # режим ввода значения (служебного вопроса тоже нет).
         await h.callback(control_data(h, controls.ACTION_DATA))
         self.assertIsNone(h.screen_message_id(), "служебного экрана нет")
         field_data = _field_callback(h)
         await h.callback(field_data)
-        screen_id = h.screen_message_id()
-        self.assertIsNotNone(screen_id, "временный вопрос не открыт")
+        self.assertIsNone(h.screen_message_id(), "служебный экран ввода")
+        self.assertTrue(h.live_callbacks("anq_"), "клавиатура ввода не открылась")
         await h.text("Обновлено")
 
         self.assertEqual(
@@ -406,8 +407,12 @@ class SingleControlTests(unittest.TestCase):
         self.assertEqual(
             h.bot.content_text(h.chat_id, message_id), "Обновлено", "правка не на месте"
         )
-        self.assertIn(int(screen_id), h.deleted_ids(), "временный вопрос не закрыт")
         self.assertEqual(h.posts(), ["Обновлено"], "создана вторая версия анонса")
+        # 2.5.4 §1: после сохранения — снова список полей на тех же кнопках.
+        self.assertFalse(h.live_callbacks("anq_"), "ввод не закрыт")
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не вернулся")
+        # «◀️ Назад» возвращает управление самому анонсу.
+        await h.callback(h.live_callbacks("anf_back:")[0])
         callbacks = callbacks_of(h, message_id)
         self.assertTrue(
             callbacks and all(item.startswith("anp_") for item in callbacks),
@@ -425,10 +430,11 @@ class SingleControlTests(unittest.TestCase):
         panel = active.panel_message_id
         caption_id = active.message_ids[0]
 
-        # 2.5.3 §5: у медиагруппы список полей — правка текста панели; выбор
-        # поля даёт тот же единственный временный вопрос.
+        # 2.5.3 §5 + 2.5.4 §1: у медиагруппы список полей — правка текста
+        # панели; выбор поля переключает ту же панель в режим ввода.
         await h.callback(control_data(h, controls.ACTION_DATA))
         await h.callback(_field_callback(h))
+        self.assertTrue(h.live_callbacks("anq_"), "клавиатура ввода не открылась")
         await h.text("Обновлено")
 
         self.assertEqual(h.bot.content_text(h.chat_id, caption_id), "Обновлено")
@@ -438,13 +444,17 @@ class SingleControlTests(unittest.TestCase):
             "альбом переиздан",
         )
         self.assertEqual(len(panel_sends(h)), 1, "панель продублирована")
+        # 2.5.4 §1: после сохранения панель снова показывает список полей,
+        # «◀️ Назад» возвращает управление анонсу (`anp_`).
+        self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не вернулся")
+        await h.callback(h.live_callbacks("anf_back:")[0])
         self.assertTrue(
             all(item.startswith("anp_") for item in callbacks_of(h, int(panel)))
         )
 
     @scenario_test
     async def test_5_failed_input_keeps_temporary_screen(self, h) -> None:
-        """Сц. 5: неверный ввод не удаляет экран и не меняет анонс."""
+        """Сц. 5: неверный ввод не теряет клавиатуру и не меняет анонс."""
         await h.text("/start")
         place_id, _alias = _seed_place(h)
         template_id, _rev, _bricks = _seed_personal_template(
@@ -462,15 +472,15 @@ class SingleControlTests(unittest.TestCase):
 
         await h.callback(control_data(h, controls.ACTION_DATA))
         await h.callback(_field_callback(h))
-        screen_id = h.screen_message_id()
+        self.assertTrue(h.live_callbacks("anq_"), "клавиатура ввода не открылась")
         await h.text("не число")
 
-        self.assertNotIn(
-            int(screen_id), h.deleted_ids(), "экран неудачного ввода удалён"
-        )
-        self.assertIn("число", h.screen_text().lower(), h.screen_text()[:120])
+        # 2.5.4 §1: экрана-вопроса больше нет, поэтому проверяется сохранность
+        # самого анонса и клавиатуры ввода; ошибка объясняется ответом.
+        self.assertIn("число", "\n".join(h.reply_texts()).lower(), h.reply_texts()[:3])
         self.assertEqual(h.bot.content_text(h.chat_id, message_id), "42")
-        self.assertTrue(callbacks_of(h, message_id))
+        self.assertTrue(h.live_callbacks("anq_"), "клавиатура ввода потеряна")
+        self.assertIsNone(h.screen(), "служебный экран не создаётся")
 
     @scenario_test
     async def test_6_menu_strips_keyboard_keeps_message_and_clears_dialog(

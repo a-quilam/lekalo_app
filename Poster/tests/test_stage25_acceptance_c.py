@@ -1079,7 +1079,10 @@ class InPlaceInvariantTests(unittest.TestCase):
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
 
         # Кнопки после правки живы и открывают редактор того же экземпляра:
-        # 2.5.3 §5 — список полей, из него ровно один вопрос.
+        # 2.5.3 §5 — список полей; 2.5.4 §1 — после сохранения клавиатура
+        # остаётся на списке полей, поэтому «◀️ Назад» возвращает управление.
+        if h.live_callbacks("anf_back:"):
+            await _back_to_controls(h)
         await h.callback(_panel_data(h, after))
         _assert_field_list(h)
         for data in h.live_callbacks("anf_sel:"):

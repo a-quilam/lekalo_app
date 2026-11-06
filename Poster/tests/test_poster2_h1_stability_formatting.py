@@ -422,9 +422,11 @@ class ExplicitExitAfterRestartTests(unittest.TestCase):
         await h.text("Ценное значение")
         await _no_photos(h)
         await _open_field_question(h)
-        # Poster 2.4 (P2): «✏️ Изменить ответ» больше нет — экран вопроса сам
-        # показывает текущее значение и принимает новый ввод.
-        self.assertIn("Текущее значение: Ценное значение", h.screen_text())
+        # 2.5.4 §1: ввод значения живёт на самом анонсе — текущее значение
+        # видно в его тексте, служебный экран вопроса не создаётся.
+        self.assertIsNone(h.screen(), "служебный экран ввода")
+        self.assertTrue(h.live_callbacks("anq_"), "клавиатура ввода не открылась")
+        self.assertEqual(h.posts()[-1], "Ценное значение")
         draft = _latest_draft(h)
         self.assertEqual(
             _stored_payload(h, draft.id, bricks["main"])["text"], "Ценное значение"
@@ -798,10 +800,12 @@ class BlockquoteRegressionTests(unittest.TestCase):
         await h.text("Старая цитата", entities=[ent(MessageEntity.BLOCKQUOTE, 0, 13)])
         await _no_photos(h)
         await _open_field_question(h)
-        self.assertIn(
-            "Текущее значение: <blockquote>Старая цитата</blockquote>",
-            h.screen_text(),
-        )
+        # 2.5.4 §1: ввод значения живёт на самом анонсе. Отдельного экрана
+        # «Текущее значение» больше нет — сохранённая цитата видна в тексте
+        # анонса, а клавиатура сообщения переключена в режим ввода.
+        self.assertIsNone(h.screen(), "служебный экран ввода")
+        self.assertTrue(h.live_callbacks("anq_"), "клавиатура ввода не открылась")
+        self.assertEqual(h.posts()[-1], "<blockquote>Старая цитата</blockquote>")
         await h.text("Новая цитата", entities=[ent(MessageEntity.BLOCKQUOTE, 0, 12)])
         payload = _stored_payload(h, _latest_draft(h).id, bricks["main"])
         self.assertEqual(payload["html"], "<blockquote>Новая цитата</blockquote>")

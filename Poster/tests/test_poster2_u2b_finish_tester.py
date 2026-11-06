@@ -50,6 +50,7 @@ try:
     )
     from tests.test_stage27b_announcement_ui import (
         OTHER_TG,
+        _back_to_controls,
         _callback,
         _callbacks,
         _choose_personal,
@@ -211,6 +212,11 @@ class ForeignDeliveredTests(unittest.TestCase):
         self.assertEqual(active.id, first.id, "активен тот же экземпляр")
         self.assertNotIn(first_id, h.deleted_ids(), "анонс остаётся в чате")
         self.assertIsNotNone(_final_markup(h, first_id), "кнопки живы (§28)")
+
+        # 2.5.4 §1: после сохранения клавиатура осталась на списке полей;
+        # «◀️ Назад» возвращает управление анонсу — дальше проверяется IDOR
+        # на его кнопке.
+        await _back_to_controls(h)
 
         # Чужой пользователь пытается открыть правку чужого анонса кнопкой
         # действующего экземпляра и записать своё значение.
