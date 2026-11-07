@@ -40,6 +40,8 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
+from tests import ui_texts_expect as cat
+
 try:
     from admin_state import load_admin_session
     from handlers.announcement_wizard import CONVERSATION_NAME
@@ -277,7 +279,7 @@ class TemplateManagementTests(unittest.TestCase):
 
         await h.callback(f"tp_pick:{template_id}")
         self.assertIsNotNone(_latest_draft(h))
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_QUESTIONS_PHASE)
 
     @scenario_test
@@ -290,7 +292,11 @@ class TemplateManagementTests(unittest.TestCase):
         await h.callback(f"tp_open:{template_id}")
 
         await h.callback(f"tp_reset:{template_id}")
-        self.assertIn("Восстановить стандарт?", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "templates.reset_confirm.vosstanovit_standart_shablon",
+        )
         await h.callback(f"tp_reset_yes:{template_id}")
 
         rows = _personal_templates(h)
@@ -335,7 +341,9 @@ class TemplateManagementTests(unittest.TestCase):
         self.assertIn("Удалить шаблон?", h.screen_text())
         await h.callback(f"tp_delete_yes:{template_id}")
 
-        self.assertIn("этому шаблону", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "templates.module.shablon_nelzya_udalit_nemu"
+        )
         self.assertIsNotNone(_personal_row(h, template_id), "шаблон сохранён")
         self.assertEqual(_snapshot_count(h, template_id), 1)
         # Пользователь остался в карточке и может продолжить работу.
@@ -390,7 +398,7 @@ class PlaceManagementTests(unittest.TestCase):
         self.assertIn(f"plm_open:{place_id}", _callbacks(h, "plm_open:"))
         # Это справочник: ни старта анонса, ни выбора места для поста.
         self.assertEqual(_callbacks(h, "pl_pick:"), [])
-        self.assertNotIn("Вопрос 1", text)
+        self.assertNotRegex(text, cat.question_re(1))
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))
         state = load_place_session(DEFAULT_USER_ID)
         self.assertIsNotNone(state)
@@ -433,15 +441,21 @@ class PlaceManagementTests(unittest.TestCase):
 
         text = h.screen_text()
         self.assertIn("Чужое место", text)
-        self.assertIn("можно посмотреть", text)
+        cat.assert_shows(self, text, "places.manage_card.eto_prosmotr_spravochnika")
         self.assertEqual(_callbacks(h, "plm_edit:"), [])
         self.assertIn(
             f"plm_admin_request:{place_id}", _callbacks(h, "plm_admin_request:")
         )
         # Кнопка заявки только объясняет: роль не меняется.
         await h.callback(f"plm_admin_request:{place_id}")
-        self.assertIn("Я администратор места", h.screen_text())
-        self.assertIn("не выдаёт права.", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "places.admin_request.ya_admin_mesta_naznachit"
+        )
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "places.admin_request.kontakt_administratora_poka_ukazan",
+        )
 
     @scenario_test
     async def test_superadmin_sees_full_card(self, h):
@@ -479,7 +493,7 @@ class PlaceManagementTests(unittest.TestCase):
 
         # Подделанная устаревшая кнопка `plm_edit` — честный stale-ответ.
         await h.callback(f"plm_edit:{place_id}")
-        self.assertIn("больше не работает", _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
         # Место и его стандартный шаблон не тронуты, справочник не сброшен.
         with h.session_factory() as session:
@@ -499,9 +513,9 @@ class PlaceManagementTests(unittest.TestCase):
         # Без открытого справочника (сохранённого состояния нет) кнопки
         # устарели: данные не меняются и спиннер не висит.
         await h.callback(f"plm_open:{place_id}")
-        self.assertIn("больше не работает", _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         await h.callback(f"plm_edit:{place_id}")
-        self.assertIn("больше не работает", _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
 
         # Кнопка списка в фазе карточки тоже устарела: повторный `plm_open`
@@ -509,7 +523,7 @@ class PlaceManagementTests(unittest.TestCase):
         await h.callback("manage_places")
         await h.callback(f"plm_open:{place_id}")
         await h.callback(f"plm_open:{place_id}")
-        self.assertIn("больше не работает", _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         state = load_place_session(DEFAULT_USER_ID)
         self.assertIsNotNone(state)
         assert state is not None
@@ -538,7 +552,7 @@ class PlaceManagementTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("manage_places")
         await h.callback("plm_add")
-        self.assertIn("анонса сейчас не начнётся.", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_input.manage_hint")
 
         await h.text("Новая площадка R2b")
         await h.callback("pl_create_confirm")
@@ -549,7 +563,9 @@ class PlaceManagementTests(unittest.TestCase):
 
         text = h.screen_text()
         self.assertIn("Новая площадка R2b", text)
-        self.assertIn("✅ Место и его стандартный шаблон добавлены", text)
+        cat.assert_shows(
+            self, text, "places.create_place_from_state.mesto_dobavleno_vmeste_standart"
+        )
         with h.session_factory() as session:
             new_place = session.scalar(select(Place).order_by(Place.id.desc()))
             self.assertIsNotNone(new_place)
@@ -585,7 +601,7 @@ class PlaceManagementTests(unittest.TestCase):
         self.assertEqual(state["phase"], "manage_admin_request")
 
         await h.callback("plm_back")
-        self.assertNotIn("больше не работает", _last_alert(h).lower())
+        cat.assert_not_stale(self, _last_alert(h))
         state = load_place_session(DEFAULT_USER_ID)
         self.assertIsNotNone(state)
         assert state is not None
@@ -607,7 +623,7 @@ class PlaceManagementTests(unittest.TestCase):
         self.assertTrue(state.get("manage_mode"))
 
         await h.callback("plm_back")
-        self.assertNotIn("больше не работает", _last_alert(h).lower())
+        cat.assert_not_stale(self, _last_alert(h))
         state = load_place_session(DEFAULT_USER_ID)
         self.assertIsNotNone(state)
         assert state is not None
@@ -665,5 +681,5 @@ class PlaceManagementTests(unittest.TestCase):
 
         await h.callback(f"pl_pick:{place_id}")
         self.assertIsNotNone(_latest_draft(h))
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_QUESTIONS_PHASE)

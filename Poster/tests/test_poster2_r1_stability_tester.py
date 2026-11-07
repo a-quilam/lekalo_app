@@ -33,6 +33,7 @@ from telegram.error import BadRequest
 from models import PlaceAdmin, PlaceName, utcnow
 from place_store import create_place, normalize_place_name
 from template_store import create_personal_template
+from tests import ui_texts_expect as cat
 from user_store import get_or_create_user
 
 try:
@@ -55,7 +56,7 @@ TARGET_TG = 7_810_200
 UNKNOWN_TG = 7_810_300
 
 DENIED_ALERT = "У вас нет доступа к разделу администрирования."
-STALE_ALERT = "Эта кнопка больше не работает. Откройте раздел администрирования заново."
+STALE_ALERT = cat.text("errors.stale.admin")
 ERROR_NOTICE_FRAGMENT = "Что-то пошло не"
 
 
@@ -282,16 +283,22 @@ class AliasesBackNavigationTests(unittest.TestCase):
             await self._open_place_card(h, place_id)
 
             await h.callback(f"adm_edit_place:{place_id}")
-            self.assertIn("Изменить место", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.build.redaktirovanie_mesta_nazvanie"
+            )
             await h.callback(f"adm_aliases:{place_id}")
             self.assertIn("Альтернативные названия", h.screen_text())
             self.assertIn("Локал", h.screen_text())
 
             # Добавление названия: ввод → подтверждение → отмена.
             await h.callback(one_callback(h, "adm_alias_add:"))
-            self.assertIn("Добавить альтернативное название", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_input.dobavlenie_alternativnogo"
+            )
             await h.text("Локал Сити")
-            self.assertIn("Добавить альтернативное название", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_confirm.podtverdite_dobavlenie"
+            )
 
             await h.callback("adm_cancel")
             # Отмена добавления возвращает именно список названий.
@@ -311,7 +318,7 @@ class AliasesBackNavigationTests(unittest.TestCase):
         # Ни «внутренней ошибки», ни «кнопка устарела» на всём пути.
         visible = all_visible_texts(h)
         self.assertNotIn(ERROR_NOTICE_FRAGMENT, visible)
-        self.assertNotIn(STALE_ALERT, visible)
+        cat.assert_not_stale(self, visible)
         state = load_admin_session(SUPERADMIN_TG)
         assert state is not None
         self.assertEqual(state["phase"], "place")
@@ -325,13 +332,17 @@ class AliasesBackNavigationTests(unittest.TestCase):
             await self._open_place_card(h, place_id)
             await h.callback(f"adm_edit_place:{place_id}")
             await h.callback(f"adm_aliases:{place_id}")
-            self.assertIn("Других названий пока нет.", h.screen_text())
+            cat.assert_shows(
+                self,
+                h.screen_text(),
+                "admin.edit_aliases.alternativnye_nazvaniya_poka_net",
+            )
 
             await h.callback("adm_cancel")
 
         self.assertIn("🛡 Место", h.screen_text())
         self.assertNotIn(ERROR_NOTICE_FRAGMENT, all_visible_texts(h))
-        self.assertNotIn(STALE_ALERT, all_visible_texts(h))
+        cat.assert_not_stale(self, all_visible_texts(h))
 
     @scenario_test
     async def test_back_from_aliases_after_rename_confirm(self, h):
@@ -344,9 +355,13 @@ class AliasesBackNavigationTests(unittest.TestCase):
             await h.callback(f"adm_edit_place:{place_id}")
             await h.callback(f"adm_aliases:{place_id}")
             await h.callback(one_callback(h, "adm_alias_rename:"))
-            self.assertIn("Изменить", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_input.pereimenovanie_alternativnogo"
+            )
             await h.text("Локал Новый")
-            self.assertIn("Изменить альтернативное", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_confirm.podtverdite_pereimenovanie"
+            )
 
             await h.callback("adm_cancel")
             self.assertIn("Альтернативные названия", h.screen_text())
@@ -354,7 +369,7 @@ class AliasesBackNavigationTests(unittest.TestCase):
 
         self.assertIn("🛡 Место", h.screen_text())
         self.assertNotIn(ERROR_NOTICE_FRAGMENT, all_visible_texts(h))
-        self.assertNotIn(STALE_ALERT, all_visible_texts(h))
+        cat.assert_not_stale(self, all_visible_texts(h))
         self.assertEqual(alias_names(h, place_id), ["Локал"])
 
     @scenario_test
@@ -397,7 +412,7 @@ class LegacyReplyKeyboardTests(unittest.TestCase):
 
         self.assertEqual(len(reset_ids), 1, "на /start нужно ровно одно снятие")
         self.assertIn(reset_ids[0], h.deleted_ids(), "служебное сообщение осталось")
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertFalse(any_reply_keyboard_markup(h))
 
     @scenario_test
@@ -408,7 +423,7 @@ class LegacyReplyKeyboardTests(unittest.TestCase):
 
         self.assertEqual(len(reset_ids), 1, "callback меню не снял клавиатуру")
         self.assertIn(reset_ids[0], h.deleted_ids())
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
 
     @scenario_test
     async def test_navigation_between_screens_does_not_repeat_removal(self, h):
@@ -431,7 +446,7 @@ class LegacyReplyKeyboardTests(unittest.TestCase):
 
         self.assertEqual(len(reset_ids), 1, "старт конструктора не снял клавиатуру")
         self.assertIn(reset_ids[0], h.deleted_ids())
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         self.assertTrue(callbacks(h, "aw_"), "конструктор должен жить на inline")
 
     @scenario_test
@@ -442,7 +457,7 @@ class LegacyReplyKeyboardTests(unittest.TestCase):
 
         self.assertEqual(len(reset_ids), 1)
         self.assertIn(reset_ids[0], h.deleted_ids())
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
     @scenario_test
     async def test_admin_entry_drops_keyboard(self, h):
@@ -463,7 +478,7 @@ class LegacyReplyKeyboardTests(unittest.TestCase):
             await h.text("/start")
 
         self.assertFalse(reset_calls(h), "сбойный вызов не должен считаться доставкой")
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertTrue(buttons(h), "главное меню должно остаться рабочим")
         self.assertNotIn(ERROR_NOTICE_FRAGMENT, all_visible_texts(h))
 
@@ -476,7 +491,7 @@ class LegacyReplyKeyboardTests(unittest.TestCase):
         await h.text("/start")
 
         self.assertEqual(len(reset_calls(h)), 1)
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertNotIn(ERROR_NOTICE_FRAGMENT, all_visible_texts(h))
 
     @scenario_test
@@ -556,7 +571,12 @@ class AssignAdminSearchTests(unittest.TestCase):
                 with self.subTest(garbage=garbage):
                     await h.text(garbage)
                     text = h.screen_text()
-                    self.assertIn("Введите @username", text, f"ввод {garbage!r}")
+                    cat.assert_shows(
+                        self,
+                        text,
+                        "admin.assign_search.poisk_poluchatelya_vvedite",
+                        f"ввод {garbage!r}",
+                    )
                     # Фаза сохранена: следующий ввод снова ищет.
                     self.assertIn("Поиск получателя", text)
                     state = load_admin_session(SUPERADMIN_TG)
@@ -570,7 +590,9 @@ class AssignAdminSearchTests(unittest.TestCase):
             await self._open_search(h)
             await h.text("@nobody_here")
         text = h.screen_text()
-        self.assertIn("не знает", text.lower())
+        cat.assert_shows(
+            self, text, "admin.assign_not_found.polzovatel_nayden_izvesten_botu"
+        )
         self.assertIn("@nobody_here", text)
         self.assertIn("/start", text)
         self.assertFalse(callbacks(h, "adm_pick:"))
@@ -582,7 +604,9 @@ class AssignAdminSearchTests(unittest.TestCase):
             await self._open_search(h)
             await h.text(str(UNKNOWN_TG))
         text = h.screen_text()
-        self.assertIn("не знает", text.lower())
+        cat.assert_shows(
+            self, text, "admin.assign_not_found.polzovatel_nayden_telegram_user"
+        )
         self.assertIn(str(UNKNOWN_TG), text)
         self.assertIn("/start", text)
         self.assertFalse(callbacks(h, "adm_pick:"))

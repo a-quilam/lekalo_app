@@ -31,6 +31,8 @@ from datetime import date
 from sqlalchemy import select
 from telegram import MessageEntity
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import build_announcement_fields, get_announcement_draft
     from delivery import FINAL_LINK_PREVIEW, LIVE_LINK_PREVIEW
@@ -145,7 +147,7 @@ class FormattingCaptureTests(unittest.TestCase):
         self.assertEqual(payload["html"], "<b>Привет</b>, <i>мир</i>!")
 
         # Следующий вопрос (второй кирпичик) — экран, а не новый пост.
-        self.assertIn("Вопрос 2 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2))
 
     @scenario_test
     async def test_plain_text_stores_no_html_key(self, h):
@@ -209,7 +211,9 @@ class FormattingScreenTests(unittest.TestCase):
         # Возврат ко первому вопросу: значение показывается с разметкой.
         await h.callback(_callback(h, "aw_qback"))
         screen = h.screen()["text"]
-        self.assertIn("Текущее значение: <b>Театр</b>", screen)
+        cat.assert_shows(
+            self, screen, "wizard.question.current_value", value="<b>Театр</b>"
+        )
         self.assertNotIn("&lt;b&gt;", screen)
 
     @scenario_test
@@ -309,7 +313,12 @@ class FormattingPersistenceTests(unittest.TestCase):
         # категории правки там прежние (`aw_qmanage` → `aw_qgoto`).
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        self.assertIn("Текущее значение: <b>До</b> рестарта", h.screen()["text"])
+        cat.assert_shows(
+            self,
+            h.screen()["text"],
+            "wizard.question.current_value",
+            value="<b>До</b> рестарта",
+        )
 
     @scenario_test
     async def test_final_text_without_photos_keeps_formatting(self, h):
@@ -553,7 +562,12 @@ class FormattingSafetyTests(unittest.TestCase):
         self.assertEqual(_live_text(h), "&lt;b&gt;ответ&lt;/b&gt;")
         await _reopen_question(h)
         screen = h.screen()["text"]
-        self.assertIn("Текущее значение: &lt;b&gt;ответ&lt;/b&gt;", screen)
+        cat.assert_shows(
+            self,
+            screen,
+            "wizard.question.current_value",
+            value="&lt;b&gt;ответ&lt;/b&gt;",
+        )
         self.assertEqual(escape_html("<b>ответ</b>"), "&lt;b&gt;ответ&lt;/b&gt;")
 
 

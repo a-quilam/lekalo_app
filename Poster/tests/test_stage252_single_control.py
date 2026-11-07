@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import unittest
 
+from utils.ui_texts import tr
+
 try:
     import announcement_controls as controls
     from announcement_instances import get_instance
@@ -61,7 +63,7 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 EDIT_TITLE = "✏️ Изменить анонс"
 FIELDS_TITLE = "📝 Текстовые поля"
 MAIN_MENU_TITLE = "Здравствуйте! 👋"
-PHOTO_STEP_TITLE = "📷 Фотографии анонса"
+PHOTO_STEP_TITLE = tr("wizard.photos.title")
 USER_ID = 1
 
 

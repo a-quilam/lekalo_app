@@ -48,6 +48,7 @@ from template_store import (
     create_personal_template,
     update_template_content,
 )
+from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     HARNESS_IMPORT_ERROR,
     scenario_test,
@@ -355,7 +356,7 @@ class ConditionalRefusalTests(unittest.TestCase):
 
         # Та же кнопка с секцией расширенного текста работает.
         await h.callback(f"tp_condb:{template_id}:e:{end_id}")
-        self.assertIn("Как скрывать текст", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "templates.cond.mode_title")
         await h.callback(f"tp_condf:{template_id}:sep")
         parts = _parts(h, template_id)
         self.assertEqual(len(parts), 1)
@@ -395,8 +396,8 @@ class ConditionalRefusalTests(unittest.TestCase):
             len(h.answer_texts()), answers_before, "старая кнопка получила ответ"
         )
         refusal = h.answer_texts()[-1]
-        self.assertIn("больше не работает", refusal, refusal)
-        self.assertNotIn("Что-то пошло не так", refusal, "не внутренняя ошибка")
+        cat.assert_stale(self, refusal, refusal)
+        cat.assert_not_shows(self, refusal, "errors.internal", "не внутренняя ошибка")
         self.assertEqual(
             len(_parts(h, template_id)), awaits_before, "в БД ничего не записано"
         )

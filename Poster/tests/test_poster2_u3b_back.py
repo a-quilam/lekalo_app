@@ -54,6 +54,9 @@ import unittest
 from typing import Any
 from unittest.mock import patch
 
+from tests import ui_texts_expect as cat
+from utils.ui_texts import tr
+
 try:
     import errors as errors_module
     from errors import domain_notice_text
@@ -77,7 +80,7 @@ INTERNAL_FRAGMENT = "Что-то пошло не так"
 STALE_FRAGMENT = "больше не работает"
 ALIAS_LOST_FRAGMENT = "Новое название не сохранилось"
 CREATE_LOST_FRAGMENT = "Вы не подтвердили создание шаблона"
-MENU_FRAGMENT = "Что хотите сделать?"
+MENU_FRAGMENT = tr("menu.main")
 
 _MISSING = object()
 
@@ -150,13 +153,21 @@ class BackChecks(unittest.TestCase):
             len(h.answers()) - before[2], 1, f"{data}: callback остался без ответа"
         )
 
-    async def click_live_back(self, h: Harness, data: str, *, target: str) -> None:
+    async def click_live_back(
+        self,
+        h: Harness,
+        data: str,
+        *,
+        target: str | None = None,
+        target_key: str | None = None,
+    ) -> None:
         """
         Живой возврат: без сбоя, без ложного «Кнопка устарела», на целевом экране.
 
         Отдельно от `click`, потому что «устарела» — валидный ответ только для
         действительно устаревшей кнопки; на экране, который сам её предлагает,
-        это дефект навигации.
+        это дефект навигации. Целевой экран задаётся литералом (`target`) или
+        ключом каталога (`target_key`) — формулировки правит владелец YAML.
         """
         before = mark(h)
         n_texts = len(h.answer_texts())
@@ -165,6 +176,12 @@ class BackChecks(unittest.TestCase):
         alerts = h.answer_texts()[n_texts:]
         stale = [text for text in alerts if STALE_FRAGMENT in text]
         self.assertEqual(stale, [], f"{data}: ложное «Кнопка устарела»")
+        if target_key is not None:
+            cat.assert_shows(
+                self, h.screen_text(), target_key, f"{data}: не тот целевой экран"
+            )
+            return
+        assert target is not None, "нужен target или target_key"
         self.assertIn(target, h.screen_text(), f"{data}: не тот целевой экран")
 
 
@@ -325,9 +342,13 @@ class AliasWarningWithoutPendingAliasTests(BackChecks):
 
         self.assertEqual(internal_errors(h), [], f"{label}: внутренняя ошибка")
         screen = h.screen_text()
-        self.assertIn(ALIAS_LOST_FRAGMENT, screen, label)
+        cat.assert_shows(
+            self, screen, "places.render_phase.nazvanie_dobavleniya_sohranilos", label
+        )
         self.assertIn("📍 Дом культуры", screen, label)
-        self.assertNotIn("У другого места есть похожее название", screen, label)
+        cat.assert_not_shows(
+            self, screen, "places.alias_warning.pohozhee_nazvanie_u_drugogo", label
+        )
         labels = [text for text, _data in h.screen_buttons()]
         self.assertIn("🔤 Выбрать альтернативное название", labels, label)
         self.assertIn("◀️ Вернуться к списку", labels, label)
@@ -396,9 +417,13 @@ class AliasWarningWithoutPendingAliasTests(BackChecks):
             await h.text("/places")
             self.assert_no_failure(h, before, "alias_warning с валидным названием")
             screen = h.screen_text()
-            self.assertIn("У другого места есть похожее название", screen)
+            cat.assert_shows(
+                self, screen, "places.alias_warning.pohozhee_nazvanie_u_drugogo"
+            )
             self.assertIn("Дом культуры имени Ивана", screen)
-            self.assertNotIn(ALIAS_LOST_FRAGMENT, screen)
+            cat.assert_not_shows(
+                self, screen, "places.render_phase.nazvanie_dobavleniya_sohranilos"
+            )
             labels = [text for text, _data in h.screen_buttons()]
             self.assertIn("✅ Да, добавить", labels)
             self.assertIn("❌ Нет, отмена", labels)
@@ -428,7 +453,7 @@ class AwaitNewNameBackTests(BackChecks):
         from template_state import load_template_session
 
         self.assertIn("📄 Мои шаблоны", h.screen_text(), label)
-        self.assertNotIn(STALE_FRAGMENT, " ".join(h.answer_texts()), label)
+        cat.assert_not_stale(self, " ".join(h.answer_texts()), label)
         state = load_template_session(ADMIN_TG)
         assert state is not None
         self.assertEqual(state["phase"], "hub", label)
@@ -598,7 +623,9 @@ class AdminBackMatrixTests(BackChecks):
                 h, f"adm_bconflicts:{place_id}", target="⚔️ Конфликты кодов"
             )
             await self.click_live_back(
-                h, f"adm_bconflict:{conflict_id}", target="Код занят двумя кирпичиками"
+                h,
+                f"adm_bconflict:{conflict_id}",
+                target_key="admin.conflict_card.zadacha_razresheniya_konflikta_kod_html",
             )
             await self.click_live_back(
                 h, f"adm_bconflicts:{place_id}", target="⚔️ Конфликты кодов"
@@ -627,18 +654,22 @@ class AdminBackMatrixTests(BackChecks):
             await self.click_live_back(
                 h,
                 f"adm_bconflict_rename:{conflict_id}",
-                target="Изменить код местного кирпичика",
+                target_key="admin.conflict_rename_input.pereimenovanie_mestnogo_kirpi_html",
             )
             await self.click_live_back(
-                h, f"adm_bconflict:{conflict_id}", target="Код занят двумя кирпичиками"
+                h,
+                f"adm_bconflict:{conflict_id}",
+                target_key="admin.conflict_card.zadacha_razresheniya_konflikta_kod_html",
             )
             await self.click_live_back(
                 h,
                 f"adm_bconflict_switch:{conflict_id}",
-                target="Переключиться на глобальный кирпичик?",
+                target_key="admin.conflict_switch_confirm.pereklyuchitsya_globalnyy_html",
             )
             await self.click_live_back(
-                h, f"adm_bconflict:{conflict_id}", target="Код занят двумя кирпичиками"
+                h,
+                f"adm_bconflict:{conflict_id}",
+                target_key="admin.conflict_card.zadacha_razresheniya_konflikta_kod_html",
             )
 
     @scenario_test
@@ -659,7 +690,11 @@ class AdminBackMatrixTests(BackChecks):
             for data in ("adm_places", f"adm_bconflicts:{place_id}"):
                 with self.subTest(data=data):
                     await self.click(h, data)
-                    self.assertNotIn("Код занят двумя кирпичиками", h.screen_text())
+                    cat.assert_not_shows(
+                        self,
+                        h.screen_text(),
+                        "admin.conflict_rename_input.pereimenovanie_mestnogo_kirpi_html",
+                    )
                     self.assertNotIn("⚔️ Конфликты кодов", h.screen_text())
                     self.assertIn(
                         "Раздел доступен только администраторам", h.screen_text()
@@ -818,7 +853,7 @@ class WizardBackMatrixTests(BackChecks):
             self.assert_no_failure(h, before, "aw_qback после рестарта")
             self.assertGreaterEqual(len(h.answers()) - before[2], 1)
             alert = h.answer_texts()[-1]
-            self.assertIn("После перезапуска", alert)
+            cat.assert_shows(self, alert, "errors.expired.wizard")
 
             await self.click(h, "main_menu")
             self.assertIn(MENU_FRAGMENT, h.screen_text())
@@ -830,7 +865,7 @@ class WizardBackMatrixTests(BackChecks):
             ]
             self.assertTrue(opens, "после рестарта черновик не открывается из списка")
             await self.click(h, opens[0])
-            self.assertIn("Вопрос 1", h.screen_text())
+            self.assertRegex(h.screen_text(), cat.question_re(1))
 
 
 @unittest.skipIf(
@@ -858,7 +893,11 @@ class StaleScreenMatrixTests(BackChecks):
             before = mark(h)
             await h.callback("pl_back")
             self.assert_no_failure(h, before, "pl_back после удаления места")
-            self.assertIn("Место не найдено. Возможно, его удалили.", h.screen_text())
+            cat.assert_shows(
+                self,
+                h.screen_text(),
+                "admin.render_phase.mesto_suschestvuet_bylo_udaleno",
+            )
             await self.click(h, "pl_hub")
             self.assertIn("📍 Места", h.screen_text())
 
@@ -974,6 +1013,6 @@ class DomainErrorFallbackTests(BackChecks):
             await h.text("/places")
             await h.callback("pl_all")
 
-        self.assertIn(INTERNAL_FRAGMENT, "\n".join(user_texts(h)))
+        cat.assert_shows(self, "\n".join(user_texts(h)), "errors.internal")
         self.assertNotIn(domain_notice_text(), user_texts(h))
         error.assert_called()

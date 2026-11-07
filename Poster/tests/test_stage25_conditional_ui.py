@@ -48,6 +48,7 @@ from template_store import (
     create_personal_template,
     update_template_content,
 )
+from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     HARNESS_IMPORT_ERROR,
     scenario_test,
@@ -63,8 +64,9 @@ except Exception as e:  # noqa: BLE001
 # §42-А: шаблон без заполненного времени окончания превращается в «19:00».
 TIME_TEMPLATE = "[время_начала]–[время_окончания]"
 
-TITLE = "🧩 Условия расширенного шаблона"
-HINT = "Здесь можно настроить, что убрать из анонса, если поле останется пустым."
+# Заголовок и подсказка — из каталога (владелец правит YAML).
+TITLE = cat.text("templates.cond.title")
+HINT = cat.text("templates.cond.hint")
 
 
 def _callbacks(h, prefix: str) -> list[str]:
@@ -240,7 +242,7 @@ class ConditionalAvailabilityTests(unittest.TestCase):
         self.assertEqual(_parts(h, template_id), [], "в БД ничего не записано")
         # Секция расширенного текста того же кирпичика работает.
         await h.callback(f"tp_condb:{template_id}:e:{end_brick.id}")
-        self.assertIn("Как скрывать текст", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "templates.cond.mode_title")
 
 
 @unittest.skipIf(
@@ -256,7 +258,7 @@ class ConditionalUiRouteTests(unittest.TestCase):
         await _open_rules(h, template_id)
         text = h.screen_text()
         self.assertIn(TITLE, text)
-        self.assertIn(HINT, text)
+        cat.assert_shows(self, text, "templates.cond.hint")
         # В теле только заголовок и подсказка: перечня полей нет.
         self.assertNotIn("Время начала", text)
         self.assertNotIn("Время окончания", text)
@@ -356,7 +358,7 @@ class ConditionalUiRouteTests(unittest.TestCase):
 
         await h.text("Нет такого фрагмента")
         self.assertIn("Свой фрагмент", h.screen_text(), "автор остался на вводе")
-        self.assertIn("нет в тексте шаблона", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "templates.cond.custom_not_all")
         self.assertEqual(_parts(h, template_id), [])
 
         await h.text("–[время_окончания]")
@@ -430,7 +432,7 @@ class ConditionalUiRouteTests(unittest.TestCase):
         await h.callback(f"tp_condf:{template_id}:custom")
 
         await h.callback(f"tp_condback:{template_id}:mode")
-        self.assertIn("Как скрывать текст", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "templates.cond.mode_title")
         await h.callback(f"tp_condback:{template_id}:bricks")
         self.assertIn(TITLE, h.screen_text())
         # Прежний шаг «список правил» в 2.5.3 — тот же экран кирпичиков.
@@ -554,7 +556,9 @@ class ConditionalUiRouteTests(unittest.TestCase):
             address = get_system_brick(session, "адрес")
             assert address is not None
         await h.callback(f"tp_condb:{template_id}:e:{address.id}")
-        self.assertIn("Как скрывать текст", h.screen_text(), "ложного отказа нет")
+        cat.assert_shows(
+            self, h.screen_text(), "templates.cond.mode_title", "ложного отказа нет"
+        )
         await h.callback(f"tp_condf:{template_id}:custom")
         await h.text("[адрес]")
         parts = _parts(h, template_id)

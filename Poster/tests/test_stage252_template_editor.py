@@ -25,6 +25,7 @@ import unittest
 
 from telegram import MessageEntity
 
+from tests import ui_texts_expect as cat
 from utils.tg_html import entities_to_html, entities_to_template_markup
 
 
@@ -156,7 +157,7 @@ class ExtendedEditorFirstMessageTests(unittest.TestCase):
         self.assertEqual(_state()["draft_text"], "**🔥** Итог: [main]")
         self.assertIn("**🔥** Итог: [main]", h.screen_text())
         self.assertIn("tp_save", [data for _label, data in h.screen_buttons()])
-        self.assertNotIn("Что-то пошло не так", h.screen_text())
+        cat.assert_not_shows(self, h.screen_text(), "errors.internal")
 
         await h.callback("tp_save")
         self.assertEqual(_version_content(h, template_id, 2), "[main]")

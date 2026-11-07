@@ -31,6 +31,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from tests import ui_texts_expect as cat
+
 try:
     from sqlalchemy import select
 
@@ -92,7 +94,7 @@ class CreateWizardOrderTests(unittest.TestCase):
         await h.text("Дом культуры")
 
         # Название: дубль-проверка и подтверждение сохранены.
-        self.assertIn("Проверьте, нет ли этого места", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_check.title")
         await h.callback("pl_create_confirm")
         self.assertIn(CITY_PROMPT, h.screen_text())
 
@@ -114,7 +116,11 @@ class CreateWizardOrderTests(unittest.TestCase):
 
         # Сразу карточка места с notice: экрана подтверждения нет.
         self.assertIn("Дом культуры", h.screen_text())
-        self.assertIn("✅ Место добавлено", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "places.create_place_from_state.mesto_dobavleno_ono_srazu",
+        )
         self.assertEqual(_place_session(h)["phase"], "confirm")
         self.assertEqual([item.name for item in _names(h)], ["Дом культуры"])
 
@@ -173,7 +179,7 @@ class CreateWizardNavigationTests(unittest.TestCase):
         self.assertIn("pl_create_back", _callbacks(h))
         await h.callback("pl_create_back")
 
-        self.assertIn("Проверьте, нет ли этого места", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_check.title")
         self.assertIn("Место с возвратом", h.screen_text())
         self.assertEqual(_places(h), [])
         self.assertEqual(_place_session(h)["phase"], "create_check")
@@ -297,7 +303,7 @@ class CreateWizardValidationTests(unittest.TestCase):
         assert bad.message is not None
         text = h.screen_text()
         self.assertIn(ADDRESS_PROMPT, text)
-        self.assertIn("⏭ Пропустить", text)
+        cat.assert_shows(self, text, "places.create_address_input")
         self.assertNotIn("Удалить адрес", text)
         self.assertEqual(_places(h), [])
         self.assertNotIn(bad.message.message_id, h.deleted_ids())
@@ -345,7 +351,7 @@ class CreateWizardEntryModeTests(unittest.TestCase):
         self.assertEqual(places[0].address, "ул. Строителей, 7")
         self.assertEqual(places[0].url, "https://t.me/pick_place")
         # Автозапуск анонса по стандартному шаблону сохранён.
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
     @scenario_test
     async def test_manage_mode_opens_admin_card_with_notice(self, h: Harness) -> None:
@@ -361,7 +367,9 @@ class CreateWizardEntryModeTests(unittest.TestCase):
 
         text = h.screen_text()
         self.assertIn("Площадка из справочника", text)
-        self.assertIn("✅ Место и его стандартный шаблон добавлены", text)
+        cat.assert_shows(
+            self, text, "places.create_place_from_state.mesto_dobavleno_vmeste_standart"
+        )
         state = _place_session(h)
         self.assertEqual(state["phase"], "manage_card")
         place = _places(h)[0]
@@ -380,7 +388,11 @@ class CreateWizardEntryModeTests(unittest.TestCase):
         await h.text("ул. Оружейная, 1")
         await h.text("https://tula.example")
 
-        self.assertIn("✅ Место добавлено", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "places.create_place_from_state.mesto_dobavleno_ono_srazu",
+        )
         self.assertIn("ул. Оружейная, 1", h.screen_text())
         state = _place_session(h)
         self.assertEqual(state["phase"], "confirm")

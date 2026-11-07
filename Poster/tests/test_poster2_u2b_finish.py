@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_instances import get_active_instance
     from announcement_store import get_announcement_draft
@@ -220,7 +222,7 @@ class DeliveredScreenTests(unittest.TestCase):
 
         # Выход в меню: ложного «Назад» на экране правки нет.
         await h.callback("main_menu")
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
 
         # §29–30: повторное открытие из «Мои анонсы» публикует новый
         # экземпляр; управление снова у самого анонса, а не у экрана.
@@ -416,7 +418,7 @@ class DeliveredEditScreenTests(unittest.TestCase):
         self.assertFalse(_callbacks(h, "aw_panel"))
         self.assertIsNotNone(h.control_callback("data"), "у анонса есть управление")
         await h.callback("main_menu")
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertFalse(_callbacks(h, "aw_edit"))
         self.assertFalse(_callbacks(h, "aw_qmanage"))
         # 2.5.2 §2: после выхода управление снято — кнопки анонса no-op.
@@ -467,7 +469,7 @@ class DeliveredMenuTests(unittest.TestCase):
 
         await h.callback("main_menu")
 
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertFalse(_callbacks(h, "aw_edit"), "экран завершения закрыт")
         # Пост не удалён и не переотправлен.
         for message_id in post_ids:
@@ -646,8 +648,8 @@ class DeliveredApplyTests(unittest.TestCase):
         await _delivered(h)
         # Обычный успех: экрана нет и никакого «Данные изменились.».
         self.assertIsNone(h.screen_message_id())
-        self.assertNotIn("Данные изменились.", " ".join(h.screen_texts()))
-        self.assertNotIn("Данные изменились.", h.answer_texts())
+        cat.assert_not_shows(self, " ".join(h.screen_texts()), "errors.stale.wizard")
+        cat.assert_not_shows(self, " ".join(h.answer_texts()), "errors.stale.wizard")
 
     @scenario_test
     async def test_stale_edit_button_only_warns_about_old_action(self, h) -> None:
@@ -664,7 +666,7 @@ class DeliveredApplyTests(unittest.TestCase):
         await h.text("Другое значение")
 
         await h.callback(stale_edit)
-        self.assertIn("Данные изменились.", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
         # Устаревший callback не отправил вторую копию и не открыл чужую
         # версию правки: показан актуальный список полей на самом управлении
         # (2.5.3 §5), а не служебный экран.
@@ -715,6 +717,6 @@ class DeliveredApplyTests(unittest.TestCase):
         posts_after_first = h.posts()
 
         await h.callback(stale_edit)
-        self.assertIn("Данные изменились.", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
         self.assertEqual(h.screen_text(), first_text)
         self.assertEqual(h.posts(), posts_after_first)

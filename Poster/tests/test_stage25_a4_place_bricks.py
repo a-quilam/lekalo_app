@@ -34,6 +34,7 @@ from admin_state import load_admin_session
 from brick_state import load_brick_session
 from models import Brick, BrickProposal, PlaceAdmin, utcnow
 from place_store import create_place
+from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     DEFAULT_USER_ID,
     HARNESS_IMPORT_ERROR,
@@ -154,7 +155,9 @@ class PlaceBrickCreateTests(unittest.TestCase):
 
         await h.callback(f"adm_brick_new:{place_id}", user_id=ADMIN_TG)
         # Существующий конструктор: первый шаг мастера, а не новый экран.
-        self.assertIn("Как назвать кирпичик", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "bricks.build.1_nazvat_kirpichik_naprimer_html"
+        )
         state = load_brick_session(ADMIN_TG)
         self.assertIsNotNone(state, "мастер не сохранён в brick_sessions")
         assert state is not None
@@ -254,7 +257,7 @@ class PlaceBrickBackTests(unittest.TestCase):
         )
 
         await h.callback(f"adm_place:{place_id}", user_id=ADMIN_TG)
-        self.assertNotIn(STALE_ALERT, last_alert(h).lower())
+        cat.assert_not_stale(self, last_alert(h))
         self.assertIn("Место", h.screen_text())
         state = load_admin_session(ADMIN_TG)
         assert state is not None
@@ -272,10 +275,8 @@ class PlaceBrickBackTests(unittest.TestCase):
         await h.restart()
         await h.callback(f"adm_place:{place_id}", user_id=ADMIN_TG)
 
-        self.assertNotIn(
-            STALE_ALERT,
-            last_alert(h).lower(),
-            "после рестарта рабочая кнопка отвечает stale-alert",
+        cat.assert_not_stale(
+            self, last_alert(h), "после рестарта рабочая кнопка отвечает stale-alert"
         )
         self.assertIn("Место", h.screen_text())
         state = load_admin_session(ADMIN_TG)
@@ -296,12 +297,12 @@ class PlaceBrickBackTests(unittest.TestCase):
         await h.callback(f"adm_bedit:{brick_id}", user_id=ADMIN_TG)
         await h.callback("adm_bedit_back", user_id=ADMIN_TG)
         self.assertIn("Дом культуры", h.screen_text())
-        self.assertNotIn(STALE_ALERT, last_alert(h).lower())
+        cat.assert_not_stale(self, last_alert(h))
 
         # И уже из списка — в административную карточку.
         await h.callback(f"adm_place:{place_id}", user_id=ADMIN_TG)
         self.assertIn("Место", h.screen_text())
-        self.assertNotIn(STALE_ALERT, last_alert(h).lower())
+        cat.assert_not_stale(self, last_alert(h))
 
     @scenario_test
     async def test_wizard_back_returns_to_place_list(self, h: Harness) -> None:

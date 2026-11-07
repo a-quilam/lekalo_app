@@ -32,6 +32,8 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import (
         build_announcement_preview,
@@ -742,9 +744,10 @@ class PlaceCityUiTests(unittest.TestCase):
             f"«Назад» на вопросе о городе: {answer.get('text')!r}; "
             f"экран = {h.screen_text()[:200]!r}",
         )
-        self.assertIn(
-            "Проверьте, нет ли этого места",
+        cat.assert_shows(
+            self,
             h.screen_text(),
+            "places.create_check.title",
             "«Назад» не вернул к шагу проверки названия",
         )
         self.assertIn("Клуб для отмены", h.screen_text())
@@ -860,10 +863,14 @@ class PlaceCityUiTests(unittest.TestCase):
             self.assertIn("Москва", h.screen_text(), "экран ввода не показывает город")
             await h.text("Тверь")
             confirm = h.screen_text()
-            self.assertIn("Сохранить новый город", confirm)
+            cat.assert_shows(
+                self, confirm, "admin.edit_confirm.podtverdite_izmenenie_goroda"
+            )
             self.assertIn("Тверь", confirm)
             await h.callback("adm_edit_confirm")
-            self.assertIn("✅ Город места обновлён.", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_result_notice.gorod_mesta_obnovlen"
+            )
 
             # Удаления города в меню нет: старый callback недоступен.
             menu = h.screen_text()
@@ -971,7 +978,7 @@ class AnnouncementFromPlaceUiTests(unittest.TestCase):
         self.assertIn("ул. Ленина, 1", html)
         self.assertNotIn("Москва", html, "город попал в живой анонс")
         screen = h.screen_text()
-        self.assertIn("Вопрос 1 из", screen)
+        cat.assert_question(self, screen, 1)
         self.assertNotIn("Город", screen, "мастер спрашивает город")
         self.assertNotIn("площадк", screen.lower(), "мастер спрашивает площадку")
 

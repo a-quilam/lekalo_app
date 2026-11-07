@@ -31,6 +31,7 @@ from sqlalchemy import select
 import place_state
 from brick_store import create_personal_brick
 from models import Place
+from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     DEFAULT_USER_ID,
     HARNESS_IMPORT_ERROR,
@@ -355,7 +356,7 @@ class CreateWizardFieldsAcceptanceTests(unittest.TestCase):
         await h.callback("places")
         await h.callback("pl_add")
         name_msg = await h.text("Дом культуры")
-        self.assertIn("Проверьте, нет ли этого места", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_check.title")
         await h.callback("pl_create_confirm")
         self.assertIn("В каком городе площадка", h.screen_text())
         self.assertEqual(_places(h), [], "площадка создана до конца мастера")
@@ -395,7 +396,11 @@ class CreateWizardFieldsAcceptanceTests(unittest.TestCase):
         self.assertEqual(place.address, "ул. Ленина, 1")
         self.assertEqual(place.url, "https://t.me/poster")
         # После последнего шага — карточка места, без экрана подтверждения.
-        self.assertIn("✅ Место добавлено", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "places.create_place_from_state.mesto_dobavleno_ono_srazu",
+        )
         self.assertIn("Дом культуры", h.screen_text())
         self.assertEqual(_state(h)["phase"], "confirm")
 
@@ -425,7 +430,11 @@ class CreateWizardFieldsAcceptanceTests(unittest.TestCase):
         self.assertEqual(place.city, "Тверь")
         self.assertIsNone(place.address, "пропуск адреса оставил заглушку")
         self.assertIsNone(place.url, "пропуск ссылки оставил заглушку")
-        self.assertIn("✅ Место добавлено", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "places.create_place_from_state.mesto_dobavleno_ono_srazu",
+        )
 
     @scenario_test
     async def test_skip_only_address_saves_link(self, h: Harness) -> None:
@@ -537,7 +546,7 @@ class CreateWizardNavigationAcceptanceTests(unittest.TestCase):
         self.assertIn("В каком городе площадка", h.screen_text())
         screen_ids.append(h.screen_message_id())
         await h.callback("pl_create_back")
-        self.assertIn("Проверьте, нет ли этого места", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_check.title")
         screen_ids.append(h.screen_message_id())
         self.assertIn("Место с возвратом", h.screen_text())
 
@@ -577,7 +586,11 @@ class CreateWizardNavigationAcceptanceTests(unittest.TestCase):
         await h.callback("pl_create_skip")  # устаревшая кнопка прошлого шага
         await h.callback("pl_create_back")
         self.assertEqual(len(_places(h)), 1, "устаревшая кнопка создала дубль")
-        self.assertIn("✅ Место добавлено", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "places.create_place_from_state.mesto_dobavleno_ono_srazu",
+        )
         self.assertGreaterEqual(
             len(h.answers()), answers_before, "устаревшая кнопка не отвечает на нажатие"
         )
@@ -634,9 +647,9 @@ class CreateWizardEntryModeAcceptanceTests(unittest.TestCase):
         place = _place(h)
         self.assertEqual(place.address, "ул. Строителей, 7")
         self.assertEqual(place.url, "https://t.me/pick_place")
-        self.assertIn(
-            "Вопрос 1",
+        self.assertRegex(
             h.screen_text(),
+            cat.question_re(1),
             "из «Создать анонс» анонс не запустился по стандартному шаблону",
         )
 
@@ -653,7 +666,7 @@ class CreateWizardEntryModeAcceptanceTests(unittest.TestCase):
         place = _place(h)
         self.assertIsNone(place.address)
         self.assertIsNone(place.url)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
     @scenario_test
     async def test_manage_mode_opens_admin_card(self, h: Harness) -> None:
@@ -669,7 +682,9 @@ class CreateWizardEntryModeAcceptanceTests(unittest.TestCase):
 
         text = h.screen_text()
         self.assertIn("Площадка из справочника", text)
-        self.assertIn("✅ Место и его стандартный шаблон добавлены", text)
+        cat.assert_shows(
+            self, text, "places.create_place_from_state.mesto_dobavleno_vmeste_standart"
+        )
         self.assertEqual(_state(h)["phase"], "manage_card")
         self.assertEqual(_state(h)["place_id"], _place(h).id)
         self.assertEqual(_place(h).address, "ул. Байкальская, 2")
@@ -683,7 +698,9 @@ class CreateWizardEntryModeAcceptanceTests(unittest.TestCase):
         await h.text("<b>ул. Оружейная, 1</b>")
         await h.text("https://tula.example")
         text = h.screen_text()
-        self.assertIn("✅ Место добавлено", text)
+        cat.assert_shows(
+            self, text, "places.create_place_from_state.mesto_dobavleno_ono_srazu"
+        )
         place = _place(h)
         self.assertEqual(place.address, "<b>ул. Оружейная, 1</b>")
         self.assertNotIn(

@@ -37,6 +37,8 @@ import unittest
 
 from sqlalchemy import select, text
 
+from tests import ui_texts_expect as cat
+
 try:
     import announcement_controls as controls
     from announcement_instances import get_instance
@@ -269,7 +271,7 @@ async def _deliver(
     await _start_to_template(h, place_id)
     await _choose_personal(h, template_id)
     for _attempt in range(6):
-        if "Фотографии анонса" in h.screen_text():
+        if cat.text("wizard.photos.title") in h.screen_text():
             break
         await h.text(main_value)
     if photos == 0:
@@ -712,7 +714,7 @@ class BricksBackTests(unittest.TestCase):
         self.assertIn("Мои кирпичики", h.screen_text())
         await h.callback("bk_back")
         self.assertIn("⚙️ Управление", h.screen_text())
-        self.assertNotIn("Что-то пошло не так", h.screen_text())
+        cat.assert_not_shows(self, h.screen_text(), "errors.internal")
 
     @scenario_test
     async def test_11c_back_from_wizard_bricks_returns_to_wizard(self, h) -> None:
@@ -722,14 +724,14 @@ class BricksBackTests(unittest.TestCase):
         template_id, _revision, _bricks = _seed_personal_template(h)
         await _start_to_template(h, place_id)
         await _choose_personal(h, template_id)
-        self.assertIn("Вопрос 1 из 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 1))
 
         # Старый вход в кирпичики с шага конструктора: источник — мастер.
         await h.callback("bricks")
         self.assertIn("Мои кирпичики", h.screen_text())
         await h.restart()
         await h.callback("bk_back")
-        self.assertIn("Вопрос 1 из 1", h.screen_text(), "не вернулись на шаг")
+        self.assertRegex(h.screen_text(), cat.question_re(1, 1), "не вернулись на шаг")
         self.assertNotIn("⚙️ Управление", h.screen_text())
 
 
@@ -791,7 +793,7 @@ class TemplateCardTests(unittest.TestCase):
             ],
         )
         text = h.screen_text()
-        self.assertNotIn("Что-то пошло не так", text)
+        cat.assert_not_shows(self, text, "errors.internal")
         self.assertNotIn("Отправьте", text.split("\n")[0], "повторный запрос ввода")
         self.assertIn("tp_save", [data for _l, data in h.screen_buttons()])
         self.assertEqual(len(h.screen_texts()), before + 1, "экран перерисован дважды")

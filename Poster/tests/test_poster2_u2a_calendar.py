@@ -24,6 +24,8 @@ from __future__ import annotations
 import unittest
 from datetime import date, timedelta
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import build_announcement_fields, list_announcement_drafts
     from brick_store import create_personal_brick
@@ -86,7 +88,7 @@ async def _open_date_question(h, *, day_rules: dict | None = None):
     await h.text("/start")
     await h.callback(f"tp_pick:{template_id}")
     await h.text("Концерт")
-    if "Вопрос 2 из 2" not in h.screen_text():
+    if not cat.shows(h.screen_text(), "wizard.question.header", step="2", total="2"):
         raise AssertionError(f"не вопрос даты: {h.screen_text()[:120]!r}")
 
 
@@ -397,7 +399,7 @@ class MonthPickerTests(unittest.TestCase):
             await h.callback(f"aw_calday:{prefix}:{chosen.isoformat()}")
 
             self.assertEqual(_saved_day(h, today=TODAY), "15.03.2027")
-            self.assertIn("Фотографии анонса", h.screen_text())
+            self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
 
 
 @unittest.skipIf(
@@ -414,14 +416,14 @@ class QuickChoiceTests(unittest.TestCase):
             chosen = TODAY + timedelta(days=5)
             await h.callback(f"aw_calday:{_field_prefix(h)}:{chosen.isoformat()}")
             self.assertEqual(_saved_day(h, today=TODAY), "03.11.2026")
-            self.assertIn("Фотографии анонса", h.screen_text())
+            self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
 
     @scenario_test
     async def test_skip_advances_without_date(self, h):
         with frozen_today(2026, 10, 29):
             await _open_date_question(h)
             await h.callback(_callback(h, "aw_qskip"))
-            self.assertIn("Фотографии анонса", h.screen_text())
+            self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
             self.assertIsNone(_saved_day(h, today=TODAY))
 
     @scenario_test
@@ -450,7 +452,7 @@ class QuickChoiceTests(unittest.TestCase):
             ):
                 await h.callback(data)
                 self.assertTrue(_answer_text(h), f"нет ответа на {data}")
-                self.assertIn("Вопрос 2 из 2", h.screen_text())
+                self.assertRegex(h.screen_text(), cat.question_re(2, 2))
                 self.assertEqual(len(_day_buttons(h)), 8)
                 self.assertEqual(_saved_day(h, today=TODAY), before)
                 self.assertNotIn("внутрен", _answer_text(h).lower())
@@ -485,7 +487,11 @@ class QuickChoiceTests(unittest.TestCase):
             await h.callback(
                 f"aw_calday:{prefix}:{(horizon + timedelta(days=1)).isoformat()}"
             )
-            self.assertIn("вне разрешённого периода", _answer_text(h))
+            cat.assert_shows(
+                self,
+                _answer_text(h),
+                "wizard.save_calendar_day.eta_data_vne_dopustimogo",
+            )
             self.assertIsNone(_saved_day(h, today=TODAY))
             await h.callback(f"aw_calday:{prefix}:{horizon.isoformat()}")
             self.assertEqual(_saved_day(h, today=TODAY), horizon.strftime("%d.%m.%Y"))

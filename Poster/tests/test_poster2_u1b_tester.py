@@ -27,6 +27,8 @@ from typing import Any, cast
 from sqlalchemy import select
 from telegram import MessageEntity
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import (
         AnnouncementFieldState,
@@ -540,14 +542,16 @@ class LongValueScreenTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_qback"))
         screen_text = h.screen_text()
         self.assertNotIn("Произошла внутренняя ошибка", "\n".join(h.screen_texts()))
-        self.assertIn("Текущее значение:", screen_text)
+        self.assertIn(cat.text("wizard.question.current_value", value=""), screen_text)
         self.assertLess(len(screen_text), 4096, "экран ушёл за лимит Telegram")
         # Разметка сохранена, но значение усечено и обрезано «…».
         self.assertIn("<b>", screen_text)
         self.assertNotIn("&lt;b&gt;", screen_text)
         self.assertIn("…", screen_text)
         self.assertEqual(screen_text.count("<b>"), screen_text.count("</b>"))
-        value_html = screen_text.split("Текущее значение: ", 1)[1]
+        value_html = screen_text.split(
+            cat.fragment("wizard.question.current_value"), 1
+        )[1]
         visible = re.sub(r"<[^>]*>", "", value_html)
         self.assertLessEqual(
             len(visible), wizard_questions_module.DISPLAY_TEXT_LIMIT, value_html[-40:]
@@ -615,7 +619,7 @@ class LongValueScreenTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_exedit", f":{bricks['extra']}"))
         screen_text = h.screen_text()
         self.assertNotIn("Произошла внутренняя ошибка", "\n".join(h.screen_texts()))
-        self.assertIn("Текущее значение:", screen_text)
+        self.assertIn(cat.text("wizard.question.current_value", value=""), screen_text)
         self.assertLess(len(screen_text), 4096, "экран ушёл за лимит Telegram")
         self.assertIn("<b>", screen_text)
         self.assertNotIn("&lt;b&gt;", screen_text)
@@ -677,7 +681,7 @@ class EmptyStoredHtmlTests(unittest.TestCase):
         # шаг фото, доставку запускает «⏭ Пропустить» (P2: кнопки «Далее»
         # больше нет, пропуск сохраняет уже введённое значение).
         await h.callback(_callback(h, "aw_qskip"))
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         await h.callback(_callback(h, "aw_photo_none"))
         posts = [call for call in h.post_records() if call["type"] == "message"]
         self.assertTrue(posts, "готовый анонс не отправлен")

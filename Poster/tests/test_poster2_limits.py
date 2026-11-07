@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import MAX_ANNOUNCEMENT_PHOTOS
     from delivery import (
@@ -190,7 +192,7 @@ class PhotoLimitScenarioTests(unittest.TestCase):
             for call in h.calls
             if call["type"] == "edit_message" and is_panel_record(call)
         )
-        self.assertIn("больше добавить нельзя", notices)
+        cat.assert_shows(self, notices, "wizard.photos.limit")
         # Сообщение с отклонённым снимком не удалено: автор видит причину.
         self.assertNotIn(rejected.message.message_id, h.deleted_ids())
 

@@ -49,6 +49,7 @@ from place_state import load_place_session
 from place_store import create_place
 from template_state import load_template_session
 from template_store import get_standard_template
+from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     DEFAULT_USER_ID,
     HARNESS_IMPORT_ERROR,
@@ -248,7 +249,7 @@ async def _fill_until_photos(
     title_done = False
     for _attempt in range(12):
         text = h.screen_text()
-        if "Фотографии анонса" in text:
+        if cat.text("wizard.photos.title") in text:
             return
         first_line = text.splitlines()[0] if text else ""
         is_date_question = "📅 Дата" in first_line
@@ -592,7 +593,12 @@ class ListContextAcceptance(unittest.TestCase):
         self.assertEqual(state["phase"], "pick_search_results")
         self.assertEqual(state.get("query"), "Зал", "запрос пикера потерян")
         self.assertEqual(state.get("page"), 5, "страница поиска пикера потеряна")
-        self.assertIn("Площадки по запросу: «Зал»", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "places.pick_search.ploschadki_zaprosu",
+            query="Зал",
+        )
         self.assertEqual(
             _nav_row(h, "pl_picksp:"),
             [(PREV, "pl_picksp:0"), ("2/3", "noop:2:3"), (NEXT, "pl_picksp:10")],
@@ -622,7 +628,7 @@ class ListContextAcceptance(unittest.TestCase):
                 _alerts(h)[answers_before:], [], "stale-alert после рестарта"
             )
 
-        self.assertNotIn(STALE_MARK, _alert(h).lower())
+        cat.assert_not_stale(self, _alert(h))
         state = load_place_session(DEFAULT_USER_ID)
         assert state is not None
         self.assertEqual(state["phase"], "manage_list")

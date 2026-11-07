@@ -50,10 +50,21 @@ class CatalogEscapingUnitTests(unittest.TestCase):
 
         self.ui_texts = ui_texts
 
+    def _catalog_items(self):
+        """
+        Шаблоны ДЕЙСТВУЮЩЕГО каталога (плюс вшитые дефолты для ключей, которых
+        в файле нет). Источник формулировок — `config/ui_texts.yaml`, поэтому
+        проверка не зависит от расхождения DEFAULTS и каталога.
+        """
+        catalog = self.ui_texts.texts()
+        merged = dict(self.ui_texts.DEFAULTS)
+        merged.update(catalog)
+        return merged.items()
+
     def test_every_placeholder_key_escapes_values(self) -> None:
         checked = 0
         with_placeholders = 0
-        for key, template in self.ui_texts.DEFAULTS.items():
+        for key, template in self._catalog_items():
             names = self.ui_texts._placeholders(template)
             if not names:
                 continue
@@ -70,7 +81,7 @@ class CatalogEscapingUnitTests(unittest.TestCase):
 
     def test_html_keys_keep_own_markup_and_escape_values(self) -> None:
         checked = 0
-        for key, template in self.ui_texts.DEFAULTS.items():
+        for key, template in self._catalog_items():
             if not key.endswith("_html"):
                 continue
             names = self.ui_texts._placeholders(template)

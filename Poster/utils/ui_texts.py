@@ -43,7 +43,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import yaml
 
@@ -208,6 +208,9 @@ DEFAULTS: dict[str, str] = {
     # Подсказка — неактивная кнопка клавиатуры ввода (A1). Отдельного
     # сообщения «Теперь введите…» нет: подсказка уже в клавиатуре.
     "wizard.field_input.hint": "⏳ Ожидаю {title}",
+    # A1: единственная кнопка навигации клавиатуры ввода. Ввод прекращается,
+    # незавершённый текст отбрасывается, прежнее значение остаётся.
+    "wizard.field_input.cancel": "Отменить",
     # Тело единственной панели медиагруппы на время ввода (2+ фото): панель
     # — единственное место, где видно, какое поле ждёт значения.
     "wizard.field_input.panel": "✏️ Ввод: {title}\n\nВыберите вариант ниже или пришлите значение сообщением.",
@@ -2311,6 +2314,35 @@ def tr_plain(key: str, **values: object) -> str:
     if not is_markup:
         fallback = escape_html(fallback)
     return _render(fallback, prepared)[0]
+
+
+def text_blocks(blocks: Iterable[object]) -> list[str]:
+    """
+    Непустые блоки экрана: пустая строка каталога не создаёт разрыв.
+
+    Каталог — канон текстов, и владелец вправе оставить строку пустой
+    (`wizard.question.optional`, `wizard.question.missing`,
+    `wizard.extras.intro`). Раньше такой блок попадал в `join` как обычный
+    элемент и давал пустую строку-разделитель или двойной перевод строки.
+    Экраны собираются через эту функцию и `join_blocks`, а не через
+    `str.join` напрямую.
+    """
+    result: list[str] = []
+    for block in blocks:
+        text = "" if block is None else str(block)
+        if text.strip():
+            result.append(text)
+    return result
+
+
+def join_blocks(blocks: Iterable[object], *, separator: str = "\n\n") -> str:
+    """
+    Склеивает блоки экрана, пропуская пустые строки каталога.
+
+    Единственный штатный способ собрать экран из нескольких текстов
+    каталога: пустой текст просто исчезает, вместе со своим разделителем.
+    """
+    return separator.join(text_blocks(blocks))
 
 
 _initial_load()

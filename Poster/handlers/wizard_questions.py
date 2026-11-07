@@ -43,7 +43,7 @@ from brick_types import (
 from utils import calendar_view, keyboard_layouts
 from utils.parsers import app_today
 from utils.tg_html import escape_html, utf16_len
-from utils.ui_texts import tr, tr_safe
+from utils.ui_texts import join_blocks, tr, tr_safe
 
 # Быстрые значения времени (S3 п.5): самые частые начала вечеринок/встреч.
 # Ручной ввод остаётся: кнопки — сокращение, а не замена.
@@ -381,7 +381,9 @@ def question_text(
         blocks.append(tr("wizard.question.error", message=error))
     if notice:
         blocks.append(h(notice))
-    return "\n\n".join(blocks)
+    # Пустые строки каталога (например, `wizard.question.optional` с
+    # намеренно пустым значением) не должны оставлять пустой блок.
+    return join_blocks(blocks)
 
 
 def parse_rule_date(value: object) -> date | None:

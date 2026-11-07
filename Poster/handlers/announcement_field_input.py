@@ -13,10 +13,13 @@ Poster 2.5.4 §1: ВВОД значения текстового поля гот
 Поэтому модуль держит только ВИД и правку существующего сообщения:
 
 - подсказка «⏳ Ожидаю <поле>» — настоящая неактивная кнопка
-  (`utils.inline_buttons.disabled_button`, Bot API 10.3);
+  (`utils.inline_buttons.disabled_button`, Bot API 10.3); у поля-даты её нет:
+  календарь сам объясняет, чего ждут;
 - готовые варианты: быстрые значения времени, компактный календарь даты,
   варианты выбора;
-- последняя строка — «◀️ Назад | ⏭ Пропустить».
+- последняя строка — одна кнопка «Отменить» (`anq_abort`): ввод
+  прекращается, незавершённый текст отбрасывается, прежнее значение
+  остаётся, автор возвращается в общий редактор анонса.
 
 Сохранение значения и возврат к списку полей — маршрут
 `handlers.announcement_panel.handle_field_input_callback` и общий
@@ -478,11 +481,16 @@ def input_keyboard(
     ЕДИНАЯ клавиатура ввода значения поля (2.5.4 §1, п.2 контракта).
 
     Строка 1 — неактивная подсказка «⏳ Ожидаю <поле>», средние строки —
-    готовые варианты (время/календарь/выбор), последняя — «◀️ Назад |
-    ⏭ Пропустить». Поля без готовых вариантов получают только подсказку и
-    пару навигации: отдельного «Теперь введите…» сообщения нет.
+    готовые варианты (время/календарь/выбор), последняя — одна «Отменить».
+    Поля без готовых вариантов получают только подсказку и «Отменить»:
+    отдельного «Теперь введите…» сообщения нет.
+
+    У поля-даты подсказки нет: календарные строки уже показывают, чего ждёт
+    поле, а неактивная кнопка «⏳ Ожидаю …» только занимала бы верхнюю строку.
     """
-    rows: list[list[InlineKeyboardButton]] = [[disabled_button(hint_label(field))]]
+    rows: list[list[InlineKeyboardButton]] = []
+    if field.value_type != BRICK_TYPE_DATE:
+        rows.append([disabled_button(hint_label(field))])
     if field.value_type == BRICK_TYPE_CHOICE:
         rows.extend(_choice_rows(field, instance_id, field.brick_id))
     elif field.value_type == BRICK_TYPE_TIME:
@@ -503,23 +511,22 @@ def input_keyboard(
     elif field.value_type == BRICK_TYPE_DATE:
         rows.extend(calendar_rows(field, instance_id, field.brick_id, view))
 
-    back_button = InlineKeyboardButton(
-        tr("buttons.nav.back"),
-        callback_data=announcement_controls.field_input_callback(
-            announcement_controls.FIELD_INPUT_ACTION_BACK,
-            instance_id,
-            field.brick_id,
-        ),
+    # «Отменить» — единственная кнопка навигации: «Назад»/«Пропустить»
+    # дублировали друг друга (оба вели в список полей), а «Пропустить»
+    # обещало действие, которого нет. Callback без хвоста: нажатие не
+    # зависит от ревизии черновика и не может «опоздать».
+    rows.append(
+        [
+            danger_button(
+                tr_plain("wizard.field_input.cancel"),
+                announcement_controls.field_input_callback(
+                    announcement_controls.FIELD_INPUT_ACTION_ABORT,
+                    instance_id,
+                    field.brick_id,
+                ),
+            )
+        ]
     )
-    skip_button = InlineKeyboardButton(
-        tr("buttons.wizard.skip"),
-        callback_data=announcement_controls.field_input_callback(
-            announcement_controls.FIELD_INPUT_ACTION_SKIP,
-            instance_id,
-            field.brick_id,
-        ),
-    )
-    rows += keyboard_layouts.pair(back_button, skip_button)
     return InlineKeyboardMarkup(rows)
 
 

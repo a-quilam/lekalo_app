@@ -25,6 +25,9 @@ import asyncio
 import unittest
 from types import SimpleNamespace
 
+from tests import ui_texts_expect as cat
+from utils.ui_texts import tr
+
 try:
     from announcement_store import MAX_ANNOUNCEMENT_PHOTOS, get_announcement_draft
     from handlers import wizard_photos
@@ -50,7 +53,7 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
     INTEGRATION_IMPORT_ERROR = str(exc)
 
 
-PHOTO_STEP_TITLE = "📷 Фотографии анонса"
+PHOTO_STEP_TITLE = tr("wizard.photos.title")
 # §18 (2.5): экрана «✅ Анонс готов» нет; после публикации служебного экрана
 # тоже нет — управление живёт на самом анонсе (2.5.2 §2).
 
@@ -63,10 +66,8 @@ def _published(h) -> None:
         raise AssertionError("Управление анонсом не привязано к сообщению")
 
 
-PHOTO_STEP_HINT = (
-    "Пришлите фото или альбом. Всего можно добавить до "
-    f"{MAX_ANNOUNCEMENT_PHOTOS} фото."
-)
+# Подсказка и счётчик — строки каталога (`wizard.photos.*`).
+PHOTO_STEP_HINT = cat.text("wizard.photos.hint", limit=MAX_ANNOUNCEMENT_PHOTOS)
 # Слова, которых на коротком шаге быть не должно: это прежние технические
 # объяснения, которые владелец просил убрать.
 TECHNICAL_WORDS = ("медиагрупп", "партия", "партии", "file_id", "статус")
@@ -131,13 +132,13 @@ class PhotoStepViewTests(unittest.TestCase):
         for word in TECHNICAL_WORDS:
             self.assertNotIn(word, text)
         # Счётчика нет, пока фотографий нет.
-        self.assertNotIn("Добавлено фото", text)
+        cat.assert_not_shows(self, text, "wizard.photos.counter")
 
     def test_counter_appears_only_when_photos_exist(self) -> None:
         text = wizard_photos.photo_step_text(
             self._details(photos=("a", "b")),
         )
-        self.assertIn("Добавлено фото: 2 из 10.", text)
+        cat.assert_shows(self, text, "wizard.photos.counter", count=2, limit=10)
         self.assertIn(PHOTO_STEP_HINT, text)
 
     def test_empty_announcement_keeps_its_joke(self) -> None:
@@ -210,7 +211,9 @@ class PhotoStepWiringTests(unittest.TestCase):
         for index in range(MAX_ANNOUNCEMENT_PHOTOS + 1):
             await h.photo(f"cnt-{index}", media_group_id="mg-counter")
         await asyncio.sleep(0.4)
-        self.assertIn("Добавлено фото: 10 из 10.", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.photos.counter", count=10, limit=10
+        )
         self.assertIn(PHOTO_STEP_HINT, h.screen_text())
 
     @scenario_test
@@ -220,7 +223,7 @@ class PhotoStepWiringTests(unittest.TestCase):
         draft = _latest_draft(h)
 
         await h.callback(_callback(h, "aw_photo_back"))
-        self.assertIn("Вопрос 1 из 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 1))
         self.assertIn("Черновик", h.screen_text())
         stored = _details(h, draft.id)
         self.assertEqual(stored.photos, ())
@@ -249,7 +252,7 @@ class PhotoStepWiringTests(unittest.TestCase):
 
         posts_before = h.posts()
         await h.callback(stale_back)
-        self.assertIn("Данные изменились.", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
         self.assertEqual(h.posts(), posts_before)
         # 2.5.3 §5: служебного экрана нет — устаревшая кнопка открывает
         # список полей на самом анонсе.
@@ -407,8 +410,10 @@ class PhotoLimitOnStepTests(unittest.TestCase):
             tuple(f"ok-{index}" for index in range(MAX_ANNOUNCEMENT_PHOTOS)),
         )
         self.assertIsNone(stored.publication_status, "партия с отказом не финал")
-        self.assertIn("больше добавить нельзя", h.screen_text())
-        self.assertIn("Добавлено фото: 10 из 10.", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "wizard.photos.limit")
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.photos.counter", count=10, limit=10
+        )
         # Сообщение с отклонённым снимком остаётся: автор видит причину.
         self.assertNotIn(rejected.message.message_id, h.deleted_ids())
         # Шаг по-прежнему даёт ровно две кнопки.
@@ -453,8 +458,10 @@ class TextLimitTests(unittest.TestCase):
 
         photo_update = await h.photo("limit-photo")
         screen = h.screen_text()
-        self.assertIn("не помещается", screen)
-        self.assertIn("при лимите 1024", screen)
+        cat.assert_shows(self, screen, "wizard.length_refusal.not_pomeschaetsya")
+        cat.assert_shows(
+            self, screen, "wizard.length_refusal.not_pomeschaetsya", limit=1024
+        )
 
         stored = _details(h, draft.id)
         self.assertIsNone(stored.publication_status, "превышение не отправляется")
@@ -581,8 +588,11 @@ class LiveBlockPhotoCompositionTests(unittest.TestCase):
         await h.photo("F-1")
         # 2.5.3 §7: превышение лимита — короткая ошибка, экрана восстановления
         # нет; фото остаётся в черновике.
-        self.assertIn(
-            "Не отправлено: текст не помещается", h.screen_text(), "нет отказа"
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.length_refusal.not_pomeschaetsya",
+            "нет отказа",
         )
         self.assertIsNone(_details(h, draft.id).publication_status)
 
@@ -629,7 +639,12 @@ class LiveBlockPhotoCompositionTests(unittest.TestCase):
         await _to_photo_step(h, content="[main]", value=self.LONG_VALUE)
         draft = _latest_draft(h)
         await h.photo("F-1")
-        self.assertIn("не помещается", h.screen_text(), "ожидался проблемный экран")
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.length_refusal.not_pomeschaetsya",
+            "ожидался проблемный экран",
+        )
         details = _details(h, draft.id)
         self.assertEqual(details.photos, ("F-1",))
 

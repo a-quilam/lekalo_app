@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_instances import list_instances
     from announcement_store import get_announcement_draft, save_announcement_value
@@ -350,7 +352,9 @@ class PlaceEditorLayoutTests(unittest.TestCase):
         await h.text("/admin")
         await h.callback(f"adm_place:{place_id}")
         await h.callback(f"adm_edit_place:{place_id}")
-        assert "✏️ Изменить место" in h.screen_text()
+        assert cat.shows(
+            h.screen_text(), "admin.build.redaktirovanie_mesta_nazvanie"
+        ), h.screen_text()
 
     @scenario_test
     async def test_address_and_url_are_paired_with_trash_only(self, h) -> None:
@@ -378,7 +382,9 @@ class PlaceEditorLayoutTests(unittest.TestCase):
         await self._open_menu(h, place_id)
 
         await h.callback(f"adm_edit_address_delete:{place_id}")
-        self.assertIn("Удалить адрес?", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "admin.build.podtverdite_udalenie_adresa"
+        )
         rows = _rows(h)
         self.assertEqual(
             [label for label, _data in rows[0]],
@@ -395,7 +401,9 @@ class PlaceEditorLayoutTests(unittest.TestCase):
         # Подтверждение: значение удалено.
         await h.callback(f"adm_edit_address_delete:{place_id}")
         await h.callback("adm_edit_confirm")
-        self.assertIn("✅ Адрес места удалён.", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "admin.edit_result_notice.adres_mesta_udalen"
+        )
         pairs = {tuple(label for label, _data in row) for row in _rows(h)}
         self.assertIn(("✏️ Адрес",), pairs, "у адреса корзина должна исчезнуть")
         self.assertIn(("✏️ Ссылка", "🗑"), pairs, "ссылка не должна пострадать")
@@ -541,8 +549,8 @@ class CurrentValueDisplayTests(unittest.TestCase):
         self.assertLessEqual(
             len(confirm), self.TELEGRAM_LIMIT, "подтверждение не влезет в Telegram"
         )
-        self.assertIn("Текущий адрес:", confirm)
-        self.assertIn("Новый адрес:", confirm)
+        # «Был: …» и «Новый: …» — одна строка каталога подтверждения адреса.
+        cat.assert_shows(self, confirm, "admin.build.podtverdite_izmenenie_adresa")
         self.assertEqual(confirm.count(TRUNCATED_NOTE), 2)
 
     @scenario_test
@@ -662,7 +670,7 @@ class ScreenLimitRegressionTests(unittest.TestCase):
         self.assertIn(TRUNCATED_NOTE, screen)
         self.assertGreater(screen.count("A"), 1000)
         # Подсказка про формат осталась целиком: сокращено только значение.
-        self.assertIn("Отправьте весь новый текст одним", screen)
+        cat.assert_shows(self, screen, "templates.build.redaktirovanie_otpravte_novym")
         self.assertIn("📋 Кирпичики", [label for label, _ in h.screen_buttons()])
 
     @scenario_test
@@ -805,7 +813,7 @@ class ScreenLimitRegressionTests(unittest.TestCase):
         prompt = h.screen_text()
         self.assertLessEqual(len(prompt), self.TELEGRAM_LIMIT, prompt[-200:])
         self.assertIn(TRUNCATED_NOTE, prompt)
-        self.assertIn("Текущее значение:", prompt)
+        self.assertIn(cat.text("wizard.question.current_value", value=""), prompt)
         self.assertNotIn("&lt;", prompt)
 
 

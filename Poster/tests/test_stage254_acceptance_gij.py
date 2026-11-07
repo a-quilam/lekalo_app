@@ -62,6 +62,8 @@ from unittest.mock import MagicMock, patch
 # Пакет tests подставляет фиктивный токен в окружение (tests/__init__.py)
 # до импорта bot/config — импорт стоит первым намеренно.
 import tests  # noqa: F401
+from tests import ui_texts_expect as cat
+from utils.ui_texts import tr
 
 try:
     import httpx
@@ -117,11 +119,9 @@ ALL_PLACES = "📚 Все места"
 PICK_SEARCH = "🔎 Найти площадку"
 PICK_ADD = "➕ Новая площадка"
 BACK = "◀️ Назад"
-MENU_TEXT = "Что хотите сделать?"
-PHOTOS_TITLE = "📷 Фотографии анонса"
+MENU_TEXT = tr("menu.main")
+PHOTOS_TITLE = tr("wizard.photos.title")
 GONE_TEXT = "больше не хранится"
-STALE_TEXT = "больше не активна"
-EDIT_REFUSAL = "Анонс не обновлён: текст не помещается"
 HINT_LABEL = "⏳ Ожидаю текст короче"
 CANCEL_LABEL = "Отменить"
 TEXT_LIMIT = 4096
@@ -543,13 +543,15 @@ class PlacesKeyboardTests(unittest.TestCase):
 
         # Навигация не сломана.
         await h.callback("pl_search")
-        self.assertIn("Введите название или", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.search_input")
+        # Из поиска — назад в хаб, там доступна кнопка добавления.
+        await h.callback("pl_back")
         await h.callback("pl_add")
-        self.assertIn("Введите название", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_input")
         await h.callback("pl_back")
         self.assertIn("📍 Места", h.screen_text())
         await h.callback("pl_all")
-        self.assertIn("пока нет мест", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.all.empty")
         await h.callback("main_menu")
         self.assertIn(MENU_TEXT, h.screen_text())
 
@@ -570,11 +572,11 @@ class PlacesKeyboardTests(unittest.TestCase):
         self.assertEqual(_row_with(h, "main_menu"), [(BACK, "main_menu")])
 
         await h.callback("pl_pick_search")
-        self.assertIn("Введите название или", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.pick_search_input")
         await h.callback("pl_pick_back")
         self.assertIn("Создать анонс", h.screen_text())
         await h.callback("pl_pick_add")
-        self.assertIn("Введите название", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_input")
         await h.callback("pl_back")
         self.assertIn(
             (PICK_SEARCH, "pl_pick_search"),
@@ -601,7 +603,7 @@ class PlacesKeyboardTests(unittest.TestCase):
         picks = _data(h, "pl_pick:")
         self.assertTrue(picks, f"нет кнопки площадки: {h.screen_buttons()}")
         await h.callback(picks[0])
-        self.assertIn("Вопрос 1 из", h.screen_text(), "площадка не начала анонс")
+        cat.assert_question(self, h.screen_text(), 1, msg="площадка не начала анонс")
 
 
 # =========================================================================
@@ -800,9 +802,10 @@ class EndToEndRouteTests(unittest.TestCase):
         since = len(h.calls)
         await h.text(LONG_TEXT)
 
-        refusals = [text for text in h.reply_texts() if EDIT_REFUSAL in text]
+        # Отказ по длине — строка каталога `wizard.length_refusal.*` с лимитом.
+        refusals = [text for text in h.reply_texts() if cat.length_refusal(text)]
         self.assertTrue(refusals, f"нет причины отказа: {h.reply_texts()[-2:]}")
-        self.assertIn(f"лимите {TEXT_LIMIT}", refusals[-1])
+        cat.assert_length_refusal(self, refusals[-1], TEXT_LIMIT)
         self.assertEqual(_created(h, since), 1, "лишние сообщения интерфейса")
 
         rows = _markup_rows(h, message_id)
@@ -834,8 +837,9 @@ class EndToEndRouteTests(unittest.TestCase):
 
         # Повторное нажатие старой «Отменить» безопасно.
         await h.callback(cancel)
-        self.assertTrue(
-            any(STALE_TEXT in text for text in h.answer_texts()[-1:]),
+        cat.assert_stale(
+            self,
+            " ".join(h.answer_texts()[-1:]),
             f"нет stale-ответа: {h.answer_texts()[-2:]}",
         )
         self.assertEqual(_stored(h, draft.id).publication_text, published)
@@ -898,8 +902,9 @@ class EndToEndRouteTests(unittest.TestCase):
         since = len(h.calls)
         await h.callback(f"anf_sel:{first.id}:{bricks['название']}")
         self.assertEqual(_created(h, since), 0)
-        self.assertTrue(
-            any(STALE_TEXT in text for text in h.answer_texts()[-1:]),
+        cat.assert_stale(
+            self,
+            " ".join(h.answer_texts()[-1:]),
             f"нет stale-ответа: {h.answer_texts()[-2:]}",
         )
         self.assertIn(
@@ -974,8 +979,9 @@ class EndToEndRouteTests(unittest.TestCase):
             published,
             "текст из чужого чата записался в анонс",
         )
-        self.assertTrue(
-            any(STALE_TEXT in text for text in h.answer_texts()[-1:]),
+        cat.assert_stale(
+            self,
+            " ".join(h.answer_texts()[-1:]),
             f"нет отказа на чужой чат: {h.answer_texts()[-2:]}",
         )
 

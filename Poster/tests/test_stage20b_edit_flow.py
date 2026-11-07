@@ -22,6 +22,7 @@ from unittest.mock import patch
 from sqlalchemy import select
 
 from models import Place, PlaceAdmin, PlaceEditLog, PlaceName, User
+from tests import ui_texts_expect as cat
 
 try:
     from place_store import normalize_place_name
@@ -41,7 +42,7 @@ OTHER_ADMIN_TG = 710210
 ORDINARY_TG = 710300
 
 DENIED_ALERT = "У вас нет доступа к разделу администрирования."
-STALE_ALERT = "Эта кнопка больше не работает. Откройте раздел администрирования заново."
+STALE_ALERT = cat.text("errors.stale.admin")
 
 
 def insert_place(
@@ -203,7 +204,9 @@ async def open_edit_menu(h, place_id: int) -> None:
     await h.text("/admin")
     await h.callback(screen_callback(h, "adm_place:"))
     await h.callback(screen_callback(h, "adm_edit_place:"))
-    assert "✏️ Изменить место" in h.screen_text()
+    assert cat.shows(
+        h.screen_text(), "admin.build.redaktirovanie_mesta_nazvanie"
+    ), h.screen_text()
 
 
 @unittest.skipIf(
@@ -220,7 +223,7 @@ class EditMenuAccessTests(unittest.TestCase):
             place_id = insert_place(h, "Кофейня «Локал»")
             await open_edit_menu(h, place_id)
             text = h.screen_text()
-            self.assertIn("✏️ Изменить место", text)
+            cat.assert_shows(self, text, "admin.build.redaktirovanie_mesta_nazvanie")
             self.assertIn("Кофейня «Локал»", text)
             self.assertIn("Не указан", text)
             labels = [label for label, _ in h.screen_buttons()]
@@ -241,7 +244,9 @@ class EditMenuAccessTests(unittest.TestCase):
         await h.text("/admin")
         await h.callback(screen_callback(h, "adm_place:"))
         await h.callback(screen_callback(h, "adm_edit_place:"))
-        self.assertIn("✏️ Изменить место", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "admin.build.redaktirovanie_mesta_nazvanie"
+        )
         labels = [label for label, _ in h.screen_buttons()]
         self.assertIn("🏷 Изменить название", labels)
 
@@ -252,7 +257,7 @@ class EditMenuAccessTests(unittest.TestCase):
         # Обычный пользователь не видит карточки в кабинете и не может
         # вызвать редактирование: сессии кабинета нет — кнопка устарела.
         await h.text("/admin")
-        self.assertIn("Раздел доступен только администраторам Poster.", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "admin.module.razdel_dostupen_tolko")
         await h.callback(f"adm_edit_place:{place_id}")
         self.assertEqual(last_alert(h), STALE_ALERT)
 
@@ -272,14 +277,20 @@ class CanonicalRenameTests(unittest.TestCase):
             await open_edit_menu(h, place_id)
 
             await h.callback(screen_callback(h, "adm_edit_name:"))
-            self.assertIn("Введите новое основное название.", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_input.izmenenie_nazvaniya_tekuschee"
+            )
             await h.text("Кафе Локал")
             self.assertIn("Изменить название?", h.screen_text())
             self.assertIn("Кафе Локал", h.screen_text())
             self.assertIn("Кофейня «Локал»", h.screen_text())
 
             await h.callback("adm_edit_confirm")
-            self.assertIn("✅ Название места изменено.", h.screen_text())
+            cat.assert_shows(
+                self,
+                h.screen_text(),
+                "admin.edit_result_notice.nazvanie_mesta_izmeneno",
+            )
             self.assertEqual(canonical_name(h, place_id), "Кафе Локал")
             self.assertEqual(alias_names(h, place_id), ["Кофейня «Локал»"])
 
@@ -335,7 +346,11 @@ class CanonicalRenameTests(unittest.TestCase):
                 session.close()
 
             await h.callback("adm_edit_confirm")
-            self.assertIn("Пока вы подтверждали изменение,", h.screen_text())
+            cat.assert_shows(
+                self,
+                h.screen_text(),
+                "admin.edit_result_notice.znachenie_izmenilos_vremya",
+            )
             self.assertEqual(canonical_name(h, place_id), "Кофейня «Локал» 2")
 
 
@@ -354,13 +369,17 @@ class AddressUrlEditTests(unittest.TestCase):
             await open_edit_menu(h, place_id)
 
             await h.callback(screen_callback(h, "adm_edit_address:"))
-            self.assertIn("Напишите адрес места.", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.build.izmenenie_adresa_tekuschiy_adres"
+            )
             await h.text("  ул. Ленина,   5  ")
             self.assertIn("Сохранить новый адрес?", h.screen_text())
             self.assertIn("ул. Ленина, 5", h.screen_text())
 
             await h.callback("adm_edit_confirm")
-            self.assertIn("✅ Адрес места обновлён.", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_result_notice.adres_mesta_obnovlen"
+            )
             self.assertEqual(place_address(h, place_id), "ул. Ленина, 5")
             rows = audit_rows(h, place_id)
             self.assertEqual(len(rows), 1)
@@ -374,13 +393,17 @@ class AddressUrlEditTests(unittest.TestCase):
             await open_edit_menu(h, place_id)
 
             await h.callback(screen_callback(h, "adm_edit_url:"))
-            self.assertIn("Отправьте ссылку", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.build.izmenenie_ssylki_tekuschaya_ssylka"
+            )
             await h.text(" t.me/poster ")
             self.assertIn("Сохранить новую ссылку?", h.screen_text())
             self.assertIn("https://t.me/poster", h.screen_text())
 
             await h.callback("adm_edit_confirm")
-            self.assertIn("✅ Ссылка места обновлена.", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_result_notice.ssylka_mesta_obnovlena"
+            )
             self.assertEqual(place_url(h, place_id), "https://t.me/poster")
 
     @scenario_test
@@ -393,9 +416,13 @@ class AddressUrlEditTests(unittest.TestCase):
             self.assertIn("🗑", labels)
 
             await h.callback(screen_callback(h, "adm_edit_address_delete:"))
-            self.assertIn("Удалить адрес?", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.build.podtverdite_udalenie_adresa"
+            )
             await h.callback("adm_edit_confirm")
-            self.assertIn("✅ Адрес места удалён.", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_result_notice.adres_mesta_udalen"
+            )
             self.assertIsNone(place_address(h, place_id))
 
             # корзина исчезла, адрес показывает «Не указан»
@@ -413,9 +440,13 @@ class AddressUrlEditTests(unittest.TestCase):
             self.assertIn("🗑", labels)
 
             await h.callback(screen_callback(h, "adm_edit_url_delete:"))
-            self.assertIn("Удалить ссылку?", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.build.podtverdite_udalenie_ssylki"
+            )
             await h.callback("adm_edit_confirm")
-            self.assertIn("✅ Ссылка места удалена.", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_result_notice.ssylka_mesta_udalena"
+            )
             self.assertIsNone(place_url(h, place_id))
 
             labels = [label for label, _ in h.screen_buttons()]
@@ -437,15 +468,27 @@ class AliasFlowTests(unittest.TestCase):
             await open_edit_menu(h, place_id)
 
             await h.callback(screen_callback(h, "adm_aliases:"))
-            self.assertIn("Других названий пока нет.", h.screen_text())
+            cat.assert_shows(
+                self,
+                h.screen_text(),
+                "admin.edit_aliases.alternativnye_nazvaniya_poka_net",
+            )
 
             await h.callback(screen_callback(h, "adm_alias_add:"))
-            self.assertIn("Напишите, как ещё называют", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_input.dobavlenie_alternativnogo"
+            )
             await h.text("Локал")
-            self.assertIn("Добавить альтернативное название", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_confirm.podtverdite_dobavlenie"
+            )
 
             await h.callback("adm_edit_confirm")
-            self.assertIn("✅ Альтернативное название добавлено.", h.screen_text())
+            cat.assert_shows(
+                self,
+                h.screen_text(),
+                "admin.edit_result_notice.alternativnoe_nazvanie_dobavleno",
+            )
             self.assertEqual(alias_names(h, place_id), ["Локал"])
             self.assertEqual(canonical_name(h, place_id), "Кофейня «Локал»")
 
@@ -474,18 +517,28 @@ class AliasFlowTests(unittest.TestCase):
 
             # переименование
             await h.callback(screen_callback(h, "adm_alias_rename:"))
-            self.assertIn("Введите новое название", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_input.pereimenovanie_alternativnogo"
+            )
             await h.text("Локал Кофе")
-            self.assertIn("Изменить альтернативное", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_confirm.podtverdite_pereimenovanie"
+            )
             await h.callback("adm_edit_confirm")
-            self.assertIn("✅ Альтернативное название переименовано.", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.edit_result_notice.alternativnoe_nazvanie"
+            )
             self.assertEqual(alias_names(h, place_id), ["Локал Кофе"])
 
             # удаление
             await h.callback(screen_callback(h, "adm_alias_delete:"))
             self.assertIn("Удалить альтернативное название?", h.screen_text())
             await h.callback("adm_edit_confirm")
-            self.assertIn("✅ Альтернативное название удалено.", h.screen_text())
+            cat.assert_shows(
+                self,
+                h.screen_text(),
+                "admin.edit_result_notice.alternativnoe_nazvanie_udaleno",
+            )
             self.assertEqual(alias_names(h, place_id), [])
 
     @scenario_test

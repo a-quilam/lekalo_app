@@ -34,6 +34,8 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
+from tests import ui_texts_expect as cat
+
 try:
     from admin_state import load_admin_session
     from models import PlaceAdmin, Template, utcnow
@@ -172,9 +174,10 @@ class SinglePlaceCardTests(unittest.TestCase):
         self.assertIn("🛡 Место", h.screen_text())
         self.assertIn("Дом культуры", h.screen_text())
         for text in h.screen_texts():
-            self.assertNotIn(
-                HANDBOOK_VIEW_MARKER,
+            cat.assert_not_shows(
+                self,
                 text,
+                "places.manage_card.eto_prosmotr_spravochnika",
                 "промежуточная карточка справочника не должна показываться",
             )
 
@@ -224,7 +227,9 @@ class SinglePlaceCardTests(unittest.TestCase):
         self.assertNotIn(f"plm_invite:{place_id}", callbacks)
         self.assertNotIn(f"adm_edit_place:{place_id}", callbacks)
         self.assertNotIn(f"adm_invite:{place_id}", callbacks)
-        self.assertIn(HANDBOOK_VIEW_MARKER, h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "places.manage_card.eto_prosmotr_spravochnika"
+        )
 
         state = load_place_session(DEFAULT_USER_ID)
         self.assertIsNotNone(state)
@@ -305,7 +310,7 @@ class InviteScreenFromFullCardTests(unittest.TestCase):
         await h.callback(_callback(h, "adm_invite_regen:"))
         new_token = _token_from_screen(h)
         self.assertNotEqual(new_token, first)
-        self.assertIn("Прежняя ссылка больше не работает", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.invite.regenerated")
         self.assertEqual(_active_invites_count(h), 1)
 
 
@@ -444,11 +449,11 @@ class StaleAndForgedButtonsTests(unittest.TestCase):
 
         # Кнопки из старых сообщений: `plm_edit`/`plm_invite` больше не существуют.
         await h.callback(f"plm_edit:{foreign}")
-        self.assertIn(STALE_MARKER, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         await h.callback(f"plm_invite:{own}")
-        self.assertIn(STALE_MARKER, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         await h.callback(f"plm_card:{own}")
-        self.assertIn(STALE_MARKER, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
 
         # Экран и состояние не переключились, ссылки не появились.
         admin_after = load_admin_session(DEFAULT_USER_ID)
@@ -470,7 +475,7 @@ class StaleAndForgedButtonsTests(unittest.TestCase):
         await h.callback(f"adm_invite:{foreign}")
         alert = _last_alert(h).lower()
         self.assertTrue(alert, "подделанная кнопка должна получить отказ")
-        self.assertIn(STALE_MARKER, alert)
+        cat.assert_stale(self, alert)
         self.assertEqual(_active_invites_count(h), 0, "ссылка не выдана")
         self.assertNotIn("?start=", h.screen_text())
         state = load_place_session(DEFAULT_USER_ID)
@@ -494,7 +499,7 @@ class StaleAndForgedButtonsTests(unittest.TestCase):
         self.assertEqual(admin_state["phase"], "place")
 
         await h.callback(f"adm_invite:{foreign}")
-        self.assertIn(STALE_MARKER, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         self.assertEqual(_active_invites_count(h), 0, "ссылка не выдана")
         admin_state = load_admin_session(DEFAULT_USER_ID)
         assert admin_state is not None

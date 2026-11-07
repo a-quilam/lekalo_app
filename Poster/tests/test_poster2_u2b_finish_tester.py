@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     from sqlalchemy import select
 
@@ -268,7 +270,7 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
 
         await h.callback(f"aw_edit:{draft.id + 500}:{draft.revision}")
 
-        self.assertIn("Данные изменились", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
         self.assertEqual(h.posts(), posts_before)
         # 2.5.3 §5: служебного экрана нет — устаревшая кнопка открывает
         # список текстовых полей на самом анонсе.
@@ -290,7 +292,7 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
 
         await h.callback(f"aw_edit:{draft.id}:{draft.revision + 7}")
 
-        self.assertIn("Данные изменились", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
         self.assertEqual(h.posts(), posts_before)
         self.assertEqual(h.screen_text(), "", "служебного экрана нет")
         self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не открыт")
@@ -363,7 +365,7 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
         # 2.5.2 §2: «🏠 В меню» архивирует экземпляр, поэтому выход — один
         # раз в конце, уже после проверки повторных открытий.
         await h.callback(_instance_button(h, active, controls.ACTION_MENU))
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
 
         self.assertEqual(h.posts(), posts_before)
         stored = _details(h, draft.id)
@@ -411,7 +413,7 @@ class ForgedDeliveredCallbackTests(unittest.TestCase):
         await h.callback(stale_instance)
         self.assertEqual(h.answer_texts()[-1], controls.STALE_INSTANCE_TEXT)
         await h.callback(stale_legacy_edit)
-        self.assertIn("Данные изменились", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
 
         self.assertEqual(h.posts(), posts_before)
         stored = _details(h, draft.id)

@@ -154,6 +154,9 @@ async def handle_panel_callback(
 
     wizard.remember_conversation_state(update, context, PANEL_STATES[action])
     if action == announcement_controls.ACTION_DATA:
+        # Открытие редактора начинает путь экземпляра: список полей ляжет
+        # поверх управления, и «◀️ Назад» вернёт именно туда.
+        wizard._enter_editor_path(wizard._ui(context), instance.id)
         await wizard._render_field_list(
             update, context, details, instance_id=instance.id
         )
@@ -162,7 +165,10 @@ async def handle_panel_callback(
         # отдельным экраном. Экземпляр известен из callback.
         await wizard._show_photos(update, context, details, instance_id=instance.id)
     else:
-        await wizard._enter_extras(update, context, details)
+        # Доп. поля открываются из управления, а не из списка текстовых
+        # полей: путь редактора тоже начинается с управления.
+        wizard._enter_editor_path(wizard._ui(context), instance.id)
+        await wizard._enter_extras(update, context, details, instance_id=instance.id)
 
 
 async def handle_field_callback(
@@ -196,6 +202,11 @@ async def handle_field_callback(
 
     if action == announcement_controls.FIELD_ACTION_BACK:
         await wizard._answer(update)
+        # Список полей — вложенный экран редактора: «◀️ Назад» возвращает
+        # ровно на управление анонсом и оставляет путь редактора этого
+        # экземпляра (без него следующий «Назад» из доп. полей снова искал
+        # бы путь в истории конструктора).
+        wizard._enter_editor_path(wizard._ui(context), instance.id)
         await wizard._show_announcement_controls(
             context, ctx.chat(update).id, details, instance=instance
         )
@@ -240,9 +251,11 @@ async def handle_field_input_callback(
     Готовые варианты (время, дата, выбор) сохраняются общим
     `_save_field_input_value`: значение применяется к доставленной версии на
     месте, а клавиатура того же сообщения возвращается к списку полей.
-    «Назад» и «Пропустить» ничего не пишут — прежнее значение остаётся, а
-    автор снова видит список. Уровни календаря перерисовывают клавиатуру
-    ввода, новых сообщений не появляется.
+    «Отменить» (`abort`) прекращает ввод, ничего не записывая: прежнее
+    значение остаётся, автор снова видит список полей. Устаревшие «Назад» и
+    «Пропустить» прежних клавиатур обрабатываются так же — без записи.
+    Уровни календаря перерисовывают клавиатуру ввода, новых сообщений не
+    появляется.
     """
     parsed = announcement_controls.parse_field_input_callback(ctx.query(update).data)
     if parsed is None:
@@ -284,6 +297,17 @@ async def handle_field_input_callback(
             return
         state = await wizard._cancel_field_length_edit(
             update, context, details, instance, field, int(tail[0])
+        )
+        wizard.remember_conversation_state(update, context, state)
+        return
+
+    if action == announcement_controls.FIELD_INPUT_ACTION_ABORT:
+        # 2.5.5 §1: «Отменить» на клавиатуре ВВОДА поля. Незавершённый ввод
+        # отбрасывается, прежнее значение остаётся: до кнопки в БД ничего не
+        # писалось. Автор возвращается к списку полей (он же снимает режим
+        # ввода), текстовых сообщений не отправляется.
+        state = await wizard._return_to_field_list(
+            update, context, details, instance.id
         )
         wizard.remember_conversation_state(update, context, state)
         return

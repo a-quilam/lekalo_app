@@ -30,6 +30,8 @@ from __future__ import annotations
 import json
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     from brick_state import load_brick_session
     from brick_store import create_personal_brick
@@ -136,7 +138,9 @@ class HubBackTests(unittest.TestCase):
 
         # Мастер создания тоже не теряет источник.
         await h.callback("bk_create", user_id=OWNER_TG)
-        self.assertIn("Как назвать кирпичик", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "bricks.build.1_nazvat_kirpichik_naprimer_html"
+        )
         await h.callback("bk_back", user_id=OWNER_TG)
         self.assertIn(HUB_TITLE, h.screen_text())
 
@@ -210,7 +214,7 @@ class HubBackTests(unittest.TestCase):
         template_id, _revision, _bricks = _seed_personal_template(h)
         await _start_to_template(h, place_id)
         await _choose_personal(h, template_id)
-        self.assertIn("Вопрос 1 из 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 1))
 
         await h.callback("bricks")
         self.assertIn(HUB_TITLE, h.screen_text())
@@ -221,7 +225,7 @@ class HubBackTests(unittest.TestCase):
         # Источник переживает рестарт: кнопка со старого экрана тоже ведёт на шаг.
         await h.restart()
         await h.callback("bk_back")
-        self.assertIn("Вопрос 1 из 1", h.screen_text(), "не вернулись на шаг")
+        self.assertRegex(h.screen_text(), cat.question_re(1, 1), "не вернулись на шаг")
         self.assertNotIn(MANAGE_TITLE, h.screen_text())
 
     @scenario_test
@@ -262,7 +266,7 @@ class HubBackTests(unittest.TestCase):
         await open_from_manage(h)
         self.assertIn(("🏠 В меню", "main_menu"), _buttons(h))
         await h.callback("main_menu", user_id=OWNER_TG)
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
 
 
 if __name__ == "__main__":

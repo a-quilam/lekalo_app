@@ -373,7 +373,14 @@ class DeletePersonalTemplateTests(unittest.TestCase):
         await h.callback("manage_templates")
         await h.callback(f"tp_open:{template_id}")
         await h.callback(f"tp_delete:{template_id}")
-        self.assertIn(f"Текущая версия: {revision}", h.screen_text())
+        self.assertIn(
+            tr(
+                "templates.delete_confirm.udalit_shablon_shablon_tekuschaya",
+                display_name="Удаляемый шаблон",
+                revision=revision,
+            ),
+            h.screen_text(),
+        )
 
         await h.callback(f"tp_delete_yes:{template_id}")
 

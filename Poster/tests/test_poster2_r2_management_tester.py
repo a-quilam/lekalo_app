@@ -49,6 +49,8 @@ from unittest.mock import patch
 
 from sqlalchemy import func, select
 
+from tests import ui_texts_expect as cat
+
 try:
     from admin_state import load_admin_session
     from announcement_store import (
@@ -363,7 +365,9 @@ class TemplateSectionOnlyManagesTests(unittest.TestCase):
         await h.callback(f"tp_delete:{template_id}")
         await h.callback(f"tp_delete_yes:{template_id}")
 
-        self.assertIn("этому шаблону", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "templates.module.shablon_nelzya_udalit_nemu"
+        )
         self.assertIsNotNone(_personal_row(h, template_id), "шаблон сохранён")
         state = load_template_session(DEFAULT_USER_ID)
         self.assertIsNotNone(state)
@@ -399,7 +403,7 @@ class TemplateSectionOnlyManagesTests(unittest.TestCase):
         await h.callback(f"tp_open:{template_id}")
 
         await h.callback(f"tp_delete_yes:{template_id}")
-        self.assertIn(STALE_TEMPLATES, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         self.assertIsNotNone(_personal_row(h, template_id))
         state = load_template_session(DEFAULT_USER_ID)
         self.assertIsNotNone(state)
@@ -461,9 +465,9 @@ class TemplateSectionOnlyManagesTests(unittest.TestCase):
         await h.callback(f"tp_open:{foreign_id}")
         self.assertIn("не найден", _last_alert(h).lower())
         await h.callback(f"tp_delete:{foreign_id}")
-        self.assertIn(STALE_TEMPLATES, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         await h.callback(f"tp_delete_yes:{foreign_id}")
-        self.assertIn(STALE_TEMPLATES, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
 
         with h.session_factory() as session:
             self.assertIsNotNone(session.get(Template, foreign_id))
@@ -503,7 +507,9 @@ class PlaceHandbookTests(unittest.TestCase):
         await h.callback(f"plm_open:{place_id}")
         self.assertIn("Дом культуры", h.screen_text())
         # T2: у не-управляющего это карточка просмотра справочника.
-        self.assertIn("можно посмотреть", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "places.manage_card.eto_prosmotr_spravochnika"
+        )
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))
         self.assertEqual(_draft_count(h), 0)
 
@@ -564,7 +570,9 @@ class PlaceHandbookTests(unittest.TestCase):
         await h.callback("manage_places")
         await h.callback(f"plm_open:{place_id}")
 
-        self.assertIn("можно посмотреть", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "places.manage_card.eto_prosmotr_spravochnika"
+        )
         self.assertEqual(_callbacks(h, "plm_edit:"), [])
         self.assertEqual(_callbacks(h, "plm_admins:"), [])
         self.assertIn(
@@ -572,8 +580,14 @@ class PlaceHandbookTests(unittest.TestCase):
         )
         # Заявка только объясняет: роль не меняется, админ-кабинет не открыт.
         await h.callback(f"plm_admin_request:{place_id}")
-        self.assertIn("Я администратор места", h.screen_text())
-        self.assertIn("не выдаёт права.", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "places.admin_request.ya_admin_mesta_naznachit"
+        )
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "places.admin_request.kontakt_administratora_poka_ukazan",
+        )
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
         with h.session_factory() as session:
             admins = session.scalars(
@@ -619,14 +633,16 @@ class PlaceHandbookTests(unittest.TestCase):
         await h.callback(f"plm_open:{place_id}")
 
         # Не-управляющий остался в просмотровой карточке справочника.
-        self.assertIn("можно посмотреть", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "places.manage_card.eto_prosmotr_spravochnika"
+        )
 
         await h.callback(f"plm_edit:{place_id}")
-        self.assertIn(STALE_PLACES, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
 
         await h.callback(f"plm_admins:{place_id}")
-        self.assertIn(STALE_PLACES, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
 
         with h.session_factory() as session:
@@ -660,7 +676,7 @@ class PlaceHandbookTests(unittest.TestCase):
         await h.callback(f"plm_open:{own}")
         await h.callback(f"plm_edit:{foreign}")
 
-        self.assertIn(STALE_PLACES, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         admin_state = load_admin_session(DEFAULT_USER_ID)
         self.assertIsNotNone(admin_state)
         assert admin_state is not None
@@ -684,7 +700,7 @@ class PlaceHandbookTests(unittest.TestCase):
         ):
             with self.subTest(callback=callback):
                 await h.callback(callback)
-                self.assertIn(STALE_PLACES, _last_alert(h).lower())
+                cat.assert_stale(self, _last_alert(h))
         self.assertIsNone(load_place_session(DEFAULT_USER_ID))
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
         self.assertEqual(_draft_count(h), 0)
@@ -697,7 +713,7 @@ class PlaceHandbookTests(unittest.TestCase):
         await h.callback(f"plm_open:{place_id}")
         await h.callback(f"plm_open:{place_id}")
 
-        self.assertIn(STALE_PLACES, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         state = load_place_session(DEFAULT_USER_ID)
         self.assertIsNotNone(state)
         assert state is not None
@@ -714,7 +730,7 @@ class PlaceHandbookTests(unittest.TestCase):
         await h.text("Дом")
         await h.callback(f"plm_open:{other}")
 
-        self.assertIn(STALE_PLACES, _last_alert(h).lower())
+        cat.assert_stale(self, _last_alert(h))
         state = load_place_session(DEFAULT_USER_ID)
         self.assertIsNotNone(state)
         assert state is not None
@@ -736,10 +752,10 @@ class PlaceCreationFromHandbookTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("manage_places")
         await h.callback("plm_add")
-        self.assertIn("анонса сейчас не начнётся.", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_input.manage_hint")
 
         await h.text("Новая площадка R2")
-        self.assertIn("Проверьте, нет ли этого места", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_check.title")
         await h.callback("pl_create_confirm")
         await h.text("Москва")
         # Poster 2.5: адрес и ссылка — необязательные шаги мастера.
@@ -748,7 +764,9 @@ class PlaceCreationFromHandbookTests(unittest.TestCase):
 
         text = h.screen_text()
         self.assertIn("Новая площадка R2", text)
-        self.assertIn("✅ Место и его стандартный шаблон добавлены", text)
+        cat.assert_shows(
+            self, text, "places.create_place_from_state.mesto_dobavleno_vmeste_standart"
+        )
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))
         self.assertEqual(_draft_count(h), 0, "создание не начинает анонс")
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
@@ -781,7 +799,9 @@ class PlaceCreationFromHandbookTests(unittest.TestCase):
         self.assertIn(
             f"plm_admin_request:{place_id}", _callbacks(h, "plm_admin_request:")
         )
-        self.assertIn("можно посмотреть", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "places.manage_card.eto_prosmotr_spravochnika"
+        )
 
     @scenario_test
     async def test_pick_place_tap_still_starts_announcement(self, h):
@@ -792,7 +812,7 @@ class PlaceCreationFromHandbookTests(unittest.TestCase):
 
         await h.callback(f"pl_pick:{place_id}")
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_QUESTIONS_PHASE)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         with h.session_factory() as session:
             self.assertEqual(
                 int(session.scalar(select(func.count(AnnouncementDraft.id))) or 0), 1
@@ -837,10 +857,8 @@ class HandbookNavigationRegressionTests(unittest.TestCase):
         )
 
         await h.callback("plm_back")
-        self.assertNotIn(
-            STALE_PLACES,
-            _last_alert(h).lower(),
-            "кнопка «◀️ К карточке» отвечает «Кнопка устарела»",
+        cat.assert_not_stale(
+            self, _last_alert(h), "кнопка «◀️ К карточке» отвечает «Кнопка устарела»"
         )
         state = load_place_session(DEFAULT_USER_ID)
         self.assertIsNotNone(state)
@@ -861,9 +879,9 @@ class HandbookNavigationRegressionTests(unittest.TestCase):
         )
 
         await h.callback("plm_back")
-        self.assertNotIn(
-            STALE_PLACES,
-            _last_alert(h).lower(),
+        cat.assert_not_stale(
+            self,
+            _last_alert(h),
             "кнопка «◀️ Назад» на вводе названия отвечает «Кнопка устарела»",
         )
         state = load_place_session(DEFAULT_USER_ID)

@@ -29,6 +29,8 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from utils.ui_texts import tr
+
 try:
     import delivery
     from announcement_instances import list_instances
@@ -55,7 +57,7 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
     INTEGRATION_IMPORT_ERROR = str(exc)
 
 
-PHOTO_STEP_TITLE = "📷 Фотографии анонса"
+PHOTO_STEP_TITLE = tr("wizard.photos.title")
 ANNOUNCEMENT_TEXT = "Значение"
 
 

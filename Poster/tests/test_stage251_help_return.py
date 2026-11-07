@@ -30,6 +30,9 @@ import unittest
 
 from sqlalchemy import select
 
+from tests import ui_texts_expect as cat
+from utils.ui_texts import tr
+
 try:
     from handlers.announcement_wizard import RESUME_PAYLOAD_KEY
     from models import AnnouncementValue
@@ -61,7 +64,7 @@ ABOUT_LABEL = "ℹ️ О проекте"
 ABOUT_DATA = "help_about"
 LEGACY_BACK_DATA = "main_menu"
 RICH_KEY = "help_rich_message_id"
-MENU_TEXT = "Что хотите сделать?"
+MENU_TEXT = tr("menu.main")
 
 
 # --- помощники -------------------------------------------------------------
@@ -279,7 +282,7 @@ class HelpBackToConstructorTests(unittest.TestCase):
         template_id, _revision, bricks = _seed_personal_template(h)
         await _start_to_template(h, place_id)
         await _choose_personal(h, template_id)
-        self.assertIn("Вопрос 1 из 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 1))
         return bricks
 
     @scenario_test
@@ -293,7 +296,9 @@ class HelpBackToConstructorTests(unittest.TestCase):
 
         await h.callback(BACK_DATA)
 
-        self.assertIn("Вопрос 1 из 1", h.screen_text(), "не вернулись на текущий шаг")
+        self.assertRegex(
+            h.screen_text(), cat.question_re(1, 1), "не вернулись на текущий шаг"
+        )
         self.assertNotIn(MENU_TEXT, h.screen_text())
         payload = screen_utils.load_payload(h.user_id) or {}
         self.assertIn(RESUME_PAYLOAD_KEY, payload, "возврат снял resume-снимок")
@@ -305,12 +310,14 @@ class HelpBackToConstructorTests(unittest.TestCase):
     async def test_back_returns_to_photo_step(self, h: Harness) -> None:
         bricks = await self._open_question(h)
         await h.text("Текст анонса")
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
 
         await h.callback("help")
         await h.callback(BACK_DATA)
 
-        self.assertIn("Фотографии анонса", h.screen_text(), "шаг фото потерян")
+        self.assertIn(
+            cat.text("wizard.photos.title"), h.screen_text(), "шаг фото потерян"
+        )
         payload = screen_utils.load_payload(h.user_id) or {}
         self.assertIn(
             RESUME_PAYLOAD_KEY, payload, "возврат на шаг фото снял resume-снимок"
@@ -318,7 +325,7 @@ class HelpBackToConstructorTests(unittest.TestCase):
         # Шаг живой: фото принимается, а не уходит в подсказку меню.
         await h.photo("photo-after-help")
         self.assertIn("photo-after-help", _latest_draft(h).photos)
-        self.assertNotIn("Фото можно добавить при создании анонса", h.screen_text())
+        cat.assert_not_shows(self, h.screen_text(), "menu.outside.photo")
         self.assertEqual(
             (_stored_value(h, _latest_draft(h).id, bricks["main"]) or {}).get("text"),
             "Текст анонса",
@@ -343,7 +350,7 @@ class HelpBackToConstructorTests(unittest.TestCase):
         await h.text("Текст после справки")
         self.assertNotIn(MENU_TEXT, h.screen_text(), "текст ушёл в меню")
         # Значение принято шагом, конструктор пошёл дальше (шаг фото).
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         self.assertEqual(
             (_stored_value(h, draft.id, bricks["main"]) or {}).get("text"),
             "Текст после справки",

@@ -28,6 +28,8 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from utils.ui_texts import tr
+
 try:
     import announcement_controls as controls
     from handlers import announcement_field_input as field_input
@@ -57,7 +59,7 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
     INTEGRATION_IMPORT_ERROR = str(exc)
 
 
-PHOTOS_TITLE = "📷 Фотографии анонса"
+PHOTOS_TITLE = tr("wizard.photos.title")
 # Типы вызовов, создающих НОВОЕ сообщение в чате.
 CREATE_TYPES = frozenset({"message", "photo", "media_group", "rich_message"})
 # Поля анонса: короткий текст, время, дата и одиночный выбор.
@@ -279,12 +281,13 @@ class FieldInputOnAnnouncementTests(unittest.TestCase):
         self.assertIn("Название", hint.text)
         self.assertIsNone(hint.callback_data, "у подсказки не должно быть callback")
 
-        # Последняя строка — «◀️ Назад | ⏭ Пропустить».
+        # Последняя строка — одна кнопка «Отменить» в стиле `danger`.
         rows = _input_markup(h, message_id).inline_keyboard
-        tail = [button.callback_data for button in rows[-1]]
-        self.assertEqual(len(tail), 2, tail)
-        self.assertTrue(tail[0].startswith("anq_back:"), tail)
-        self.assertTrue(tail[1].startswith("anq_skip:"), tail)
+        tail = rows[-1]
+        self.assertEqual(len(tail), 1, tail)
+        self.assertTrue(tail[0].callback_data.startswith("anq_abort:"), tail)
+        self.assertEqual(tail[0].text, "Отменить")
+        self.assertEqual(tail[0].style, "danger")
 
     @scenario_test
     async def test_c_time_preset_saved_in_place_and_back_to_list(self, h) -> None:
@@ -341,8 +344,8 @@ class FieldInputOnAnnouncementTests(unittest.TestCase):
         self.assertIsNone(h.screen_message_id())
 
     @scenario_test
-    async def test_e_back_and_skip_keep_previous_value(self, h) -> None:
-        """(е) «Назад» и «Пропустить» не меняют значение и ведут к списку."""
+    async def test_e_cancel_keeps_previous_value(self, h) -> None:
+        """(е) «Отменить» не меняет значение и ведёт к списку полей."""
         await h.text("/start")
         draft, bricks = await _delivered(h, photos=1)
         active = _only_active(h, draft.id)
@@ -350,22 +353,25 @@ class FieldInputOnAnnouncementTests(unittest.TestCase):
         await _open_input(h, active.id, bricks["title"])
         before = _stored(h, draft.id).publication_text
         revision_before = _stored(h, draft.id).revision
+        calls_before = len(h.calls)
 
-        back = _input_callbacks(h, "back")[0]
-        await h.callback(back)
-        self.assertTrue(_field_buttons(h), "«Назад» не вернул список полей")
-        self.assertEqual(_stored(h, draft.id).revision, revision_before)
+        cancel = _input_callbacks(h, "abort")[0]
+        await h.callback(cancel)
 
-        await h.callback(_field_callback(h, bricks["title"]))
-        skip = _input_callbacks(h, "skip")[0]
-        await h.callback(skip)
-
-        self.assertTrue(_field_buttons(h), "«Пропустить» не вернул список полей")
+        self.assertTrue(_field_buttons(h), "«Отменить» не вернул список полей")
         after = _stored(h, draft.id)
         self.assertEqual(after.publication_text, before, "значение изменилось")
         self.assertEqual(after.revision, revision_before)
         self.assertEqual(
             h.bot.content_text(h.chat_id, message_id), before, "анонс переписан"
+        )
+        # «Отменить» не отправляет текстовых сообщений: только правка
+        # клавиатуры существующего управления.
+        new_calls = h.calls[calls_before:]
+        self.assertNotIn(
+            "message",
+            {call["type"] for call in new_calls},
+            "«Отменить» не создаёт сообщений",
         )
 
     @scenario_test
@@ -570,8 +576,8 @@ class FieldInputRestartTests(unittest.TestCase):
         active = _only_active(h, draft.id)
         message_id = _announcement_message_id(h, active)
         await _open_input(h, active.id, bricks["title"])
-        # «Назад» снимает режим ввода: снимка «ждём текст» быть не должно.
-        await h.callback(_input_callbacks(h, "back")[0])
+        # «Отменить» снимает режим ввода: снимка «ждём текст» быть не должно.
+        await h.callback(_input_callbacks(h, "abort")[0])
 
         fresh = await _restart_with_new_harness(h)
         try:
@@ -717,7 +723,7 @@ class FieldInputProtocolTests(unittest.TestCase):
             self.assertIsNone(controls.parse_field_input_callback(bad), bad)
 
     def test_input_keyboard_rows(self) -> None:
-        """Клавиатура ввода: подсказка, варианты, «Назад | Пропустить»."""
+        """Клавиатура ввода: подсказка, варианты, одна «Отменить»."""
         from dataclasses import replace
 
         from announcement_store import AnnouncementFieldState
@@ -737,10 +743,10 @@ class FieldInputProtocolTests(unittest.TestCase):
         self.assertEqual(len(rows[0]), 1, "подсказка отдельной строкой")
         self.assertIsNone(rows[0][0].callback_data)
         self.assertEqual(len(rows[1]), 3, "три быстрых времени")
-        self.assertEqual(
-            [data for _l, data in [(b.text, b.callback_data) for b in rows[-1]]],
-            ["anq_back:3:7", "anq_skip:3:7"],
-        )
+        self.assertEqual(len(rows[-1]), 1, "одна кнопка навигации")
+        self.assertEqual(rows[-1][0].text, "Отменить")
+        self.assertEqual(rows[-1][0].callback_data, "anq_abort:3:7")
+        self.assertEqual(rows[-1][0].style, "danger")
         self.assertEqual(field_input.hint_label(field), "⏳ Ожидаю Время")
         self.assertEqual(replace(field, title="Время").code, "clock")
 

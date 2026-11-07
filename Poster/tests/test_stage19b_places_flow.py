@@ -14,6 +14,8 @@ import unittest
 from sqlalchemy import func, select
 from telegram.error import BadRequest
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import list_announcement_drafts
     from brick_store import create_personal_brick
@@ -107,21 +109,21 @@ def callback_for(h, prefix: str) -> str:
 
 async def open_hub(h, *, user_id: int | None = None) -> None:
     await h.callback("places", user_id=user_id)
-    assert "📍 Места" in h.screen_text(), h.screen_text()
+    assert cat.shows(h.screen_text(), "places.hub.title"), h.screen_text()
 
 
 async def open_search(h, query: str) -> None:
     if load_place_session(h.user_id) is None:
         await open_hub(h)
     await h.callback("pl_search")
-    assert "Введите название или" in h.screen_text(), h.screen_text()
+    assert cat.shows(h.screen_text(), "places.search_input"), h.screen_text()
     await h.text(query)
 
 
 async def open_card(h, query: str, place_id: int) -> None:
     await open_search(h, query)
     await h.callback(f"pl_open:{place_id}")
-    assert "✅ Подтвердить" in h.screen_text(), h.screen_text()
+    assert cat.shows(h.screen_text(), "places.card.hint"), h.screen_text()
     assert ("◀️ Вернуться к списку", "pl_back") in h.screen_buttons()
 
 
@@ -145,7 +147,7 @@ class PlacesNavigationTests(unittest.TestCase):
         self.assertIn(("◀️ Назад", "main_menu"), buttons)
 
         await h.callback("main_menu")
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
 
     @scenario_test
     async def test_places_command_opens_section(self, h):
@@ -157,7 +159,7 @@ class PlacesNavigationTests(unittest.TestCase):
     async def test_empty_places_list_is_not_a_dead_end(self, h):
         await open_hub(h)
         await h.callback("pl_all")
-        self.assertIn("пока нет мест", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.all.empty")
         self.assertIn(("➕ Добавить место", "pl_add"), h.screen_buttons())
         self.assertIn(("◀️ Назад", "main_menu"), h.screen_buttons())
         self.assertEqual(place_count(h), 0)
@@ -321,12 +323,12 @@ class PlacesNavigationTests(unittest.TestCase):
 
         await open_search(h, "  ЕЛКА—КАФЕ, ТЕПЛЫЙ   ДОМ ")
         self.assertIn(f"pl_open:{place}", [d for _, d in h.screen_buttons()])
-        self.assertIn("точное название", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.result_label.tochnoe_nazvanie")
 
     @scenario_test
     async def test_search_does_not_create_place_when_nothing_found(self, h):
         await open_search(h, "Совсем новое место")
-        self.assertIn("Ничего не найдено", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.search.empty")
         self.assertIn(("➕ Добавить место", "pl_add"), h.screen_buttons())
         self.assertEqual(place_count(h), 0)
 
@@ -340,11 +342,11 @@ class PlaceCreationFlowTests(unittest.TestCase):
     async def test_new_place_requires_check_and_explicit_confirmation(self, h):
         await open_hub(h)
         await h.callback("pl_add")
-        self.assertIn("Введите название.", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_input")
         input_update = await h.text("Новый Театр")
 
         text = h.screen_text()
-        self.assertIn("Проверьте, нет ли этого места в справочнике", text)
+        cat.assert_shows(self, text, "places.create_check.title")
         self.assertIn("Новый Театр", text)
         self.assertIn(("✅ Это новое место", "pl_create_confirm"), h.screen_buttons())
         self.assertIn(("✏️ Исправить название", "pl_create_edit"), h.screen_buttons())
@@ -363,9 +365,13 @@ class PlaceCreationFlowTests(unittest.TestCase):
         self.assertEqual(place_count(h), 0, "мастер ещё не завершён")
         await h.callback("pl_create_skip")
         self.assertEqual(place_count(h), 1)
-        self.assertIn("✅ Место добавлено", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "places.create_place_from_state.mesto_dobavleno_ono_srazu",
+        )
         self.assertIn("Новый Театр", h.screen_text())
-        self.assertIn("✅ Подтвердить", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.card.hint")
 
         session = h.session_factory()
         try:
@@ -489,8 +495,12 @@ class PlaceCreationFlowTests(unittest.TestCase):
 
         await h.callback(existing_button)
         text = h.screen_text()
-        self.assertIn("Место уже есть в справочнике", text)
-        self.assertIn("добавить введённое название как альтернативное", text.lower())
+        cat.assert_shows(
+            self, text, "places.existing_choice.vy_vybrali_suschestvuyuschee_mesto"
+        )
+        cat.assert_shows(
+            self, text, "places.existing_choice.mozhno_sohranit_vvedennoe_nazvanie"
+        )
         self.assertEqual(len(name_rows(h, place_id)), 1, "алиас не добавлен молча")
 
         await h.callback("pl_save_candidate")
@@ -511,7 +521,7 @@ class PlaceCreationFlowTests(unittest.TestCase):
         await h.callback("pl_skip_candidate")
 
         self.assertEqual(len(name_rows(h, place_id)), 1)
-        self.assertIn("✅ Подтвердить", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.card.hint")
         await h.callback(callback_for(h, "pl_confirm:"))
         self.assertIn("Место выбрано", h.screen_text())
 
@@ -542,7 +552,11 @@ class PlaceCreationFlowTests(unittest.TestCase):
         await h.callback("pl_create_skip")
 
         self.assertEqual(place_count(h), 2)
-        self.assertIn("✅ Место добавлено", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "places.create_place_from_state.mesto_dobavleno_ono_srazu",
+        )
         # Оба места остаются независимыми; никакого слияния нет.
         self.assertEqual(len(name_rows(h, 1)), 1)
 
@@ -552,7 +566,7 @@ class PlaceCreationFlowTests(unittest.TestCase):
         await h.callback("pl_add")
         await h.text("Опечатка")
         await h.callback("pl_create_edit")
-        self.assertIn("Введите название.", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_input")
         await h.text("Исправленное место")
         self.assertIn("Исправленное место", h.screen_text())
         self.assertEqual(place_count(h), 0)
@@ -575,11 +589,13 @@ class AlternativeNameFlowTests(unittest.TestCase):
 
         await open_card(h, "Театр", place_id)
         await h.callback("pl_names:0")
-        self.assertIn("Названия места", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.names.nazvaniya_mesta")
         self.assertIn(("➕ Добавить название", "pl_addname"), h.screen_buttons())
 
         await h.callback("pl_addname")
-        self.assertIn("Напишите, как ещё называют", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "places.render_phase.novoe_nazvanie_vvedite"
+        )
         await h.text("Драмтеатр")
         self.assertIn("Драмтеатр", h.screen_text())
         self.assertIn("Театр", h.screen_text())
@@ -595,7 +611,7 @@ class AlternativeNameFlowTests(unittest.TestCase):
 
         await h.callback("pl_names:0")
         await h.callback(f"pl_name:{canonical_id}")
-        self.assertIn("✅ Подтвердить", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.card.hint")
         self.assertIn("Театр", h.screen_text())
         state = load_place_session(h.user_id)
         assert state is not None
@@ -634,10 +650,9 @@ class AlternativeNameFlowTests(unittest.TestCase):
         await h.callback("pl_addname")
         await h.text("Клуб Север")
 
-        text = h.screen_text().lower()
-        self.assertIn("похоже", text)
-        self.assertIn("клуб север", text)
-        self.assertIn("места", text)
+        text = h.screen_text()
+        cat.assert_shows(self, text, "places.alias_warning.pohozhee_nazvanie_u_drugogo")
+        self.assertIn("клуб север", text.lower())
         self.assertEqual(len(name_rows(h, first)), 1)
         self.assertEqual(
             ("✅ Да, добавить", "pl_alias_force") in h.screen_buttons(), True
@@ -682,12 +697,12 @@ class PlacesReliabilityTests(unittest.TestCase):
         await open_hub(h)
         await h.callback("pl_add")
         await h.text("Место после рестарта")
-        self.assertIn("Проверьте, нет ли", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_check.title")
 
         await h.restart()
         await h.callback("places")
 
-        self.assertIn("Проверьте, нет ли", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_check.title")
         self.assertIn("Место после рестарта", h.screen_text())
         self.assertEqual(place_count(h), 0)
         await h.callback("pl_create_confirm")
@@ -717,12 +732,12 @@ class PlacesReliabilityTests(unittest.TestCase):
         place_id, _, _ = insert_place(h, "Театр")
         await open_hub(h)
         await h.callback("pl_search")
-        self.assertIn("Введите название или", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.search_input")
 
         await h.restart()
         await h.text("Театр")
 
-        self.assertIn("Результаты поиска", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.search.title")
         self.assertIn(f"pl_open:{place_id}", [d for _, d in h.screen_buttons()])
 
     @scenario_test
@@ -735,7 +750,7 @@ class PlacesReliabilityTests(unittest.TestCase):
         finally:
             h.bot.errors_by_type.clear()
 
-        self.assertIn("пока нет мест", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.all.empty")
         self.assertNotEqual(h.screen_message_id(), old_screen)
         self.assertIsNotNone(h.screen_message_id())
 
@@ -760,11 +775,8 @@ class PlacesReliabilityTests(unittest.TestCase):
         self.assertEqual(state["phase"], "search_results")
         self.assertEqual(state["query"], "Второй клуб")
         self.assertEqual(place_count(h), 2)
-        self.assertTrue(
-            any(
-                "больше не работает" in str(call.get("text", "")).lower()
-                for call in h.answers()
-            )
+        cat.assert_stale(
+            self, "\n".join(str(call.get("text", "")) for call in h.answers())
         )
 
     @scenario_test
@@ -774,12 +786,9 @@ class PlacesReliabilityTests(unittest.TestCase):
 
         await h.callback("pl_confirm:999999")
         self.assertEqual(place_count(h), 1)
-        self.assertIn("✅ Подтвердить", h.screen_text())
-        self.assertTrue(
-            any(
-                "больше не работает" in str(call.get("text", "")).lower()
-                for call in h.answers()
-            )
+        cat.assert_shows(self, h.screen_text(), "places.card.hint")
+        cat.assert_stale(
+            self, "\n".join(str(call.get("text", "")) for call in h.answers())
         )
 
         await h.callback("pl_names:0")
@@ -824,11 +833,11 @@ class PlacesReliabilityTests(unittest.TestCase):
         await h.callback("pl_search")
         self.assertIsNotNone(load_place_session(h.user_id))
         await h.text("/start")
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertIsNone(load_place_session(h.user_id))
 
         await h.text("Обычный текст вне места")
-        self.assertNotIn("Введите название или", h.screen_text())
+        cat.assert_not_shows(self, h.screen_text(), "places.search_input")
 
     @scenario_test
     async def test_place_deleted_between_search_and_confirm_is_reported(self, h):
@@ -845,8 +854,10 @@ class PlacesReliabilityTests(unittest.TestCase):
             session.close()
 
         await h.callback(f"pl_confirm:{place_id}")
-        self.assertIn("не найдено", h.screen_text().lower())
-        self.assertIn("📍 Места", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "admin.render_phase.mesto_suschestvuet_bylo_udaleno"
+        )
+        cat.assert_shows(self, h.screen_text(), "places.hub.title")
         self.assertEqual(place_count(h), 0)
 
     @scenario_test
@@ -860,7 +871,7 @@ class PlacesReliabilityTests(unittest.TestCase):
         self.assertNotIn(failed.message.message_id, h.deleted_ids())
 
         await h.text("Короткое имя")
-        self.assertIn("Проверьте, нет ли", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_check.title")
         self.assertIn(failed.message.message_id, h.deleted_ids())
 
     @scenario_test

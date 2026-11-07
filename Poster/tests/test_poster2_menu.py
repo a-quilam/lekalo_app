@@ -30,6 +30,8 @@ from unittest.mock import patch
 
 from sqlalchemy import delete, select
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import (
         ORIGIN_PERSONAL,
@@ -359,7 +361,7 @@ class PlacePickTests(unittest.TestCase):
         self.assertEqual(details.place_id, place_id)
         self.assertIsNotNone(details.template_snapshot)
         self.assertEqual(details.template_snapshot.source_kind, "standard")
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_QUESTIONS_FOR_TEST)
         # Никаких дополнительных подтверждений места/шаблона между тапом и
         # вопросами: только ответ на сам callback.
@@ -384,7 +386,7 @@ class PlacePickTests(unittest.TestCase):
         details = _draft_details(h, draft.id)
         self.assertEqual(details.origin, ORIGIN_PLACE)
         self.assertIsNotNone(details.place_id)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
     @scenario_test
     async def test_pick_search_filters_and_starts(self, h):
@@ -423,7 +425,7 @@ class TemplatePickTests(unittest.TestCase):
         self.assertEqual(details.origin, ORIGIN_PERSONAL)
         self.assertIsNone(details.place_id)
         self.assertEqual(details.template_snapshot.source_kind, "personal")
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
     @scenario_test
     async def test_create_template_in_pick_section_then_start(self, h):
@@ -575,7 +577,7 @@ class InitialTemplateTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("pick_template")
         await h.callback(f"tp_pick:{template_id}")
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
         # Пользователь удалил свой единственный шаблон, но история осталась.
         _delete_personal_templates(h)
@@ -640,7 +642,7 @@ class PersonalPlaceLineTests(unittest.TestCase):
         # к доставке; там проверяем отсутствие пустого «Место:», затем
         # завершаем шаг фото и смотрим экран доставки.
         photo_step = h.screen_text()
-        self.assertIn("Фотографии анонса", photo_step)
+        self.assertIn(cat.text("wizard.photos.title"), photo_step)
         self._assert_no_empty_place(self, "шаг фото", photo_step)
 
         await h.callback(_callback(h, "aw_photo_none"))
@@ -684,7 +686,9 @@ class PersonalPlaceLineTests(unittest.TestCase):
             )
         await h.callback(f"aw_open:{draft.id}:{publishing.draft.revision}")
         status = h.screen_text()
-        self.assertIn("Отправка готового анонса", status)
+        cat.assert_shows(
+            self, status, "wizard.render_publish_status.otpravka_gotovogo_anonsa_etot"
+        )
         self._assert_no_empty_place(self, "отправка", status)
 
     @scenario_test
@@ -706,12 +710,12 @@ class PersonalPlaceLineTests(unittest.TestCase):
         await h.callback(f"tp_pick:{template_id}", chat_id=group_id, chat_type="group")
         await h.text("Значение", chat_id=group_id, chat_type="group")
         # S3 п.6: отказ в неличном чате происходит на финале шага фото.
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         await h.callback(
             _callback(h, "aw_photo_none"), chat_id=group_id, chat_type="group"
         )
         refusal = h.screen_text()
-        self.assertIn("только в личный чат", refusal)
+        cat.assert_shows(self, refusal, "errors.private_chat_only")
         self._assert_no_empty_place(self, "отказ в неличном чате", refusal)
 
     @scenario_test
@@ -726,7 +730,7 @@ class PersonalPlaceLineTests(unittest.TestCase):
                 break
             await h.callback(skips[0])
         # S3 п.6: сначала шаг фото, доставка — по «Без фотографий».
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         await h.callback(_callback(h, "aw_photo_none"))
         # 2.5.2 §2: служебного экрана после публикации нет. Строка «Место: …»
         # остаётся там, где живёт сам анонс — в посте и обзоре. В самом посте
@@ -807,7 +811,7 @@ class MyAnnouncementsTests(unittest.TestCase):
         await h.callback("main_menu")
         await h.callback("my_announcements")
         await h.callback(f"aw_open:{draft.id}")
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
 
 @unittest.skipIf(
@@ -882,7 +886,7 @@ class ManageSectionTests(unittest.TestCase):
     @scenario_test
     async def test_admin_command_denied_without_rights(self, h):
         await h.text("/admin")
-        self.assertIn("Раздел доступен только администраторам Poster.", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "admin.module.razdel_dostupen_tolko")
 
     @scenario_test
     async def test_manage_opens_places_and_templates(self, h):
@@ -994,7 +998,7 @@ class NegativeTests(unittest.TestCase):
         # Страница списка без открытого раздела: «устарело», диалог не начат.
         await h.callback("pl_pickp:8")
         alert = _last_alert(h) or ""
-        self.assertIn("больше не работает", alert.lower())
+        cat.assert_stale(self, alert)
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))
 
     @scenario_test
@@ -1002,7 +1006,7 @@ class NegativeTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("tp_pickpage:5")
         alert = _last_alert(h) or ""
-        self.assertIn("больше не работает", alert.lower())
+        cat.assert_stale(self, alert)
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))
 
     @scenario_test
@@ -1017,7 +1021,7 @@ class NegativeTests(unittest.TestCase):
         await h.callback("my_announcements")
         self.assertNotIn(f"aw_open:{foreign.id}", _callbacks(h, "aw_open:"))
         await h.callback(f"aw_open:{foreign.id}")
-        self.assertNotIn("Вопрос 1", h.screen_text())
+        self.assertNotRegex(h.screen_text(), cat.question_re(1))
 
 
 # Константа состояния вопросов объявляется в тесте, чтобы не тянуть лишние

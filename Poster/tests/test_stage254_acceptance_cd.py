@@ -49,6 +49,9 @@ import json
 import re
 import unittest
 
+from tests import ui_texts_expect as cat
+from utils.ui_texts import tr
+
 try:
     from sqlalchemy import text
 
@@ -79,7 +82,7 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 
 # Требования владельца: тексты и пределы, а не значения из каталога.
-PHOTOS_TITLE = "📷 Фотографии анонса"
+PHOTOS_TITLE = tr("wizard.photos.title")
 HINT = "⏳ Ожидаю текст короче"
 CANCEL = "Отменить"
 TEXT_LIMIT = 4096
@@ -320,11 +323,18 @@ class NoPhotoLengthErrorTests(unittest.TestCase):
         notices = _limit_notices(h, TEXT_LIMIT)
         self.assertTrue(notices, f"нет ошибки с лимитом: {h.reply_texts()}")
         notice = notices[-1]
-        self.assertIn(str(TEXT_LIMIT), notice)
+        # Отказ по длине — строка каталога правки доставленного анонса:
+        # она называет лимит и сообщает, что анонс не изменился. Полнота
+        # сохранённого ввода проверяется ниже (`_field_value`).
+        cat.assert_shows(
+            self,
+            notice,
+            "wizard.length_refusal.edit_not_applied",
+            limit=TEXT_LIMIT,
+        )
         low = notice.lower()
-        self.assertTrue(
-            "сохран" in low or "правк" in low,
-            f"не сказано, что данные сохранены: {notice!r}",
+        self.assertIn(
+            "не изменился", low, f"не сказано, что анонс не изменён: {notice!r}"
         )
         self.assertNotIn("фот", low, f"без фото упомянуты фото: {notice!r}")
         self.assertLess(len(notice), 400, "причина слишком длинная")
@@ -548,9 +558,12 @@ class CaptionLengthTests(unittest.TestCase):
         notices = _limit_notices(h, CAPTION_LIMIT)
         self.assertTrue(notices, f"нет ошибки с лимитом 1024: {h.reply_texts()}")
         notice = notices[-1]
-        self.assertIn(str(CAPTION_LIMIT), notice, "лимит подписи не назван")
-        low = notice.lower()
-        self.assertTrue("сохран" in low or "правк" in low, notice)
+        cat.assert_shows(
+            self,
+            notice,
+            "wizard.length_refusal.edit_not_applied",
+            limit=CAPTION_LIMIT,
+        )
         self.assertLess(len(notice), 400, "причина слишком длинная")
 
         _assert_error_keyboard(self, h, message_id)
@@ -696,8 +709,13 @@ class MediaGroupLengthErrorTests(unittest.TestCase):
 
         # Причина названа в панели (подпись альбома не трогается).
         panel_text = h.bot.content_text(h.chat_id, panel_id) or ""
-        self.assertIn(str(CAPTION_LIMIT), panel_text, "лимит не назван в панели")
-        self.assertTrue("сохран" in panel_text.lower() or "правк" in panel_text.lower())
+        cat.assert_shows(
+            self,
+            panel_text,
+            "wizard.length_refusal.edit_not_applied",
+            msg="лимит не назван в панели",
+            limit=CAPTION_LIMIT,
+        )
         # Ровно две кнопки у панели.
         _assert_error_keyboard(self, h, panel_id)
         # Вторая панель не появилась, новых сообщений интерфейса нет.

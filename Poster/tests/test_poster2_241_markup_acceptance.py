@@ -41,6 +41,7 @@ import unittest
 from telegram import MessageEntity
 
 from template_parser import parse_template, render_to_html
+from tests import ui_texts_expect as cat
 from utils.tg_html import entities_to_template_markup, sanitize_html
 
 
@@ -706,7 +707,7 @@ class LiveBlockFormattingTests(unittest.TestCase):
         self.assertNotIn("&lt;b&gt;", live)
         assert_safe_html(self, live)
         # Следующий вопрос — экран, а не новый пост.
-        self.assertIn("Вопрос 2 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2))
 
 
 @unittest.skipIf(
@@ -849,7 +850,7 @@ class NegativeAndStaleFlowsTests(unittest.TestCase):
         await h.callback("tp_save")
 
         self.assertIn(
-            "Эта кнопка больше не работает. Откройте шаблон заново.",
+            cat.text("errors.stale.templates"),
             [answer.get("text") for answer in h.answers()],
         )
         self.assertEqual(
@@ -863,7 +864,7 @@ class NegativeAndStaleFlowsTests(unittest.TestCase):
         )
         await h.callback(f"tp_open:{template_id}", user_id=55)
         self.assertIn(
-            "Эта кнопка больше не работает. Откройте шаблон заново.",
+            cat.text("errors.stale.templates"),
             [answer.get("text") for answer in h.answers()],
         )
         self.assertEqual(

@@ -367,16 +367,16 @@ class TextFieldsOnAnnouncementAcceptanceTests(unittest.TestCase):
         self.assertIn("7. Поле 6", _field_labels(h))
 
         # Открываем последнее поле — ввод на самом анонсе (2.5.4 §1), затем
-        # «◀️ Назад» этой же клавиатуры.
+        # «Отменить» этой же клавиатуры.
         await h.callback(last_data)
         self.assertIsNone(h.screen_message_id(), "лишний экран ввода")
-        backs = [
+        cancels = [
             data
-            for data in h.live_callbacks("anq_back")
+            for data in h.live_callbacks("anq_abort:")
             if data.endswith(f":{bricks['f6']}")
         ]
-        self.assertEqual(len(backs), 1, f"нет «Назад» ввода: {h.live_buttons()}")
-        await h.callback(backs[0])
+        self.assertEqual(len(cancels), 1, f"нет «Отменить» ввода: {h.live_buttons()}")
+        await h.callback(cancels[0])
 
         # Возврат именно на страницу 2 списка (регрессия D3), а не на первую.
         self.assertIsNone(h.screen_message_id(), "временный экран остался")

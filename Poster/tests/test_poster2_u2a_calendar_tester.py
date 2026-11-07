@@ -24,6 +24,8 @@ from __future__ import annotations
 import unittest
 from datetime import date, timedelta
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import build_announcement_fields, list_announcement_drafts
     from brick_store import create_personal_brick
@@ -153,7 +155,7 @@ class QuestionScreenTests(unittest.TestCase):
         with frozen_today(2026, 10, 27):  # вторник, другая дата
             await _open(h)
             text = h.screen_text()
-            self.assertIn("Вопрос 2 из 2", text)
+            self.assertRegex(text, cat.question_re(2, 2))
             self.assertTrue(_days(h), "на вопросе нет дней календаря")
             labels = _labels(h)
             self.assertNotIn("📅 Календарь", labels)
@@ -477,7 +479,7 @@ class SafetyTests(unittest.TestCase):
             ):
                 await h.callback(data)
                 self.assertTrue(_answer(h), f"нет ответа на {data}")
-                self.assertIn("Вопрос 2 из 2", h.screen_text())
+                self.assertRegex(h.screen_text(), cat.question_re(2, 2))
                 self.assertEqual(_saved(h, today=date(2026, 10, 27)), before)
 
     @scenario_test
@@ -485,7 +487,7 @@ class SafetyTests(unittest.TestCase):
         with frozen_today(2026, 10, 27):
             await _open(h)
             await h.callback(_first(h, "aw_qskip"))
-            self.assertIn("Фотографии анонса", h.screen_text())
+            self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
             self.assertIsNone(_saved(h, today=date(2026, 10, 27))["day"])
 
     @scenario_test

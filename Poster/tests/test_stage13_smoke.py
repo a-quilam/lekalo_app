@@ -23,6 +23,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests import ui_texts_expect as cat
+
 POSTER_DIR = Path(__file__).resolve().parent.parent
 REPO_DIR = POSTER_DIR.parent
 SMOKE_RUNNER = Path(__file__).resolve().parent / "stage13_smoke_runner.py"
@@ -152,7 +154,7 @@ class MainInterfaceSmokeTests(unittest.TestCase):
     async def test_menu_and_dialog_smoke(self, h):
         # Меню на постоянном экране
         await h.text("/start")
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
 
         # Переход в конструктор анонса: команда /new_wizard — тот же вход,
         # что и «📍 Создать для площадки», но без площадки

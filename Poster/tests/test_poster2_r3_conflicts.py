@@ -69,6 +69,7 @@ from models import (
 )
 from place_store import create_place
 from template_store import get_standard_template, update_template_content
+from tests import ui_texts_expect as cat
 from tests.integration_harness import HARNESS_IMPORT_ERROR, scenario_test
 from tests.stage22a_helpers import BrickDatabaseTestCase
 from user_store import get_or_create_user
@@ -1330,7 +1331,9 @@ class ConflictUiTests(unittest.TestCase):
         await h.text("/admin", user_id=AUTHOR_TG)
         self.assertIn("Мои места", h.screen_text())
         await h.callback(f"adm_place:{place_id}", user_id=AUTHOR_TG)
-        self.assertIn("Нерешённых конфликтов кодов", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "admin.place.aktivnye_zadachi_konfliktov_kodov"
+        )
         await h.callback(f"adm_bconflicts:{place_id}", user_id=AUTHOR_TG)
         self.assertIn("Конфликты кодов", h.screen_text())
 
@@ -1341,8 +1344,17 @@ class ConflictUiTests(unittest.TestCase):
                 )
             )
         await h.callback(f"adm_bconflict:{conflict_id}", user_id=AUTHOR_TG)
-        self.assertIn("Код занят двумя кирпичиками", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "admin.conflict_card.zadacha_razresheniya_konflikta_kod_html",
+        )
         await h.callback(f"adm_bconflict_rename:{conflict_id}", user_id=AUTHOR_TG)
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "admin.conflict_rename_input.pereimenovanie_mestnogo_kirpi_html",
+        )
         await h.text("ui_переименован", user_id=AUTHOR_TG)
         self.assertIn("переименован", h.screen_text().lower())
         with h.session_factory() as session:
@@ -1370,7 +1382,9 @@ class ConflictUiTests(unittest.TestCase):
                 for call in h.calls
                 if call["type"] == "message"
                 and int(call.get("chat_id") or 0) == AUTHOR_TG
-                and "Код занят двумя кирпичиками" in str(call.get("text") or "")
+                and cat.shows(
+                    str(call.get("text") or ""), "admin.conflict.notification_html"
+                )
             ]
 
         self.assertEqual(len(conflict_notices()), 1)

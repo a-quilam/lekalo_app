@@ -50,6 +50,8 @@ import inspect
 import unittest
 from datetime import timedelta
 
+from tests import ui_texts_expect as cat
+
 try:
     from sqlalchemy import select
     from sqlalchemy.orm import sessionmaker
@@ -88,7 +90,7 @@ LIST_HEAD = "📂 Мои анонсы"
 DRAFT_STATUS = "черновик"
 SENT_STATUS = "готов"
 # §18 (2.5): экрана «✅ Анонс готов» нет — после доставки управление у анонса.
-QUESTION_HEAD = "🧩 Вопрос"
+# Признак экрана вопроса — строка каталога `wizard.question.header`.
 INTERNAL_FRAGMENT = "Что-то пошло не так"
 GONE_FRAGMENTS = ("больше не хранится", "не найден", "больше недоступ", "больше нет")
 
@@ -331,7 +333,7 @@ def _exists(h: Harness, draft_id: int) -> bool:
 async def _publish_personal(h: Harness, template_id: int) -> None:
     """Личный анонс целиком через UI: вопрос → без фото → доставка."""
     await h.callback(f"tp_pick:{template_id}")
-    if QUESTION_HEAD in h.screen_text():
+    if cat.shows(h.screen_text(), "wizard.question.header"):
         await h.text("Текст анонса")
     data = _callbacks(h, "aw_photo_none")
     if not data:
@@ -519,9 +521,10 @@ class MyAnnouncementsTests(unittest.TestCase):
         draft_open = _entry_pair(h, draft_ids[0])[0][0][1]
         await h.callback(draft_open)
         _assert_no_internal(self, h, "открытие черновика из списка")
-        self.assertIn(
-            QUESTION_HEAD,
+        cat.assert_shows(
+            self,
             h.screen_text(),
+            "wizard.question.header",
             "открытие черновика должно вести в конструктор (экран вопроса), "
             f"фактически: {h.screen_text()[:300]!r}",
         )
@@ -684,9 +687,10 @@ class MyAnnouncementsTests(unittest.TestCase):
             "по старому callback нужен понятный ответ о том, что анонс больше "
             f"не хранится; ответы: {h.answer_texts()}",
         )
-        self.assertNotIn(
-            QUESTION_HEAD,
+        cat.assert_not_shows(
+            self,
             h.screen_text(),
+            "wizard.question.header",
             "удалённая запись не должна открываться в конструктор",
         )
 
@@ -716,7 +720,7 @@ class LimitTests(unittest.TestCase):
         self.assertEqual(len(_draft_ids(h)), 4, "подготовка: должно быть 4 черновика")
 
         await h.callback(f"tp_pick:{template_id}")
-        if QUESTION_HEAD not in h.screen_text():
+        if not cat.shows(h.screen_text(), "wizard.question.header"):
             self.fail(
                 "не удалось создать 5-й черновик через UI: "
                 f"{h.screen_text()[:300]!r}"
@@ -758,9 +762,10 @@ class LimitTests(unittest.TestCase):
         existing = _seed_draft_rows(h, count=1, start_at=base)[0]
 
         await h.callback(f"tp_pick:{template_id}")
-        self.assertIn(
-            QUESTION_HEAD,
+        cat.assert_shows(
+            self,
             h.screen_text(),
+            "wizard.question.header",
             f"новый черновик не создан: {h.screen_text()[:300]!r}",
         )
         self.assertTrue(_exists(h, existing), "существующий черновик вытеснен")

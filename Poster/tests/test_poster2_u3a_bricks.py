@@ -29,6 +29,8 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
+from tests import ui_texts_expect as cat
+
 try:
     from brick_proposal_store import PROPOSAL_STATUS_PENDING, create_brick_proposal
     from brick_store import archive_personal_brick, create_personal_brick
@@ -333,7 +335,7 @@ class BrickRowEntryTests(unittest.TestCase):
         self.assertIn(HUB_TITLE, text)
         self.assertNotIn("bp_start", datas)
         self.assertNotIn(EMPTY_HUB_HINT, text, "подсказка про несуществующую кнопку")
-        self.assertIn("Можно создать, например", text)
+        cat.assert_shows(self, text, "bricks.hub.empty")
         self.assertIn("bk_create", datas)
 
         # Legacy-кнопка при пустом списке: подсказка, хаб, никакого мастера.
@@ -373,7 +375,7 @@ class BrickRowEntryTests(unittest.TestCase):
 
         text = h.screen_text()
         self.assertIn("Мои предложения", text)
-        self.assertIn("«📨» рядом с нужным кирпичиком", text)
+        cat.assert_shows(self, text, "bricks.proposal_list.vy_otpravlyali_predlozheniy")
         self.assertNotIn("Предложить кирпичик", text)
         self.assertEqual(_datas(h).count("bp_start"), 0)
 
@@ -387,8 +389,12 @@ class BrickRowEntryTests(unittest.TestCase):
 
         text = h.screen_text()
         self.assertIn("Мои предложения", text)
-        self.assertIn("Создайте кирпичик кнопкой «➕ Создать кирпичик»", text)
-        self.assertNotIn("«📨»", text, "подсказка о несуществующей кнопке «📨»")
+        cat.assert_shows(
+            self, text, "bricks.proposal_list.vy_otpravlyali_predlozheniy_2"
+        )
+        # Без кирпичиков подсказка ведёт к созданию, а не к кнопке «📨»
+        # (в каталоге отдельной фразы про ряд больше нет).
+        self.assertIn("Сначала создайте кирпичик", text)
         self.assertEqual(self.proposal_count(h), 0)
 
     @scenario_test

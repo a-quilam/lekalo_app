@@ -35,6 +35,8 @@ from datetime import date
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from tests import ui_texts_expect as cat
+
 try:
     from brick_proposal_store import create_brick_proposal
     from brick_store import archive_personal_brick, create_personal_brick
@@ -188,7 +190,10 @@ class U3aAcceptanceCase(unittest.TestCase):
         screen = h.screen_text()
         self.assertIn("Карта", screen)
         self.assertIn("[пр_карта]", screen)
-        self.assertIn("Изменить", " ".join(label for label, _d in h.screen_buttons()))
+        self.assertIn(
+            cat.text("buttons.finished.edit"),
+            " ".join(label for label, _d in h.screen_buttons()),
+        )
 
     # ==================================================================
     # Требование 2: bp_start без id из старых сообщений
@@ -300,8 +305,13 @@ class U3aAcceptanceCase(unittest.TestCase):
         await h.text("/bricks", user_id=OWNER)
         screen = h.screen_text()
         self.assertNotIn("bp_start", datas(h), "кнопка предложения без кирпичиков")
-        self.assertNotIn("«📨»", screen, "текст обещает кнопку, которой нет")
-        self.assertIn("Можно создать, например", screen)
+        cat.assert_not_shows(
+            self,
+            screen,
+            "bricks.proposal_list.vy_otpravlyali_predlozheniy",
+            "текст обещает кнопку, которой нет",
+        )
+        cat.assert_shows(self, screen, "bricks.hub.empty")
 
         # Создание из пустого хаба работает.
         await h.callback("bk_create", user_id=OWNER)

@@ -16,6 +16,8 @@ from sqlalchemy import delete, event, func, select
 from sqlalchemy import text as sql_text
 from sqlalchemy.exc import IntegrityError
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import (
         ORIGIN_PERSONAL,
@@ -250,7 +252,7 @@ class FullPathTests(unittest.TestCase):
             self.assertNotIn("Шаг 2", text)
             self.assertNotIn("Выберите шаблон", text)
             self.assertNotIn("подтверд", text.lower())
-        self.assertIn("🧩 Вопрос 1", h.screen_text())
+        cat.assert_question(self, h.screen_text(), 1)
 
         drafts = _drafts(h)
         self.assertEqual(len(drafts), 1)
@@ -269,7 +271,7 @@ class FullPathTests(unittest.TestCase):
         await h.callback(f"tp_pick:{template_id}")
         new_screens = [call for call in h.calls[mark:] if is_screen_record(call)]
         self.assertEqual(len(new_screens), 1, "ровно один новый экран")
-        self.assertIn("🧩 Вопрос 1", h.screen_text())
+        cat.assert_question(self, h.screen_text(), 1)
         drafts = _drafts(h)
         self.assertEqual(len(drafts), 1)
         self.assertEqual(drafts[0].origin, ORIGIN_PERSONAL)
@@ -323,7 +325,7 @@ class MyAnnouncementsTests(unittest.TestCase):
         self.assertEqual(len(drafts), 2)
         second = next(d for d in drafts if d.draft_id != first.draft_id)
         self.assertNotEqual(first.draft_id, second.draft_id)
-        self.assertIn("🧩 Вопрос 1", h.screen_text())
+        cat.assert_question(self, h.screen_text(), 1)
 
         await h.callback("main_menu")
         await h.callback("my_announcements")
@@ -337,7 +339,7 @@ class MyAnnouncementsTests(unittest.TestCase):
 
         # незавершённый B продолжается с того же шага
         await h.callback(f"aw_open:{second.draft_id}")
-        self.assertIn("🧩 Вопрос 1", h.screen_text())
+        cat.assert_question(self, h.screen_text(), 1)
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), 2)
 
 
@@ -390,7 +392,7 @@ class IdorTests(unittest.TestCase):
         await h.callback("main_menu")
         await h.callback(f"pl_pick:{foreign_place}", user_id=OTHER_TG)
         foreign_draft = _drafts(h, OTHER_TG)[0]
-        self.assertIn("🧩 Вопрос 1", h.screen_text())
+        cat.assert_question(self, h.screen_text(), 1)
 
         await h.callback("main_menu")
         await h.callback("my_announcements")
@@ -400,7 +402,7 @@ class IdorTests(unittest.TestCase):
             [d for _l, d in _btns(h) if d],
         )
         await h.callback(f"aw_open:{foreign_draft.draft_id}")
-        self.assertNotIn("🧩 Вопрос 1", h.screen_text())
+        self.assertFalse(cat.shows(h.screen_text(), "wizard.question.header"))
         self.assertNotIn("Чужое место", h.screen_text())
 
 
@@ -465,7 +467,7 @@ class LongNameTests(unittest.TestCase):
             )
             self.assertLessEqual(len(label), 64, f"подпись > 64: {label!r}")
         await h.callback(f"pl_pick:{place_id}")
-        self.assertIn("🧩 Вопрос 1", h.screen_text())
+        cat.assert_question(self, h.screen_text(), 1)
 
         await h.callback("main_menu")
         await h.callback("pick_template")
@@ -473,7 +475,7 @@ class LongNameTests(unittest.TestCase):
             self.assertLessEqual(len(data.encode()), 64)
             self.assertLessEqual(len(label), 64, f"подпись > 64: {label!r}")
         await h.callback(f"tp_pick:{template_id}")
-        self.assertIn("🧩 Вопрос 1", h.screen_text())
+        cat.assert_question(self, h.screen_text(), 1)
 
 
 @unittest.skipIf(
@@ -635,7 +637,9 @@ class PersonalNoPlaceAllScreensTests(unittest.TestCase):
         await h.callback("my_announcements")
         await h.callback(f"aw_open:{draft.draft_id}")
         status = h.screen_text()
-        self.assertIn("Отправка готового анонса", status)
+        cat.assert_shows(
+            self, status, "wizard.render_publish_status.otpravka_gotovogo_anonsa_etot"
+        )
         self._no_empty_place(self, "статус отправки", status)
 
     @scenario_test
@@ -647,7 +651,7 @@ class PersonalNoPlaceAllScreensTests(unittest.TestCase):
         await h.callback(f"tp_pick:{template_id}", **group)
         await h.text("Значение", **group)
         # S3 п.6: отказ в неличном чате — на финале шага фото.
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         await h.callback(_cb(h, "aw_photo_none"), **group)
 
         refusal = h.screen_text()

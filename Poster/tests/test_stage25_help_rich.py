@@ -36,6 +36,8 @@ from unittest import mock
 from telegram import Chat, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter
 
+from tests import ui_texts_expect as cat
+
 try:
     from help_rich import build_help_rich_message
     from rich_message import (
@@ -170,7 +172,7 @@ class HelpStructureTests(unittest.TestCase):
         first = _blocks(payload)[0]
         # Официальная схема: type "heading", текст в поле text, size обязателен.
         self.assertEqual(first["type"], "heading")
-        self.assertEqual(first["text"], "Poster — помощь")
+        self.assertEqual(first["text"], cat.text("help.rich.title"))
         self.assertEqual(first["size"], 1)
         self.assertNotIn("heading", first)
         texts = [
@@ -178,7 +180,7 @@ class HelpStructureTests(unittest.TestCase):
             for block in _blocks(payload)
             if block["type"] == "paragraph"
         ]
-        self.assertTrue(any("Poster помогает создавать анонсы" in t for t in texts))
+        self.assertIn(cat.text("help.rich.intro"), texts)
 
     def test_exactly_ten_collapsed_details(self) -> None:
         details = self._details()
@@ -567,7 +569,7 @@ class HelpFlowTests(unittest.TestCase):
 
         self.assertIn(rich_id, h.deleted_ids(), "временная справка не удалена")
         self.assertNotIn("help_rich_message_id", h.user_data())
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertEqual(len(h.bot.rich_records), 1, "лишний Rich Message")
 
     @scenario_test
@@ -600,7 +602,7 @@ class HelpFlowTests(unittest.TestCase):
         # новых удалений ровно одно — сообщение справки
         self.assertEqual(len(h.deleted_ids()), deletes_before_back + 1)
         self.assertEqual(len(h.bot.rich_records), 1)
-        self.assertIn("Что хотите сделать?", h.screen_text(), "вернулись не в меню")
+        self.assertIn(cat.text("menu.main"), h.screen_text(), "вернулись не в меню")
         # Список анонсов доступен по-прежнему: черновики не тронуты.
         await h.callback("my_announcements")
         self.assertIn("Мои анонсы", h.screen_text())
@@ -645,7 +647,7 @@ class HelpFallbackTests(unittest.TestCase):
         self.assertEqual(h.bot.rich_records, [])
         self.assertNotIn("help_rich_message_id", h.user_data())
         self.assertIn(
-            ui_texts.DEFAULTS["help.rich.unavailable"].split(".")[0],
+            cat.text("help.rich.unavailable").split(".")[0],
             h.screen_text(),
         )
         labels = [label for label, _ in h.screen_buttons()]

@@ -30,6 +30,7 @@ from template_store import (
     update_template_content,
 )
 from template_types import BUILTIN_TEMPLATE
+from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     HARNESS_IMPORT_ERROR,
     scenario_test,
@@ -176,11 +177,17 @@ class TemplatesUiTests(unittest.TestCase):
         self.make_user(h, OWNER_TG)
         await h.text("/templates", user_id=OWNER_TG)
         await h.callback("tp_create", user_id=OWNER_TG)
-        self.assertIn("Введите название", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "templates.create_name.vvedite_nazvanie_novogo_shablona",
+        )
         await h.text("Моя афиша", user_id=OWNER_TG)
-        self.assertIn("С чего начать?", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "templates.create_choice.shablon_vyberite_nachalnoe"
+        )
         await h.callback("tp_cstd", user_id=OWNER_TG)
-        self.assertIn("Создать шаблон?", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "templates.build.podtverdite_sozdanie")
         await h.callback("tp_csave", user_id=OWNER_TG)
         self.assertIn("Моя афиша", h.screen_text())
         rows = self.personal_templates(h)
@@ -195,7 +202,7 @@ class TemplatesUiTests(unittest.TestCase):
         await h.callback("tp_create", user_id=OWNER_TG)
         await h.text("Пустой", user_id=OWNER_TG)
         await h.callback("tp_cempty", user_id=OWNER_TG)
-        self.assertIn("Создать шаблон?", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "templates.build.podtverdite_sozdanie")
         await h.callback("tp_csave", user_id=OWNER_TG)
         self.assertIn("Пустой", h.screen_text())
         rows = self.personal_templates(h)
@@ -220,7 +227,9 @@ class TemplatesUiTests(unittest.TestCase):
         await h.callback(f"tp_open:{tid}", user_id=OWNER_TG)
         self.assertIn("Редактируемый", h.screen_text())
         await h.callback(f"tp_edit:{tid}", user_id=OWNER_TG)
-        self.assertIn("Правка текста", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "templates.build.redaktirovanie_otpravte_novym"
+        )
         await h.text("Новое тело [дата]", user_id=OWNER_TG)
         self.assertIn("Новое тело", h.screen_text())
         await h.callback("tp_save", user_id=OWNER_TG)
@@ -248,7 +257,11 @@ class TemplatesUiTests(unittest.TestCase):
         await h.text("/templates", user_id=OWNER_TG)
         await h.callback(f"tp_open:{tid}", user_id=OWNER_TG)
         await h.callback(f"tp_reset:{tid}", user_id=OWNER_TG)
-        self.assertIn("Восстановить стандарт?", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "templates.reset_confirm.vosstanovit_standart_shablon",
+        )
         await h.callback(f"tp_reset_yes:{tid}", user_id=OWNER_TG)
         self.assertIn("Сбрасываемый", h.screen_text())
         rows = self.personal_templates(h)
@@ -353,7 +366,9 @@ class TemplatesUiTests(unittest.TestCase):
         self.assertIn(f"tp_back_place:{place_id}", buttons)
 
         await h.callback(f"tp_edit:{template_id}", user_id=admin_tg)
-        self.assertIn("Правка текста", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "templates.build.redaktirovanie_otpravte_novym"
+        )
         await h.text("Своё тело [название]", user_id=admin_tg)
         self.assertIn("Своё тело", h.screen_text())
         await h.callback("tp_save", user_id=admin_tg)
@@ -369,7 +384,11 @@ class TemplatesUiTests(unittest.TestCase):
                 expected_revision=2,
             )
         await h.callback(f"tp_reset:{template_id}", user_id=admin_tg)
-        self.assertIn("Восстановить стандарт?", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "templates.reset_confirm.vosstanovit_standart_shablon",
+        )
         await h.callback(f"tp_reset_yes:{template_id}", user_id=admin_tg)
         row = self.template_row(h, template_id)
         assert row is not None
@@ -515,11 +534,21 @@ class TemplatesUiTests(unittest.TestCase):
         self.assertEqual(current.content, "Чужая правка")
 
         await h.callback("tp_refresh", user_id=owner_tg)
-        self.assertIn("Версия обновлена до 2", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "templates.handle_refresh.versiya_obnovlena_tekst_sohranen",
+            state_revision=2,
+        )
         self.assertIn("Мой новый текст", h.screen_text())
+        # Плашка об обновлении версии показывается ровно один раз, а
+        # черновик остаётся в экране (смысл прежней проверки сохранён).
         self.assertEqual(
             h.screen_text().count(
-                "Ваш текст сохранён. Проверьте его и подтвердите сохранение."
+                cat.text(
+                    "templates.handle_refresh.versiya_obnovlena_tekst_sohranen",
+                    state_revision=2,
+                )
             ),
             1,
         )
@@ -534,7 +563,7 @@ class TemplatesUiTests(unittest.TestCase):
 
         # Повторное/устаревшее «Сохранить» после успеха не создаёт версию.
         await h.callback("tp_save", user_id=owner_tg)
-        self.assertIn("больше не работает", h.answers()[-1].get("text", ""))
+        cat.assert_stale(self, h.answers()[-1].get("text", ""))
         row = self.template_row(h, template_id)
         assert row is not None
         self.assertEqual(row.revision, 3)
@@ -790,7 +819,9 @@ class TemplatesUiTests(unittest.TestCase):
         await h.callback(f"tp_open:{template_id}", user_id=owner_tg)
         await h.callback(f"tp_bricks:{template_id}", user_id=owner_tg)
         first_page = h.screen_text()
-        self.assertIn("Для личного шаблона", first_page)
+        cat.assert_shows(
+            self, first_page, "templates.brick_list.dlya_lichnogo_shablona_dostupny"
+        )
         self.assertNotIn("чужой_код", first_page)
         self.assertNotIn("местный_код", first_page)
         self.assertIn("tp_bpage:5", self.screen_callbacks(h))
@@ -828,7 +859,9 @@ class TemplatesUiTests(unittest.TestCase):
         await h.callback(f"tp_std:{place_id}", user_id=admin_tg)
         await h.callback(f"tp_bricks:{template_id}", user_id=admin_tg)
         first_page = h.screen_text()
-        self.assertIn("Для стандартного шаблона", first_page)
+        cat.assert_shows(
+            self, first_page, "templates.brick_list.dlya_standartnogo_shablona"
+        )
         self.assertNotIn("личный_админа", first_page)
         self.assertNotIn("ID", first_page)
         # Системных кирпичиков больше страницы: доступна вторая страница.

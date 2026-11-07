@@ -27,6 +27,8 @@ from __future__ import annotations
 import unittest
 from datetime import date, timedelta
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import (
         build_announcement_fields,
@@ -84,7 +86,7 @@ async def _open_date_question(h, *, title: str = "Концерт"):
     await h.text("/start")
     await h.callback(f"tp_pick:{template_id}")
     await h.text(title)
-    if "Вопрос 2 из 2" not in h.screen_text():
+    if not cat.shows(h.screen_text(), "wizard.question.header", step="2", total="2"):
         raise AssertionError(f"не вопрос даты: {h.screen_text()[:120]!r}")
 
 
@@ -147,7 +149,7 @@ class CalendarOnQuestionTests(unittest.TestCase):
         with frozen_today(2026, 10, 22):
             await _open_date_question(h)
             text = h.screen_text()
-            self.assertIn("Вопрос 2 из 2", text)
+            self.assertRegex(text, cat.question_re(2, 2))
             self.assertIn("Выберите дату", text)
 
             # Быстрое окно: сегодня + 7 дней, подписи календарные.
@@ -197,7 +199,7 @@ class CalendarOnQuestionTests(unittest.TestCase):
             self.assertEqual(
                 _saved_values(h, today=TODAY)["day"], chosen.strftime("%d.%m.%Y")
             )
-            self.assertIn("Фотографии анонса", h.screen_text())
+            self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
             live = [
                 call
                 for call in h.calls
@@ -335,7 +337,7 @@ class CalendarInputTests(unittest.TestCase):
             typed = await h.text("31.12.2026")
 
             self.assertEqual(_saved_values(h, today=TODAY)["day"], "31.12.2026")
-            self.assertIn("Фотографии анонса", h.screen_text())
+            self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
             self.assertIn(typed.effective_message.message_id, h.deleted_ids())
 
     @scenario_test
@@ -345,7 +347,7 @@ class CalendarInputTests(unittest.TestCase):
             bad = await h.text("31.02.2026")
 
             self.assertIn("⚠️", h.screen_text())
-            self.assertIn("Вопрос 2 из 2", h.screen_text())
+            self.assertRegex(h.screen_text(), cat.question_re(2, 2))
             self.assertTrue(_callbacks(h, "aw_calday"), "календарь остался доступен")
             self.assertNotIn(
                 bad.effective_message.message_id,
@@ -364,13 +366,21 @@ class CalendarInputTests(unittest.TestCase):
             await h.callback(
                 f"aw_calday:{prefix}:{(TODAY - timedelta(days=1)).isoformat()}"
             )
-            self.assertIn("вне разрешённого периода", _answer_text(h))
+            cat.assert_shows(
+                self,
+                _answer_text(h),
+                "wizard.save_calendar_day.eta_data_vne_dopustimogo",
+            )
             self.assertIsNone(_saved_values(h, today=TODAY)["day"])
 
             await h.callback(
                 f"aw_calday:{prefix}:{(horizon + timedelta(days=1)).isoformat()}"
             )
-            self.assertIn("вне разрешённого периода", _answer_text(h))
+            cat.assert_shows(
+                self,
+                _answer_text(h),
+                "wizard.save_calendar_day.eta_data_vne_dopustimogo",
+            )
             self.assertIsNone(_saved_values(h, today=TODAY)["day"])
 
             # Последний день горизонта — допустим.
@@ -397,7 +407,7 @@ class CalendarInputTests(unittest.TestCase):
             ):
                 await h.callback(data)
                 self.assertTrue(_answer_text(h), f"нет ответа на {data}")
-                self.assertIn("Вопрос 2 из 2", h.screen_text())
+                self.assertRegex(h.screen_text(), cat.question_re(2, 2))
                 self.assertEqual(_saved_values(h, today=TODAY), before)
 
     @scenario_test
@@ -418,7 +428,7 @@ class CalendarInputTests(unittest.TestCase):
             ):
                 await h.callback(data)
                 self.assertTrue(_answer_text(h), f"нет ответа на {data}")
-                self.assertIn("Вопрос 2 из 2", h.screen_text())
+                self.assertRegex(h.screen_text(), cat.question_re(2, 2))
                 self.assertEqual(_day_buttons(h), calendar_view.quick_days(TODAY))
                 self.assertNotIn("внутрен", _answer_text(h).lower())
                 self.assertEqual(_saved_values(h, today=TODAY), before)
@@ -435,7 +445,7 @@ class CalendarInputTests(unittest.TestCase):
 
             await h.callback(stale)
             self.assertEqual(_saved_values(h, today=TODAY), before)
-            self.assertIn("изменились", _answer_text(h).lower())
+            cat.assert_stale(self, _answer_text(h))
 
 
 @unittest.skipIf(
@@ -491,7 +501,7 @@ class CalendarScreenIntegrityTests(unittest.TestCase):
             await h.callback("my_announcements")
             await h.callback(f"aw_open:{draft_id}")
 
-            self.assertIn("Вопрос 2 из 2", h.screen_text())
+            self.assertRegex(h.screen_text(), cat.question_re(2, 2))
             # Промежуточный уровень календаря — чистая навигация, а не данные
             # анонса: после рестарта вопрос даты открывается с первого экрана.
             self.assertEqual(

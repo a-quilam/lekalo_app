@@ -49,6 +49,8 @@ import unittest
 from telegram.error import BadRequest, NetworkError, RetryAfter
 from telegram.ext import CommandHandler, ConversationHandler
 
+from tests import ui_texts_expect as cat
+
 try:
     from help_rich import build_help_rich_message
     from rich_message import validate_rich_message
@@ -57,30 +59,18 @@ try:
         inline_buttons,
         scenario_test,
     )
-    from utils import ui_texts
 
     INTEGRATION_IMPORT_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
     INTEGRATION_IMPORT_ERROR = str(exc)
 
 
-# §51: заголовок, введение и порядок десяти разделов.
-HELP_TITLE = "Poster — помощь"
-HELP_INTRO = (
-    "Poster помогает создавать анонсы мероприятий по шаблонам, заполнять "
-    "поля, добавлять фотографии и редактировать результат"
-)
-SECTION_TITLES = (
-    "Создание анонса",
-    "Площадки",
-    "Шаблоны",
-    "Кирпичики",
-    "Дополнительные поля",
-    "Условные части",
-    "Фотографии",
-    "Редактирование анонса",
-    "Управление площадкой",
-    "Команды",
+# §51: заголовок, введение и порядок десяти разделов — из каталога
+# (владелец правит `config/ui_texts.yaml`, смысл проверки не меняется).
+HELP_TITLE = cat.text("help.rich.title")
+HELP_INTRO = cat.text("help.rich.intro")
+SECTION_TITLES = tuple(
+    cat.text(f"help.rich.section{number}") for number in range(1, 11)
 )
 
 # §53 + Poster 2.5.1: кнопка возврата из справки на экран-источник.
@@ -358,7 +348,7 @@ class RichHelpReturnTests(unittest.TestCase):
 
         self.assertIn(rich_id, h.deleted_ids(), "временная справка не удалена")
         self.assertNotIn(RICH_KEY, h.user_data(), "id справки остался в состоянии")
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertEqual(h.screen_buttons(), MENU_BUTTONS)
         # В чате ровно одна живая inline-клавиатура — меню (§6/§53).
         self.assertEqual(len(_live_keyboards(h)), 1, _live_messages(h))
@@ -376,7 +366,7 @@ class RichHelpReturnTests(unittest.TestCase):
         self.assertEqual(len(_live_keyboards(h)), 1, _live_messages(h))
 
         await h.callback(BACK_DATA)
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertEqual(h.screen_buttons(), MENU_BUTTONS)
         self.assertEqual(len(_live_keyboards(h)), 1, _live_messages(h))
 
@@ -388,7 +378,7 @@ class RichHelpReturnTests(unittest.TestCase):
 
         await h.callback(BACK_DATA)
         self.assertIn(rich_id, h.deleted_ids())
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
 
     @scenario_test
     async def test_repeated_help_does_not_accumulate_messages(self, h) -> None:
@@ -498,15 +488,17 @@ class RichHelpReturnTests(unittest.TestCase):
         template_id, _revision, _bricks = _seed_personal_template(h)
         await _start_to_template(h, place_id)
         await _choose_personal(h, template_id)
-        self.assertIn("Вопрос 1 из 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 1))
 
         await h.callback("help")
         self.assertEqual(len(_rich_records(h)), 1)
         self.assertEqual(len(_live_keyboards(h)), 1, _live_messages(h))
 
         await h.callback(BACK_DATA)
-        self.assertIn("Вопрос 1 из 1", h.screen_text(), "не вернулись в конструктор")
-        self.assertNotIn("Что хотите сделать?", h.screen_text())
+        self.assertRegex(
+            h.screen_text(), cat.question_re(1, 1), "не вернулись в конструктор"
+        )
+        self.assertNotIn(cat.text("menu.main"), h.screen_text())
         payload = screen_utils.load_payload(h.user_id) or {}
         self.assertIn(
             RESUME_PAYLOAD_KEY, payload, "справка сняла resume-снимок конструктора"
@@ -586,7 +578,7 @@ class RichHelpFailureTests(unittest.TestCase):
         # Никакой подделки: текст справки не показан как обычное сообщение.
         self.assertNotIn(HELP_TITLE, text)
         self.assertNotIn("Условные части", text)
-        self.assertIn(ui_texts.DEFAULTS["help.rich.unavailable"].split(".")[0], text)
+        self.assertIn(cat.text("help.rich.unavailable").split(".")[0], text)
         self.assertEqual(h.screen_buttons(), MENU_BUTTONS)
         return text
 
@@ -597,12 +589,12 @@ class RichHelpFailureTests(unittest.TestCase):
         )
         # Возврат из плашки сбоя работает обычным экраном.
         await h.callback(LEGACY_BACK_DATA)
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
 
     @scenario_test
     async def test_network_and_flood_errors_are_handled(self, h) -> None:
         """Сетевой сбой и флуд-контроль — та же понятная реакция, не 500."""
-        notice = ui_texts.DEFAULTS["help.rich.unavailable"].split(".")[0]
+        notice = cat.text("help.rich.unavailable").split(".")[0]
 
         await self._open_help_with_error(h, NetworkError("timed out"))
         await h.text("/start")
@@ -623,7 +615,7 @@ class RichHelpFailureTests(unittest.TestCase):
     @scenario_test
     async def test_no_internal_error_notice_is_sent(self, h) -> None:
         """Сбой справки — не 500: пользователь не видит «Что-то пошло не так»."""
-        internal = ui_texts.DEFAULTS["errors.internal"].split(".")[0]
+        internal = cat.text("errors.internal").split(".")[0]
         h.bot.errors_by_type["rich_message"] = BadRequest("Bad Request: nope")
         await h.text("/start")
         await h.callback("help")

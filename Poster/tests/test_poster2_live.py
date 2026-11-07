@@ -21,6 +21,8 @@ import unittest
 from sqlalchemy import select
 from telegram.error import BadRequest
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import (
         get_announcement_draft,
@@ -149,7 +151,7 @@ class LiveBlockOrderTests(unittest.TestCase):
         entry_screen = h.screen_message_id()
         await h.callback(f"tp_pick:{template_id}")
 
-        self.assertIn("Вопрос 1 из 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 1))
         live_ids = _live_ids(h)
         self.assertEqual(len(live_ids), 1, "верхний блок не отправлен")
         screen_id = h.screen_message_id()
@@ -414,7 +416,7 @@ class CalendarAndTimeShortcutTests(unittest.TestCase):
         await h.text("Заголовок")
 
         # Календарь уже на вопросе: дни текущей недели без отдельного входа.
-        self.assertIn("Вопрос 2 из 3", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 3))
         self.assertTrue(_callbacks(h, "aw_calday"))
 
     @scenario_test
@@ -425,7 +427,7 @@ class CalendarAndTimeShortcutTests(unittest.TestCase):
         answer = await h.text("Заголовок")
         await h.callback(_callback(h, "aw_qskip"))  # дата не задана
 
-        self.assertIn("Вопрос 3 из 3", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(3, 3))
         presets = [data for data in _callbacks(h, "aw_timeset")]
         self.assertTrue(any(data.endswith(":18:00") for data in presets))
 
@@ -439,7 +441,7 @@ class CalendarAndTimeShortcutTests(unittest.TestCase):
         self.assertIn("18:00", _live_text(h))
         self.assertNotEqual(_live_text(h), live_before)
         self.assertIn(answer.effective_message.message_id, h.deleted_ids())
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
 
 
 @unittest.skipIf(
@@ -456,7 +458,7 @@ class PhotoStepTests(unittest.TestCase):
         await h.callback(f"tp_pick:{template_id}")
         await h.text("Значение")
 
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         # U2b: ровно две кнопки в одной строке — «Назад» и «Пропустить».
         buttons = h.screen_buttons()
         self.assertEqual(

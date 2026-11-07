@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import FIELD_STATUS_KNOWN, build_announcement_fields
     from brick_store import create_personal_brick
@@ -92,7 +94,7 @@ async def _boot(h) -> None:
 async def _skip_until_photos(h) -> None:
     """Пропускает все вопросы текущего шага (пока не шаг фото)."""
     for _attempt in range(12):
-        if "Фотографии анонса" in h.screen_text():
+        if cat.text("wizard.photos.title") in h.screen_text():
             return
         skip = _callbacks(h, "aw_qskip")
         if not skip:
@@ -185,7 +187,7 @@ async def _assert_can_create_extended(h) -> None:
             "кнопка расширенной версии не создаёт её, а сообщает об "
             f"отсутствии: {alerts}"
         )
-    if "Отправьте весь новый текст" not in h.screen_text():
+    if not cat.shows(h.screen_text(), "templates.build.redaktirovanie_otpravte_novym"):
         raise AssertionError(
             "кнопка должна открывать редактор расширенного текста, "
             f"экран: {h.screen_text()[:300]!r}"
@@ -220,7 +222,7 @@ class Poster231AcceptanceTests(unittest.TestCase):
             "доп. поле из extended не должно спрашиваться в конструкторе",
         )
         self.assertIn(
-            "Фотографии анонса",
+            cat.text("wizard.photos.title"),
             h.screen_text(),
             "после единственного content-вопроса сразу шаг фото",
         )
@@ -332,9 +334,10 @@ class Poster231AcceptanceTests(unittest.TestCase):
             h.screen_text(),
             "предложенный кирпичик нельзя отклонять как «уже в шаблоне»",
         )
-        self.assertIn(
-            VALUE_PROMPT,
+        cat.assert_shows(
+            self,
             h.screen_text(),
+            "wizard.hint.short_text",
             "после выбора доп. поля должен быть запрос значения",
         )
 

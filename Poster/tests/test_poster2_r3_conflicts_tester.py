@@ -76,6 +76,7 @@ from template_store import (
     render_template_snapshot,
     update_template_content,
 )
+from tests import ui_texts_expect as cat
 from tests.integration_harness import HARNESS_IMPORT_ERROR, scenario_test
 from tests.stage19a_helpers import make_engine, temp_db_path
 from tests.stage22a_helpers import BrickDatabaseTestCase
@@ -830,7 +831,7 @@ class R3UiTests(unittest.TestCase):
         self.assertIn("Мои места", h.screen_text())
         await h.callback(f"adm_place:{place_id}", user_id=AUTHOR_TG)
         card = h.screen_text()
-        self.assertIn("Нерешённых конфликтов кодов", card)
+        cat.assert_shows(self, card, "admin.place.aktivnye_zadachi_konfliktov_kodov")
         buttons = " ".join(label for label, _ in h.screen_buttons())
         # Poster 2.5 A3 (§12): индикация без счётчика, только при задаче.
         self.assertIn("Конфликты кодов", buttons)
@@ -839,7 +840,11 @@ class R3UiTests(unittest.TestCase):
         await h.callback(f"adm_bconflicts:{place_id}", user_id=AUTHOR_TG)
         self.assertIn("Конфликты кодов", h.screen_text())
         await h.callback(f"adm_bconflict:{conflict_id}", user_id=AUTHOR_TG)
-        self.assertIn("Код занят двумя кирпичиками", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "admin.conflict_card.zadacha_razresheniya_konflikta_kod_html",
+        )
         labels = " ".join(label for label, _ in h.screen_buttons())
         self.assertIn("Изменить код местного", labels)
         self.assertIn("Переключиться на глобальный", labels)
@@ -857,7 +862,9 @@ class R3UiTests(unittest.TestCase):
         await h.text("/admin", user_id=AUTHOR_TG)
         await h.callback(f"adm_place:{place_id}", user_id=AUTHOR_TG)
         card_after = h.screen_text()
-        self.assertNotIn("Нерешённых конфликтов кодов", card_after)
+        cat.assert_not_shows(
+            self, card_after, "admin.place.aktivnye_zadachi_konfliktov_kodov"
+        )
         buttons_after = " ".join(label for label, _ in h.screen_buttons())
         # Poster 2.5 A3 (§12): пустой раздел не показывается вовсе.
         self.assertNotIn("Конфликты кодов", buttons_after)
@@ -878,7 +885,9 @@ class R3UiTests(unittest.TestCase):
 
         await h.text("/admin", user_id=AUTHOR_TG)
         await h.callback(f"adm_place:{place_id}", user_id=AUTHOR_TG)
-        self.assertIn("Нерешённых конфликтов кодов", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "admin.place.aktivnye_zadachi_konfliktov_kodov"
+        )
         await h.callback(f"adm_bconflicts:{place_id}", user_id=AUTHOR_TG)
         await h.callback(f"adm_bconflict:{conflict_id}", user_id=AUTHOR_TG)
         await h.callback(f"adm_bconflict_rename:{conflict_id}", user_id=AUTHOR_TG)

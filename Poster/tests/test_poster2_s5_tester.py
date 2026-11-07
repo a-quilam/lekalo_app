@@ -27,6 +27,7 @@ from sqlalchemy import select
 
 from base import Base
 from migrations import LATEST_VERSION, run_migrations
+from tests import ui_texts_expect as cat
 from tests.stage19a_helpers import (
     OLD_DRAFT,
     connect,
@@ -261,14 +262,19 @@ class BrickDescriptionTests(unittest.TestCase):
         await h.callback(f"tp_pick:{template_id}")
 
         first = h.screen_text()
-        self.assertIn("📝", first)
+        cat.assert_shows(self, first, "wizard.question.description_html")
         self.assertIn("&lt;b&gt;Имя&lt;/b&gt; &amp; должность »не нужна«", first)
         self.assertNotIn("<b>Имя</b>", first, "описание экранируется")
 
         await h.text("Иван")
         second = h.screen_text()
-        self.assertIn("Вопрос 2 из 2", second)
-        self.assertNotIn("📝", second, "без описания блок не показывается")
+        self.assertRegex(second, cat.question_re(2, 2))
+        cat.assert_not_shows(
+            self,
+            second,
+            "wizard.question.description_html",
+            "без описания блок не показывается",
+        )
 
     @scenario_test
     async def test_skip_description_stores_null(self, h):

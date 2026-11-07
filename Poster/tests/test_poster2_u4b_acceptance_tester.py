@@ -27,6 +27,8 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import ORIGIN_PLACE, list_announcement_drafts
     from handlers.announcement_wizard import CONVERSATION_NAME
@@ -173,7 +175,7 @@ class OwnerScenarioAcceptanceTests(unittest.TestCase):
         await h.text(f"/start {token}", user_id=INVITED_TG)
 
         text = h.screen_text()
-        self.assertIn("Вопрос 1", text)
+        self.assertRegex(text, cat.question_re(1))
         self.assertNotIn("Выберите площадку", text)
         self.assertNotIn("Выберите шаблон", text)
         self.assertEqual(
@@ -187,7 +189,7 @@ class OwnerScenarioAcceptanceTests(unittest.TestCase):
         self.assertEqual(drafts[0].template_snapshot.source_kind, "standard")
         # Диалог живой: следующий ответ принимается.
         await h.text("Мой концерт", user_id=INVITED_TG)
-        self.assertNotIn("Вопрос 1", h.screen_text())
+        self.assertNotRegex(h.screen_text(), cat.question_re(1))
 
     @scenario_test
     async def test_new_user_gets_profile_and_starter_template(self, h):
@@ -243,7 +245,7 @@ class OwnerScenarioAcceptanceTests(unittest.TestCase):
         token = await _open_invite_screen(h, place_id)
 
         await h.text(f"/start {token}", user_id=INVITED_TG)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
         await h.text("/start", user_id=INVITED_TG)
         await h.callback("manage_places", user_id=INVITED_TG)
@@ -298,7 +300,7 @@ class OwnerScenarioAcceptanceTests(unittest.TestCase):
 
         # Числовой payload, равный place_id, конструктор не открывает.
         await h.text(f"/start {place_id}", user_id=INVITED_TG)
-        self.assertIn("Ссылка не работает", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.invite.invalid")
         self.assertIsNone(h.dialog_state(user_id=INVITED_TG, name=CONVERSATION_NAME))
         self.assertEqual(_drafts(h, INVITED_TG), [])
 
@@ -312,12 +314,12 @@ class OwnerScenarioAcceptanceTests(unittest.TestCase):
         self.assertNotEqual(old_token, new_token)
 
         await h.text(f"/start {old_token}", user_id=INVITED_TG)
-        self.assertIn("Ссылка не работает", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.invite.invalid")
         self.assertIsNone(h.dialog_state(user_id=INVITED_TG, name=CONVERSATION_NAME))
         self.assertEqual(_drafts(h, INVITED_TG), [])
 
         await h.text(f"/start {new_token}", user_id=INVITED_TG)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
     @scenario_test
     async def test_deleted_place_link_is_refused(self, h):
@@ -337,7 +339,7 @@ class OwnerScenarioAcceptanceTests(unittest.TestCase):
             connection.close()
 
         await h.text(f"/start {token}", user_id=INVITED_TG)
-        self.assertIn("Ссылка не работает", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.invite.invalid")
         self.assertIsNone(h.dialog_state(user_id=INVITED_TG, name=CONVERSATION_NAME))
         self.assertEqual(_drafts(h, INVITED_TG), [])
 
@@ -349,7 +351,7 @@ class OwnerScenarioAcceptanceTests(unittest.TestCase):
         for payload in ("Z" * 22, "0123456789abcdef", "%00", "../etc/passwd", "x"):
             await h.text(f"/start {payload}", user_id=INVITED_TG)
             text = h.screen_text()
-            self.assertIn("Ссылка не работает", text, payload)
+            cat.assert_shows(self, text, "places.invite.invalid", payload)
             self.assertNotIn("внутренняя ошибка", text.lower(), payload)
             self.assertEqual(
                 _callbacks(h), MAIN_MENU_BUTTONS, f"payload {payload!r} → меню"
@@ -413,7 +415,7 @@ class IssuanceRightsTests(unittest.TestCase):
 
         self.assertEqual(_active_tokens(h), [token])
         await h.text(f"/start {token}", user_id=INVITED_TG)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         self.assertEqual(_drafts(h, INVITED_TG)[0].place_id, place_id)
 
 
@@ -445,7 +447,7 @@ class IdempotencyAcceptanceTests(unittest.TestCase):
         # Второй тап по уже ушедшей кнопке карточки: stale-ответ, без дублей.
         await h.callback(f"adm_invite:{place_id}")
 
-        self.assertIn("больше не работает", h.answer_texts()[-1].lower())
+        cat.assert_stale(self, h.answer_texts()[-1])
         self.assertEqual(_token_from_screen(h), first)
         self.assertEqual(len(_invites(h)), 1)
 
@@ -478,7 +480,7 @@ class StartRegressionTests(unittest.TestCase):
     async def test_start_without_payload_opens_main_menu(self, h):
         await h.text("/start")
 
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertEqual(_callbacks(h), MAIN_MENU_BUTTONS)
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))
 
@@ -487,14 +489,14 @@ class StartRegressionTests(unittest.TestCase):
         await h.callback("pick_place")
         self.assertIn(f"pl_pick:{place_id}", _callbacks(h, "pl_pick:"))
         await h.callback(f"pl_pick:{place_id}")
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
     @scenario_test
     async def test_transfer_payload_is_not_intercepted(self, h):
         await h.text("/start tf_999_deadbeefdeadbeefdeadbeef", user_id=INVITED_TG)
         text = h.screen_text()
-        self.assertNotIn("Вопрос 1", text)
-        self.assertNotIn("Ссылка не работает", text)
+        self.assertNotRegex(text, cat.question_re(1))
+        cat.assert_not_shows(self, text, "places.invite.invalid")
         self.assertIsNone(h.dialog_state(user_id=INVITED_TG, name=CONVERSATION_NAME))
 
 

@@ -32,6 +32,8 @@ import unittest
 
 from sqlalchemy import select
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import ORIGIN_PLACE, list_announcement_drafts
     from handlers.announcement_wizard import CONVERSATION_NAME
@@ -192,7 +194,7 @@ class PlaceInviteLinkTests(unittest.TestCase):
         new_token = _token_from_screen(h)
 
         self.assertNotEqual(old_token, new_token)
-        self.assertIn("Прежняя ссылка больше не работает", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.invite.regenerated")
         rows = _invites(h)
         self.assertEqual(len(rows), 2, "отозванная ссылка остаётся аудитом")
         self.assertEqual(len(_active_invites(h)), 1)
@@ -201,7 +203,7 @@ class PlaceInviteLinkTests(unittest.TestCase):
 
         # Старый токен больше не открывает конструктор.
         await h.text(f"/start {old_token}", user_id=INVITED_TG)
-        self.assertIn("Ссылка не работает", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.invite.invalid")
         self.assertIsNone(h.dialog_state(user_id=INVITED_TG, name=CONVERSATION_NAME))
 
     @scenario_test
@@ -210,7 +212,7 @@ class PlaceInviteLinkTests(unittest.TestCase):
         token = await _open_invite_screen(h, place_id)
 
         await h.text(f"/start {token}", user_id=INVITED_TG)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
         # Прав не появилось: чужое место не редактируется, кабинет закрыт.
         await h.text("/start", user_id=INVITED_TG)
@@ -252,7 +254,7 @@ class PlaceInviteDeepLinkTests(unittest.TestCase):
         await h.text(f"/start {token}", user_id=INVITED_TG)
 
         text = h.screen_text()
-        self.assertIn("Вопрос 1", text)
+        self.assertRegex(text, cat.question_re(1))
         self.assertNotIn("Выберите площадку", text)
         self.assertNotIn("Выберите шаблон", text)
         self.assertEqual(
@@ -268,7 +270,7 @@ class PlaceInviteDeepLinkTests(unittest.TestCase):
 
         # Диалог живой: следующий ответ принимается.
         await h.text("Мой концерт", user_id=INVITED_TG)
-        self.assertNotIn("Вопрос 1", h.screen_text())
+        self.assertNotRegex(h.screen_text(), cat.question_re(1))
 
     @scenario_test
     async def test_new_user_gets_profile_and_initial_template(self, h):
@@ -295,7 +297,7 @@ class PlaceInviteDeepLinkTests(unittest.TestCase):
         await h.text("/start", user_id=INVITED_TG)
         await h.callback("pick_place", user_id=INVITED_TG)
         await h.callback(f"pl_pick:{other_place}", user_id=INVITED_TG)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         wip = self._drafts(h, INVITED_TG)
         self.assertEqual(len(wip), 1)
         wip_id = wip[0].draft_id
@@ -340,15 +342,19 @@ class PlaceInviteDeepLinkTests(unittest.TestCase):
             "повторная ссылка не должна создавать второй черновик площадки",
         )
         text = h.screen_text()
-        self.assertIn("Вопрос 1", text, "продолжение начинается с введённого поля")
-        self.assertIn("Текущее значение: Мой концерт", text)
+        self.assertRegex(
+            text, cat.question_re(1), "продолжение начинается с введённого поля"
+        )
+        cat.assert_shows(
+            self, text, "wizard.question.current_value", value="Мой концерт"
+        )
         self.assertNotIn("Значение пока не задано", text)
         self.assertEqual(
             h.dialog_state(user_id=INVITED_TG, name=CONVERSATION_NAME), AW_QUESTIONS
         )
         # Черновик живой: следующий ответ по-прежнему сохраняется.
         await h.text("03.04.2027", user_id=INVITED_TG)
-        self.assertNotIn("Вопрос 1", h.screen_text())
+        self.assertNotRegex(h.screen_text(), cat.question_re(1))
         self.assertEqual(len(self._drafts(h, INVITED_TG)), 1)
 
     @scenario_test
@@ -378,7 +384,7 @@ class PlaceInviteDeepLinkTests(unittest.TestCase):
         new = next(draft for draft in drafts if draft.draft_id != sent[0].draft_id)
         self.assertNotEqual(new.publication_status, "sent")
         self.assertEqual(new.place_id, place_id)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
     @scenario_test
     async def test_unknown_and_forged_tokens_show_safe_message(self, h):
@@ -390,9 +396,10 @@ class PlaceInviteDeepLinkTests(unittest.TestCase):
             "x",
         ):
             await h.text(f"/start {payload}", user_id=INVITED_TG)
-            self.assertIn(
-                "Ссылка не работает",
+            cat.assert_shows(
+                self,
                 h.screen_text(),
+                "places.invite.invalid",
                 f"payload {payload!r} должен дать безопасный отказ",
             )
             self.assertIsNone(
@@ -427,14 +434,14 @@ class PlaceInviteDeepLinkTests(unittest.TestCase):
             connection.close()
 
         await h.text(f"/start {token}", user_id=INVITED_TG)
-        self.assertIn("Ссылка не работает", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.invite.invalid")
         self.assertIsNone(h.dialog_state(user_id=INVITED_TG, name=CONVERSATION_NAME))
 
     @scenario_test
     async def test_start_without_payload_still_opens_main_menu(self, h):
         await h.text("/start")
 
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertEqual(
             [data for _label, data in h.screen_buttons()],
             ["pick_place", "my_announcements", "manage", "help"],
@@ -445,7 +452,7 @@ class PlaceInviteDeepLinkTests(unittest.TestCase):
     async def test_transfer_payload_still_goes_to_transfer_handler(self, h):
         # Чужое пространство имён `tf_` не перехватывается ссылкой.
         await h.text("/start tf_999_deadbeefdeadbeefdeadbeef", user_id=INVITED_TG)
-        self.assertNotIn("Вопрос 1", h.screen_text())
+        self.assertNotRegex(h.screen_text(), cat.question_re(1))
         self.assertTrue(
             "передач" in h.screen_text().lower()
             or "приглашение" in h.screen_text().lower(),

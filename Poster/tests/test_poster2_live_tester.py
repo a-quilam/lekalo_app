@@ -31,6 +31,8 @@ import unittest
 
 from sqlalchemy import select
 
+from tests import ui_texts_expect as cat
+
 try:
     from telegram.error import BadRequest
 
@@ -234,7 +236,7 @@ class RestartRecoveryTests(unittest.TestCase):
         self.assertEqual(restored.live_message_ids, live_before)
         self.assertIn("Вечеринка", _live_text(h))
         # Черновик остался на вопросах: второй кирпичик всё ещё спрашивается.
-        self.assertIn("Вопрос 2 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2))
 
 
 @unittest.skipIf(
@@ -275,7 +277,7 @@ class SkipAndLiveUpdateTests(unittest.TestCase):
             "Вечеринка", after_skip, "пропуск потерял сохранённое значение сверху"
         )
         self.assertEqual(after_skip, before_skip, "верх перерисован без причины")
-        self.assertIn("Вопрос 2 из 2", h.screen_text(), "пропуск ведёт дальше")
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2), "пропуск ведёт дальше")
         draft = _drafts(h)[0]
         stored = " ".join(v or "" for v in _values(h, draft.draft_id).values())
         self.assertIn("Вечеринка", stored)
@@ -295,7 +297,7 @@ class SkipAndLiveUpdateTests(unittest.TestCase):
         self.assertIn("Вечеринка", after_skip, "пропуск потерял введённое значение")
         # Видимый текст не изменился: значение второго поля и так пусто.
         self.assertEqual(after_skip, before_skip)
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         draft = _drafts(h)[0]
         values = _values(h, draft.draft_id)
         self.assertIn('"Вечеринка"', " ".join(v or "" for v in values.values()))
@@ -380,7 +382,7 @@ class EmptyAnnouncementDeliveryTests(unittest.TestCase):
         self.assertEqual(_live_text(h).strip(), ".")
         await h.callback(_callback(h, "aw_qskip"))
         # Шаг фото: ни «Готово», ни доставки до явного выбора.
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         self.assertEqual(h.posts(), [])
         await h.callback(_callback(h, "aw_photo_none"))
 
@@ -410,7 +412,7 @@ class EmptyAnnouncementDeliveryTests(unittest.TestCase):
         # U2b: шаг фото показывает ровно две кнопки, поэтому к тому же
         # вопросу возвращает «◀️ Назад» — дальше обычный ввод значения.
         await h.callback(_callback(h, "aw_photo_back"))
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         await h.text("Настоящий анонс")
         self.assertIn("Настоящий анонс", _live_text(h))
         self.assertNotEqual(_live_text(h).strip(), ".")
@@ -469,7 +471,7 @@ class SecondAnnouncementTests(unittest.TestCase):
         await h.callback(f"pl_pick:{place_id}")
         live = _live_records(h)
         self.assertTrue(live, "живой блок не появился на входе по площадке")
-        self.assertIn("Вопрос 1 из", h.screen_text())
+        cat.assert_question(self, h.screen_text(), 1)
         self.assertIsNone(live[0].get("reply_markup"))
 
 

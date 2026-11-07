@@ -19,6 +19,8 @@ from datetime import date
 
 from sqlalchemy import select
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_instances import list_instances
     from announcement_store import (
@@ -372,7 +374,7 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
         # откатывает применённую версию.
         posts_before = len(h.posts())
         await h.callback("main_menu")
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertEqual(len(h.posts()), posts_before)
         self.assertEqual(
             _stored(h, draft.id).publication_photos, ("photo-2", "photo-3")
@@ -403,7 +405,11 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
         self.assertEqual(failed.publication_total, 1)
         self.assertEqual(failed.publication_progress["ids"], [])
         self.assertFalse(failed.publication_can_reset)
-        self.assertIn("не подтвердил ни одного шага отправки", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.render_publish_status.telegram_podtverdil_otpravku_ni",
+        )
         self.assertIn(
             "Повторить отправку", " ".join(label for label, _data in h.screen_buttons())
         )
@@ -413,7 +419,11 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
         # её адреса сохранены, но не выдаются за id текущей отправки.
         self.assertTrue(failed.previous_message_ids)
         self.assertEqual(failed.delivered_message_ids, ())
-        self.assertIn("Предыдущая версия анонса остаётся в чате", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.render_publish_status.v_chate_ostaetsya_proshlaya",
+        )
         # Ввод-фото не удалён: подтверждённой доставки не было.
         self.assertNotIn(rejected.message.message_id, h.deleted_ids())
 
@@ -452,7 +462,7 @@ class AnnouncementAutoDeliveryPhotoTests(unittest.TestCase):
             tuple(f"group-photo-{index}" for index in range(10)),
         )
         # Отказ объяснён, а принятые фото не потеряны.
-        self.assertIn("больше добавить нельзя", _photo_mode_notice(h))
+        cat.assert_shows(self, _photo_mode_notice(h), "wizard.photos.limit")
         self.assertIn("1", _photo_mode_notice(h))
         # Сообщение, которым прислали 11-е фото, не удалено: автор видит,
         # что именно не принято.
@@ -513,7 +523,7 @@ class AnnouncementAutoDeliveryFailureTests(unittest.TestCase):
 
         await h.text("Значение")
         # S3 п.6: сначала шаг фотографий; доставку запускает «Без фотографий».
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
 
         # U5: без фото готовым постом становится живой блок, и первая
         # доставка не зовёт send_message вообще. Чтобы проверить именно сбой
@@ -541,7 +551,11 @@ class AnnouncementAutoDeliveryFailureTests(unittest.TestCase):
         self.assertEqual(failed.publication_status, "failed")
         self.assertEqual(failed.publication_step, 0)
         self.assertTrue(failed.publication_can_reset)
-        self.assertIn("не подтвердил ни одного шага отправки", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.render_publish_status.telegram_podtverdil_otpravku_ni",
+        )
         self.assertTrue(_callbacks(h, "aw_pub_reset"))
         self.assertEqual(h.posts(), [])
 
@@ -585,7 +599,11 @@ class AnnouncementAutoDeliveryFailureTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("aw_start")
         await h.callback(_callback(h, "aw_open", f":{draft.id}"))
-        self.assertIn("Отправка не завершена", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.render_publish_status.otpravka_zavershena_vozmozhno",
+        )
         self.assertTrue(_callbacks(h, "aw_pub_resume"))
         self.assertFalse(_callbacks(h, "aw_pub_start"))
 
@@ -658,14 +676,14 @@ class AnnouncementAutoDeliveryFailureTests(unittest.TestCase):
         await h.text("Секретное значение", chat_id=group_id, chat_type="group")
         # S3 п.6: последний кирпичик ведёт на шаг фото; попытка завершить
         # анонс в группе отклоняется до вызова Telegram.
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         await h.callback(
             _callback(h, "aw_photo_none"), chat_id=group_id, chat_type="group"
         )
 
         # Ни одного поста: отказ до вызова Telegram.
         self.assertEqual(h.posts(), [])
-        self.assertIn("только в личный чат", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "errors.private_chat_only")
         draft = _latest_draft(h)
         stored = _stored(h, draft.id)
         self.assertIsNone(stored.publication_status)

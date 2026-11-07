@@ -51,6 +51,9 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
+from tests import ui_texts_expect as cat
+from utils.ui_texts import tr
+
 try:
     from telegram.error import BadRequest
 
@@ -68,7 +71,6 @@ try:
         _start_to_template,
     )
     from utils import screen as screen_utils
-    from utils.ui_texts import DEFAULTS
 
     IMPORT_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
@@ -82,17 +84,15 @@ ABOUT_LABEL = "ℹ️ О проекте"
 ABOUT_DATA = "help_about"
 TO_HELP_LABEL = "◀️ К помощи"
 TO_HELP_DATA = "about_help"
-MENU_TEXT = "Что хотите сделать?"
-QUESTION_TEXT = "Вопрос 1 из 1"
+MENU_TEXT = tr("menu.main")
+# Заголовок вопроса — строка каталога `wizard.question.header`
+# (в каталоге формат «🧩 {title} · {step}/{total}»).
+QUESTION_TEXT = cat.fragment("wizard.question.header")
 
-ABOUT_TITLE = "О проекте"
-SECTION_TITLES = (
-    "Лекало",
-    "Как всё начиналось",
-    "Для кого",
-    "Открытый код",
-    "Связаться",
-    "Поддержать проект",
+ABOUT_TITLE = cat.text("about.rich.title")
+# Шесть разделов «О проекте» — из каталога (владелец правит YAML).
+SECTION_TITLES = tuple(
+    cat.text(f"about.rich.section{number}") for number in range(1, 7)
 )
 GITHUB_URL = "https://github.com/a-quilam/samplePost_bot"
 AUTHOR_URL = "https://t.me/a_quilam"
@@ -311,7 +311,7 @@ class AboutStructureTests(unittest.TestCase):
             kinds = [child["type"] for child in by_summary[title]["blocks"]]
             self.assertIn("paragraph", kinds, f"раздел «{title}» без абзаца")
 
-        for_whom = by_summary["Для кого"]
+        for_whom = by_summary[cat.text("about.rich.section3")]
         lists = [child for child in for_whom["blocks"] if child["type"] == "list"]
         self.assertEqual(len(lists), 1, "«Для кого» — один список")
         items = lists[0]["items"]
@@ -631,7 +631,7 @@ class FailureTests(unittest.TestCase):
         await h.callback(ABOUT_DATA)
 
         self.assertEqual(len(_rich(h)), 1, "сбой не должен считаться отправкой")
-        notice = DEFAULTS["about.rich.unavailable"].split(":")[0]
+        notice = tr("about.rich.unavailable").split(".")[0]
         self.assertIn(notice, h.screen_text(), "нет понятного сообщения о сбое")
         self.assertEqual(
             h.screen_buttons(),

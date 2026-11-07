@@ -39,6 +39,7 @@ from html.parser import HTMLParser
 from sqlalchemy import delete, select, update
 from telegram import MessageEntity
 
+from tests import ui_texts_expect as cat
 from utils.parsers import APP_TZ
 from utils.tg_html import (
     capture_text,
@@ -211,7 +212,7 @@ class ResumeAfterRestartTests(unittest.TestCase):
     async def test_text_after_restart_is_saved_into_step(self, h) -> None:
         bricks = await _open_text_question(h)
         draft = _latest_draft(h)
-        self.assertIn("Вопрос 1 из 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 1))
 
         # Рестарт службы: состояние ConversationHandler и user_data потеряны,
         # черновик и UI-снимок остаются в SQLite.
@@ -290,7 +291,7 @@ class ResumeAfterRestartTests(unittest.TestCase):
                 chat_type="group",
             )
         )
-        self.assertIn(OUTSIDE_PHOTO, h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "menu.outside.photo")
         self.assertEqual(list(_latest_draft(h).photos or []), [])
 
     @scenario_test
@@ -323,12 +324,12 @@ class ResumeAfterRestartTests(unittest.TestCase):
     async def test_photo_step_after_restart_keeps_photos(self, h) -> None:
         """Черновик «в состоянии ввода фото» не теряет присланный снимок."""
         draft = await _open_photo_step(h)
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
 
         await h.restart()
         await h.photo("h1-after-restart")
         self.assertIn("h1-after-restart", _details(h, draft.id).photos)
-        self.assertNotIn(OUTSIDE_PHOTO, h.screen_text())
+        cat.assert_not_shows(self, h.screen_text(), "menu.outside.photo")
 
     @scenario_test
     async def test_album_after_restart_keeps_photos(self, h) -> None:
@@ -340,7 +341,7 @@ class ResumeAfterRestartTests(unittest.TestCase):
         photos = _latest_draft(h).photos
         self.assertIn("album-1", photos)
         self.assertIn("album-2", photos)
-        self.assertNotIn(OUTSIDE_PHOTO, h.screen_text())
+        cat.assert_not_shows(self, h.screen_text(), "menu.outside.photo")
 
     @scenario_test
     async def test_deleted_draft_falls_back_to_outside_hint(self, h) -> None:
@@ -450,7 +451,7 @@ class ExplicitExitAfterRestartTests(unittest.TestCase):
         await h.restart()
         await h.text("/cancel")
         await h.photo("photo-after-cancel")
-        self.assertIn(OUTSIDE_PHOTO, h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "menu.outside.photo")
         self.assertEqual(list(_latest_draft(h).photos or []), [])
 
     @scenario_test
@@ -484,7 +485,11 @@ class ExplicitExitAfterRestartTests(unittest.TestCase):
         )
 
         await h.callback("help_back")
-        self.assertIn("Вопрос 1 из 1", h.screen_text(), "не вернулись на текущий шаг")
+        self.assertRegex(
+            h.screen_text(),
+            cat.question_re(1, 1),
+            "не вернулись на текущий шаг",
+        )
         self.assertNotIn(OUTSIDE_TEXT, h.screen_text())
 
         # Снимок жив: обычный текст продолжает шаг, а не проваливается в меню.

@@ -53,6 +53,8 @@ import asyncio
 import re
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     from sqlalchemy import func, select
 
@@ -96,8 +98,10 @@ READY_SCREEN = "Анонс готов"
 # §34–37 / 2.5.3 §6: подписи фото-режима. Кнопки «📥 Добавить фото» больше
 # нет — снимки приходят в чат, а раскладка зависит от числа фото.
 REMOVED_PHOTO_ADD = "📥 Добавить фото"
-PHOTO_MODE_EMPTY = "📷 Пришлите фото"
-PHOTO_MODE_MORE = "📷 Можно прислать ещё"
+# Подписи режима фото — из каталога (владелец правит YAML, смысл тот же:
+# пустой режим и режим «есть куда добавить»).
+PHOTO_MODE_EMPTY = cat.text("wizard.photos.mode_empty")
+PHOTO_MODE_MORE = cat.text("wizard.photos.mode_more")
 PHOTO_DELETE_ONE = "🗑 Удалить фото"
 PHOTO_DELETE_ALL = "🗑 Удалить все фото"
 PHOTO_CONFIRM = "🗑 Да, удалить все"
@@ -619,7 +623,7 @@ class InPlaceEditTests(unittest.TestCase):
         self.assertEqual(len(h.posts()), 1, "второй пост не появился")
         await h.callback(controls.panel_callback("photos", edited.id))
         # 2.5.3 §6: фото-режим — клавиатура самого анонса, отдельного экрана
-        # нет; у 0 фото это «📷 Пришлите фото» и «◀️ Назад».
+        # нет; у 0 фото это «📷 Ожидаю фото» (каталог) и «◀️ Назад».
         self.assertEqual(
             _photo_layout(h, edited),
             [[PHOTO_MODE_EMPTY], [BACK]],

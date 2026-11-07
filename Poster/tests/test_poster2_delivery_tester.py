@@ -33,6 +33,8 @@ import unittest
 
 from telegram.error import RetryAfter
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import (
         get_announcement_draft,
@@ -144,7 +146,7 @@ async def _to_photo_step(h, template_id: int, *, value: str | None = None) -> No
     await h.text("/start")
     await h.callback(f"tp_pick:{template_id}")
     for _ in range(12):
-        if "Фотографии анонса" in h.screen_text():
+        if cat.text("wizard.photos.title") in h.screen_text():
             return
         skip = _maybe_button(h, "aw_qskip")
         if skip is not None and value is None:
@@ -454,7 +456,7 @@ class EmptyAnnouncementTests(unittest.TestCase):
     async def test_empty_without_photos_sends_dot(self, h) -> None:
         template_id = _seed(h)
         await _to_photo_step(h, template_id, value=None)
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         self.assertEqual(h.posts(), [], "до выбора фото поста нет")
 
         await h.callback(_button(h, "aw_photo_none"))

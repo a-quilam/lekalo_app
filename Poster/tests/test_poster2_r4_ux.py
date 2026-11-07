@@ -33,6 +33,8 @@ from unittest.mock import patch
 from sqlalchemy import func, select
 from sqlalchemy import text as sql_text
 
+from tests import ui_texts_expect as cat
+
 try:
     from telegram.error import BadRequest
 
@@ -454,7 +456,7 @@ class DescriptionFormattingTests(R4HarnessCase):
         await h.text("/start", user_id=OWNER_TG)
         await h.callback(f"tp_pick:{template_id}", user_id=OWNER_TG)
         text = h.screen_text()
-        self.assertIn("📝 <code>A &lt; B &amp; C</code>", text)
+        cat.assert_shows(self, text, "wizard.question.description_html")
         self.assertNotIn("A < B", text)
 
     @scenario_test
@@ -859,7 +861,7 @@ class ChatAsApplicationTests(R4HarnessCase):
         # чате остаётся РОВНО один живой служебный экран — вопрос. Прежний
         # экран удалён, а не оставлен вторым (экраны не копятся).
         self.assertEqual(len(_screen_sends(h)), 1, "ровно один живой экран")
-        self.assertIn("Вопрос 1 из 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 1))
 
     @scenario_test
     async def test_service_screen_is_only_one_after_multi_step_answers(
@@ -891,7 +893,7 @@ class ChatAsApplicationTests(R4HarnessCase):
         screens_before = len(_screen_sends(h))
         await h.text("Ответ", user_id=OWNER_TG)
         self.assertEqual(len(_screen_sends(h)), screens_before)
-        self.assertIn("Вопрос 2 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2))
 
 
 @unittest.skipIf(
@@ -960,7 +962,9 @@ class HumorRegressionTests(R4HarnessCase):
         with patch("utils.ui_humor.pick_variant", return_value=ui_humor.HUMOR_JOKES[0]):
             await self.walk_to_preview(h, source.id, place_id)
         text = h.screen_text()
-        self.assertIn("Сейчас отправить нельзя", text)
+        cat.assert_shows(
+            self, text, "bricks.proposal_preview.otpravit_seychas_nelzya_kod_html"
+        )
         for joke in ui_humor.HUMOR_JOKES:
             self.assertNotIn(joke, text, "шутка не должна попадать в предупреждение")
 

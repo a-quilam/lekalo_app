@@ -30,6 +30,8 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
+from tests import ui_texts_expect as cat
+
 try:
     import announcement_controls as controls
     from handlers.announcement_wizard import AW_PREVIEW, CONVERSATION_NAME
@@ -58,10 +60,10 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 # Подписи — из каталога текстов (config/ui_texts.yaml), а не литералами.
 PHOTOS_TITLE = tr("wizard.photos.title")
-# Формулировка различает два разных места: шаг фото/черновик («Не отправлено»)
-# и правку ДОСТАВЛЕННОГО анонса («Анонс не обновлён», 2.5.4 §3). Общий смысл
-# один: текст не помещается и не публикуется.
-LENGTH_REFUSAL = "текст не помещается"
+# Отказ по длине различает два места: шаг фото/черновик и правку уже
+# ДОСТАВЛЕННОГО анонса (2.5.4 §3). Смысл один — текст не помещается и не
+# публикуется, поэтому проверка идёт по ключам `wizard.length_refusal.*`.
+CAPTION_LIMIT = 1024
 
 # Формулировки старого экрана восстановления: их быть не должно.
 REMOVED_MARKERS = (
@@ -145,8 +147,9 @@ class LongTextKeepsDraftTests(unittest.TestCase):
         photo_update = await h.photo("over-limit-photo")
 
         shown = _screen_and_answers(h)
-        self.assertIn(LENGTH_REFUSAL, shown, f"нет короткой ошибки: {shown!r}")
-        self.assertIn("при лимите 1024", shown)
+        cat.assert_length_refusal(
+            self, shown, CAPTION_LIMIT, f"нет короткой ошибки: {shown!r}"
+        )
         _no_removed_screen(h)
 
         stored = _stored(h, draft.id)
@@ -190,7 +193,7 @@ class LongTextKeepsDraftTests(unittest.TestCase):
         long_message = await h.text(LONG_VALUE)
 
         shown = _screen_and_answers(h)
-        self.assertIn(LENGTH_REFUSAL, shown, f"нет короткой ошибки: {shown!r}")
+        cat.assert_length_refusal(self, shown, msg=f"нет короткой ошибки: {shown!r}")
         _no_removed_screen(h)
         # Ввод с новым текстом остался в чате — сократить можно им же.
         self.assertNotIn(long_message.message.message_id, h.deleted_ids())
@@ -227,7 +230,7 @@ class LongTextSurvivesRestartTests(unittest.TestCase):
         await h.text("/start")
         draft = await _draft_at_photo_step(h)
         await h.photo("long-photo")
-        self.assertIn(LENGTH_REFUSAL, _screen_and_answers(h))
+        cat.assert_length_refusal(self, _screen_and_answers(h))
         self.assertIsNone(_stored(h, draft.id).publication_status)
 
         await h.restart()
@@ -241,8 +244,9 @@ class LongTextSurvivesRestartTests(unittest.TestCase):
         await h.callback("my_announcements")
         await h.callback(f"aw_open:{draft.id}")
         screen = h.screen_text()
-        self.assertIn(LENGTH_REFUSAL, screen, f"нет пометки после рестарта: {screen!r}")
-        self.assertIn("при лимите 1024", screen)
+        cat.assert_length_refusal(
+            self, screen, CAPTION_LIMIT, f"нет пометки после рестарта: {screen!r}"
+        )
         _no_removed_screen(h)
 
         restored = _stored(h, draft.id)
@@ -310,10 +314,7 @@ class RemovedRouteTests(unittest.TestCase):
 
         # Обработчика больше нет: подделанный callback уходит в общий stale.
         answers = " | ".join(h.answer_texts())
-        self.assertTrue(
-            "устарела" in answers or "Данные изменились" in answers,
-            f"ответ на подделку: {answers!r}",
-        )
+        cat.assert_stale(self, answers, f"ответ на подделку: {answers!r}")
         after = _stored(h, draft.id)
         self.assertEqual(after.photos, ("kept-photo",), "фото не удалены")
         self.assertIsNone(after.publication_status, "подделка ничего не отправила")

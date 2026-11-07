@@ -35,6 +35,8 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     import announcement_controls as controls
     from template_compiler import (
@@ -74,7 +76,7 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 PHOTOS_TITLE = tr("wizard.photos.title")
 # Короткая причина для ДОСТАВЛЕННОГО анонса (2.5.4 §3) — без «уберите фото».
-EDIT_REFUSAL = "Анонс не обновлён: текст не помещается"
+# Текст причины задаёт каталог (`wizard.length_refusal.*`), тест знает ключ.
 HINT = tr("wizard.length_refusal.edit_hint")
 CANCEL = tr("wizard.length_refusal.edit_cancel")
 
@@ -160,7 +162,7 @@ def _error_keyboard(h, message_id: int):
 
 def _edit_refusals(h) -> list[str]:
     """Короткие причины ошибки длины, показанные автору."""
-    return [text for text in h.reply_texts() if EDIT_REFUSAL in text]
+    return [text for text in h.reply_texts() if cat.length_refusal(text)]
 
 
 def _caption_edits(h) -> list[dict]:
@@ -195,8 +197,13 @@ class LongTextWithoutPhotosTests(unittest.TestCase):
 
         # Причина: лимит назван числом, про фотографии речи нет.
         shown = "\n".join(_edit_refusals(h))
-        self.assertIn(EDIT_REFUSAL, shown, f"нет ошибки длины: {h.reply_texts()}")
-        self.assertIn(f"лимите {ANNOUNCEMENT_TEXT_LIMIT}", shown)
+        cat.assert_shows(
+            self,
+            shown,
+            "wizard.length_refusal.edit_not_applied",
+            f"нет ошибки длины: {h.reply_texts()}",
+            limit=ANNOUNCEMENT_TEXT_LIMIT,
+        )
         self.assertNotIn("фото", shown.lower(), "без фото про фото не пишем")
 
         # На управлении анонса — РОВНО две кнопки: подсказка и «Отменить».
@@ -298,11 +305,10 @@ class PendingLongEditMessageTests(unittest.TestCase):
         self.assertTrue(days, f"календаря нет: {h.live_buttons()}")
         await h.callback(days[0])
 
-        shown = "\n".join(
-            text for text in h.answer_texts() if "текст не помещается" in text
-        )
+        shown = "\n".join(text for text in h.answer_texts() if cat.length_refusal(text))
         self.assertTrue(shown, f"нет причины: {h.answer_texts()}")
-        self.assertIn(f"лимите {ANNOUNCEMENT_TEXT_LIMIT}", shown)
+        # Совет общий: лимит назван, но подсказки про фото нет.
+        cat.assert_length_refusal(self, shown, ANNOUNCEMENT_TEXT_LIMIT)
         low = shown.lower()
         self.assertNotIn("фото", low, f"совет про фото без фото: {shown!r}")
         self.assertNotIn("уберите", low, f"постороннее действие в совете: {shown!r}")
@@ -337,8 +343,12 @@ class LongCaptionWithPhotoTests(unittest.TestCase):
         await h.text(LONG_CAPTION)
 
         shown = "\n".join(_edit_refusals(h))
-        self.assertIn(EDIT_REFUSAL, shown)
-        self.assertIn(f"лимите {ANNOUNCEMENT_CAPTION_LIMIT}", shown)
+        cat.assert_shows(
+            self,
+            shown,
+            "wizard.length_refusal.edit_not_applied",
+            limit=ANNOUNCEMENT_CAPTION_LIMIT,
+        )
         stored = _stored(h, draft.id)
         self.assertEqual(stored.publication_text, published, "подпись изменилась")
         self.assertEqual(
@@ -420,9 +430,11 @@ class LongCaptionInMediaGroupTests(unittest.TestCase):
             all(int(call["message_id"]) == panel_id for call in panel_edits),
             "правится не наша панель",
         )
-        self.assertIn(
-            f"лимите {ANNOUNCEMENT_CAPTION_LIMIT}",
+        cat.assert_shows(
+            self,
             h.bot.content_text(h.chat_id, panel_id) or "",
+            "wizard.length_refusal.edit_not_applied",
+            limit=ANNOUNCEMENT_CAPTION_LIMIT,
         )
         rows = _error_keyboard(h, panel_id)
         self.assertEqual(len(rows), 2, rows)

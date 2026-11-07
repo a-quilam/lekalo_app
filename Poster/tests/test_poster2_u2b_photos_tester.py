@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import get_announcement_draft
     from handlers.announcement_wizard import CONVERSATION_NAME
@@ -61,7 +63,7 @@ async def _to_photo(h) -> int:
     await _start_to_template(h, place_id)
     await _choose_personal(h, template_id)
     await h.text("Значение")
-    if "Фотографии анонса" not in h.screen_text():
+    if cat.text("wizard.photos.title") not in h.screen_text():
         raise AssertionError(f"не шаг фото: {h.screen_text()}")
     return _latest_draft(h).id
 
@@ -145,7 +147,7 @@ class DoubleCallbackTests(unittest.TestCase):
         self.assertEqual(h.posts(), posts_after_first, "второго анонса нет")
         after = _details(h, draft_id)
         self.assertEqual(after.delivered_message_ids, version_ids)
-        self.assertIn("Данные изменились", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
         # 2.5.3 §5: служебного экрана нет — устаревшая кнопка открывает
         # список полей на самом анонсе.
         self.assertEqual(h.screen_text(), "", "служебного экрана нет")
@@ -164,7 +166,7 @@ class DoubleCallbackTests(unittest.TestCase):
 
         self.assertEqual(h.posts(), posts_after_first)
         await h.callback("aw_photo_none:999999:1")
-        self.assertIn("Данные изменились", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
         self.assertEqual(len(h.posts()), len(posts_after_first))
         self.assertIsNotNone(_details(h, draft_id).publication_status)
 
@@ -177,7 +179,7 @@ class DoubleCallbackTests(unittest.TestCase):
 
         await h.callback(f"aw_photo_back:{draft_id}:{stored.revision + 5}")
 
-        self.assertIn("Данные изменились", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
         self.assertEqual(h.posts(), posts_before, "подделанная кнопка не отправляет")
         after = _details(h, draft_id)
         self.assertEqual(after.revision, stored.revision)

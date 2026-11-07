@@ -25,6 +25,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from tests import ui_texts_expect as cat
+
 try:
     from tests.integration_harness import (
         HARNESS_IMPORT_ERROR,
@@ -147,10 +149,11 @@ class ExtrasErrorNoticeTests(unittest.TestCase):
             await h.callback(data[0])
 
         text = h.screen_text()
-        self.assertIn(UNAVAILABLE_FRAGMENT, text, text[:400])
-        self.assertNotIn(
-            NO_EXTENDED_FRAGMENT,
+        cat.assert_shows(self, text, "wizard.extras.unavailable", text[:400])
+        cat.assert_not_shows(
+            self,
             text,
+            "wizard.extras.no_extended",
             "ошибка недоступного кирпичика выдана за отсутствие " "расширенного текста",
         )
         # Экран остаётся рабочим: кнопки на месте, «внутренней ошибки» нет.
@@ -158,7 +161,7 @@ class ExtrasErrorNoticeTests(unittest.TestCase):
             [label for label, _data in h.screen_buttons()],
             "экран доп. полей не должен оставаться без кнопок",
         )
-        self.assertNotIn("Что-то пошло не так", text)
+        cat.assert_not_shows(self, text, "errors.internal")
 
     @scenario_test
     async def test_template_without_extended_keeps_its_own_text(self, h):
@@ -180,8 +183,8 @@ class ExtrasErrorNoticeTests(unittest.TestCase):
 
         text = h.screen_text()
         self.assertIn(EXTRAS_TITLE, text, text[:400])
-        self.assertIn(NO_EXTENDED_FRAGMENT, text, text[:400])
-        self.assertNotIn(UNAVAILABLE_FRAGMENT, text)
+        cat.assert_shows(self, text, "wizard.extras.no_extended", text[:400])
+        cat.assert_not_shows(self, text, "wizard.extras.unavailable")
 
 
 if __name__ == "__main__":

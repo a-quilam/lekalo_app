@@ -33,6 +33,8 @@ from __future__ import annotations
 import unittest
 from datetime import date, timedelta
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import build_announcement_fields, list_announcement_drafts
     from brick_store import create_personal_brick
@@ -563,7 +565,7 @@ class NegativeScenarioTests(unittest.TestCase):
                     len(h.answers()), answers_before, f"нет ответа: {data}"
                 )
                 self.assertNotIn("внутренняя ошибка", "\n".join(_answers(h)).lower())
-                self.assertIn("Вопрос 2 из 2", h.screen_text(), data)
+                self.assertRegex(h.screen_text(), cat.question_re(2, 2), data)
                 self.assertEqual(len(_days(h)), 8, data)
                 self.assertEqual(_saved(h, today=SUNDAY), before, data)
 
@@ -599,15 +601,15 @@ class NegativeScenarioTests(unittest.TestCase):
         with frozen_today(2026, 11, 1):
             await _open(h)
             await h.callback(_first(h, "aw_qback"))
-            self.assertIn("Вопрос 1 из 2", h.screen_text())
+            self.assertRegex(h.screen_text(), cat.question_re(1, 2))
             # Poster 2.4 (P2, требование VI): «➡️ Далее» убрана; вперёд ведёт
             # «⏭ Пропустить» — заполненное значение при этом сохраняется.
             await h.callback(_first(h, "aw_qskip"))
-            self.assertIn("Вопрос 2 из 2", h.screen_text())
+            self.assertRegex(h.screen_text(), cat.question_re(2, 2))
             self.assertEqual(len(_days(h)), 8)
 
             await h.callback(_first(h, "aw_qskip"))
-            self.assertIn("Фотографии анонса", h.screen_text())
+            self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
             self.assertIsNone(_saved(h, today=SUNDAY)["day"])
 
     @scenario_test
@@ -623,7 +625,11 @@ class NegativeScenarioTests(unittest.TestCase):
                 "2031-06-15",
             ):
                 await h.callback(f"aw_calday:{prefix}:{value}")
-                self.assertIn("вне разрешённого периода", _answers(h)[-1])
+                cat.assert_shows(
+                    self,
+                    _answers(h)[-1],
+                    "wizard.save_calendar_day.eta_data_vne_dopustimogo",
+                )
                 self.assertEqual(_saved(h, today=SUNDAY), before)
             # Месяц вне сетки — устаревшая кнопка, значение не пишется.
             await h.callback(f"aw_calmonth:{prefix}:2031:6")
@@ -721,7 +727,7 @@ class DefectReproductionTests(unittest.TestCase):
                 self.assertGreater(
                     len(h.answers()), answers_before, f"{data}: callback без ответа"
                 )
-                self.assertIn("Вопрос 2 из 2", h.screen_text(), data)
+                self.assertRegex(h.screen_text(), cat.question_re(2, 2), data)
                 self.assertEqual(_saved(h, today=SUNDAY), before, data)
 
 
@@ -810,7 +816,7 @@ class MalformedCalendarCallbackTests(unittest.TestCase):
                 self.assertGreater(
                     len(h.answers()), answers_before, f"{data}: callback без ответа"
                 )
-                self.assertIn("Вопрос 2 из 2", h.screen_text(), data)
+                self.assertRegex(h.screen_text(), cat.question_re(2, 2), data)
                 self.assertEqual(len(_days(h)), 8, data)
                 self.assertEqual(_saved(h, today=SUNDAY), before, data)
 

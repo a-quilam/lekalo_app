@@ -34,6 +34,9 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
+from tests import ui_texts_expect as cat
+from utils.ui_texts import tr
+
 try:
     from telegram.error import BadRequest
 
@@ -57,7 +60,6 @@ try:
         _start_to_template,
     )
     from utils import screen as screen_utils
-    from utils.ui_texts import DEFAULTS
 
     IMPORT_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
@@ -70,16 +72,13 @@ ABOUT_LABEL = "ℹ️ О проекте"
 ABOUT_DATA = "help_about"
 TO_HELP_LABEL = "◀️ К помощи"
 TO_HELP_DATA = "about_help"
-MENU_TEXT = "Что хотите сделать?"
+MENU_TEXT = tr("menu.main")
 RICH_KEY = "help_rich_message_id"
 
-SECTION_TITLES = (
-    "Лекало",
-    "Как всё начиналось",
-    "Для кого",
-    "Открытый код",
-    "Связаться",
-    "Поддержать проект",
+# Названия разделов — из каталога: владелец правит YAML, проверка остаётся
+# проверкой состава и порядка шести разделов.
+SECTION_TITLES = tuple(
+    cat.text(f"about.rich.section{number}") for number in range(1, 7)
 )
 
 
@@ -178,11 +177,11 @@ class AboutStructureTests(unittest.TestCase):
 
     def test_heading_and_intro_come_from_catalog(self) -> None:
         self.assertEqual(self.blocks[0]["type"], "heading")
-        self.assertEqual(self.blocks[0]["text"], DEFAULTS["about.rich.title"])
+        self.assertEqual(self.blocks[0]["text"], tr("about.rich.title"))
         self.assertEqual(self.blocks[0]["size"], 1)
         texts = [b["text"] for b in self.blocks if b["type"] == "paragraph"]
-        self.assertIn(DEFAULTS["about.rich.intro"], texts)
-        self.assertIn(DEFAULTS["about.rich.hint"], texts)
+        self.assertIn(tr("about.rich.intro"), texts)
+        self.assertIn(tr("about.rich.hint"), texts)
 
     def test_exactly_six_collapsed_sections(self) -> None:
         details = [b for b in self.blocks if b["type"] == "details"]
@@ -436,7 +435,7 @@ class AboutFailureTests(unittest.TestCase):
         await h.callback(ABOUT_DATA)
 
         self.assertEqual(len(_rich_records(h)), 1, "сбой не должен считаться отправкой")
-        notice = DEFAULTS["about.rich.unavailable"].split(":")[0]
+        notice = tr("about.rich.unavailable").split(".")[0]
         self.assertIn(notice, h.screen_text(), "нет понятной плашки сбоя")
         self.assertEqual(
             h.screen_buttons(),
@@ -472,7 +471,7 @@ class AboutFailureTests(unittest.TestCase):
         await h.callback("help")
 
         self.assertEqual(_rich_records(h), [])
-        notice = DEFAULTS["help.rich.unavailable"].split(":")[0]
+        notice = tr("help.rich.unavailable").split(".")[0]
         self.assertIn(notice, h.screen_text())
         self.assertNotIn(ABOUT_DATA, [data for _label, data in h.screen_buttons()])
 

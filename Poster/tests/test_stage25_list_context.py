@@ -32,6 +32,7 @@ from unittest.mock import patch
 from place_state import load_place_session
 from place_store import create_place
 from template_state import load_template_session
+from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     DEFAULT_USER_ID,
     HARNESS_IMPORT_ERROR,
@@ -199,14 +200,14 @@ class ManageListContextTests(unittest.TestCase):
         results = _callbacks(h, "plm_open:")
         self.assertTrue(results)
         await h.callback(results[-1])
-        self.assertIn("Здесь можно посмотреть данные места", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "places.manage_card.eto_prosmotr_spravochnika"
+        )
 
         await h.callback("plm_back")
 
-        self.assertNotIn(
-            "больше не работает",
-            " ".join(_alerts(h)).lower(),
-            "ложный stale-alert на живом возврате",
+        cat.assert_not_stale(
+            self, " ".join(_alerts(h)), "ложный stale-alert на живом возврате"
         )
         state = load_place_session(DEFAULT_USER_ID)
         assert state is not None
@@ -376,7 +377,7 @@ class PlacePickerLayoutTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("pick_place")
         self._assert_layout(h, last_callback="main_menu")
-        self.assertIn("Площадок пока нет", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.pick.empty")
 
     @scenario_test
     async def test_filled_picker_layout(self, h: Harness) -> None:

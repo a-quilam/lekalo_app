@@ -47,6 +47,7 @@ from brick_state import load_brick_session
 from brick_store import create_personal_brick, create_place_brick
 from models import Brick, BrickConflict, BrickProposal, PlaceAdmin, User, utcnow
 from place_store import create_place
+from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     HARNESS_IMPORT_ERROR,
     Harness,
@@ -648,7 +649,9 @@ class PlaceBricksAcceptance(unittest.TestCase):
         await h.callback(f"adm_brick_new:{place_id}", user_id=ADMIN_TG)
 
         # Существующий мастер: шаг названия, а не новый экран.
-        self.assertIn("Как назвать кирпичик", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "bricks.build.1_nazvat_kirpichik_naprimer_html"
+        )
         session_state = load_brick_session(ADMIN_TG)
         assert session_state is not None
         self.assertEqual(session_state["phase"], "title_input")
@@ -815,7 +818,7 @@ class PlaceBricksAcceptance(unittest.TestCase):
         self.assertEqual(len(back), 1, "«Назад» не ведёт в карточку места")
 
         await h.callback(back[0], user_id=ADMIN_TG)
-        self.assertNotIn(STALE_MARK, alert(h).lower(), "рабочая кнопка дала stale")
+        cat.assert_not_stale(self, alert(h), "рабочая кнопка дала stale")
         self.assertIn(CARD_TITLE, h.screen_text())
         state = load_admin_session(ADMIN_TG)
         assert state is not None
@@ -826,9 +829,7 @@ class PlaceBricksAcceptance(unittest.TestCase):
         await open_place_bricks(h, place_id)
         await h.restart()
         await h.callback(f"adm_place:{place_id}", user_id=ADMIN_TG)
-        self.assertNotIn(
-            STALE_MARK, alert(h).lower(), "после рестарта «Назад» даёт stale"
-        )
+        cat.assert_not_stale(self, alert(h), "после рестарта «Назад» даёт stale")
         self.assertIn(CARD_TITLE, h.screen_text())
         state = load_admin_session(ADMIN_TG)
         assert state is not None
@@ -839,7 +840,7 @@ class PlaceBricksAcceptance(unittest.TestCase):
         await h.callback(f"adm_bricks:{place_id}", user_id=ADMIN_TG)
         self.assertIn(CREATE_LABEL, labels(h))
         await h.callback(f"adm_place:{place_id}", user_id=ADMIN_TG)
-        self.assertNotIn(STALE_MARK, alert(h).lower())
+        cat.assert_not_stale(self, alert(h))
         self.assertIn(CARD_TITLE, h.screen_text())
 
     @scenario_test
@@ -894,7 +895,7 @@ class PlaceBricksAcceptance(unittest.TestCase):
         )
         # «Назад» после сохранения — в карточку, без stale.
         await h.callback(f"adm_place:{place_id}", user_id=ADMIN_TG)
-        self.assertNotIn(STALE_MARK, alert(h).lower())
+        cat.assert_not_stale(self, alert(h))
         self.assertIn(CARD_TITLE, h.screen_text())
 
 

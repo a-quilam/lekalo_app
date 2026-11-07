@@ -87,6 +87,12 @@ FIELD_INPUT_ACTION_CALQUICK = "calquick"
 # Хвост несёт ревизию черновика: позднее/повторное нажатие после успешного
 # сохранения не откатывает новое значение (см. `_cancel_field_length_edit`).
 FIELD_INPUT_ACTION_CANCEL = "cancel"
+# 2.5.5 §1: «Отменить» на клавиатуре ВВОДА поля (не экран ошибки длины).
+# Отдельное действие, а не `cancel`: тот маршрут откатывает незавершённую
+# правку по ревизии черновика, а здесь ничего не откатывается — прежнее
+# значение остаётся, ввод просто прекращается. Хвоста у кнопки нет, поэтому
+# нажатие не зависит от ревизии и не может «опоздать».
+FIELD_INPUT_ACTION_ABORT = "abort"
 FIELD_INPUT_ACTIONS = (
     FIELD_INPUT_ACTION_BACK,
     FIELD_INPUT_ACTION_SKIP,
@@ -99,6 +105,7 @@ FIELD_INPUT_ACTIONS = (
     FIELD_INPUT_ACTION_MONTH,
     FIELD_INPUT_ACTION_CALQUICK,
     FIELD_INPUT_ACTION_CANCEL,
+    FIELD_INPUT_ACTION_ABORT,
 )
 
 # `anq_back:{instance_id}:{brick_id}` и остальные действия списка ввода.

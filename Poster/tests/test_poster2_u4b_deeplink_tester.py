@@ -27,6 +27,8 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import ORIGIN_PLACE, list_announcement_drafts
     from handlers.announcement_wizard import CONVERSATION_NAME
@@ -286,12 +288,12 @@ class ForgedStartTests(unittest.TestCase):
             ).token
 
         await h.text(f"/start {token}", user_id=STRANGER_TG)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
         # Второй старт с тем же токеном (как повторное открытие ссылки):
         # диалог переоткрывается, ссылка не дублируется.
         await h.text(f"/start {token}", user_id=STRANGER_TG)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         self.assertEqual(len(_active(h)), 1)
 
     @scenario_test

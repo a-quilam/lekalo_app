@@ -156,7 +156,7 @@ from utils import tg_context as ctx
 from utils.parsers import app_today
 from utils.place_labels import place_title
 from utils.tg_html import capture_message_text, escape_html
-from utils.ui_texts import tr, tr_plain, tr_safe
+from utils.ui_texts import join_blocks, tr, tr_plain, tr_safe
 
 # Poster 2.0 S3 п.1: вид вопроса/календаря вынесен в `wizard_questions`,
 # поведение прежнее. Имена с подчёркиванием сохранены как локальные
@@ -354,6 +354,18 @@ NAV_EXTRA_VALUE = "extra_value"
 NAV_PHOTOS = "photos"
 NAV_PREVIEW = "preview"
 NAV_FIELDS = "fields"
+# 2.5.5 §3: общий редактор доставленного анонса — клавиатура управления
+# экземпляром («Текстовые поля | Фото | Доп. поля | В меню»). Это корень
+# собственного пути редактора: из него открываются список полей и доп. поля,
+# и «Назад» из них возвращает сюда, а не в «Текстовые поля».
+NAV_EDITOR = "editor"
+
+# Экраны пути редактора доставленного анонса. Их записи несут id экземпляра:
+# путь одного анонса не переиспользуется другим (даже в том же чате).
+EDITOR_SCREENS = frozenset({NAV_EDITOR, NAV_FIELDS, NAV_EXTRAS, NAV_EXTRA_VALUE})
+# Глубина пути редактора: одно место управления, список полей и два уровня
+# вложенности. Больше не нужно, а ограничение не даёт пути расти бесконечно.
+EDITOR_STACK_LIMIT = 8
 
 
 def _nav_stack(ui: dict[str, Any]) -> list[dict[str, Any]]:
@@ -398,6 +410,7 @@ def _nav_enter(
     index: int | None = None,
     brick_id: int | None = None,
     root: bool = False,
+    instance_id: int | None = None,
 ) -> None:
     """
     Фиксирует показ экрана в пути.
@@ -412,9 +425,19 @@ def _nav_enter(
     анонса): история конструктора, из которой пришли, к нему не относится.
     Без этого дедупликация ниже принимала бы новый список полей за возврат
     на вопрос того же кирпичика, который остался в пути после доставки.
+
+    `instance_id` — экземпляр доставленного анонса. Для экранов редактора
+    (`EDITOR_SCREENS`) путь нормализуется: в нём нет истории конструктора и
+    записей другого анонса, а внизу всегда лежит общий редактор
+    (`NAV_EDITOR`). Поэтому «Назад» с доп. полей ведёт в управление
+    анонсом, а не в «Текстовые поля».
     """
     stack = _nav_stack(ui)
-    if root:
+    if screen in EDITOR_SCREENS and isinstance(instance_id, int):
+        if root:
+            stack.clear()
+        _nav_editor_path(ui, stack, instance_id, screen)
+    elif root:
         stack.clear()
     identity = _nav_identity(screen, index=index, brick_id=brick_id)
     entry: dict[str, Any] = {
@@ -423,6 +446,7 @@ def _nav_enter(
         "revision": ui.get("revision"),
         # Источник перехода: экран, с которого пришли (для диагностики).
         "source": stack[-1]["screen"] if stack else None,
+        "instance_id": instance_id if screen in EDITOR_SCREENS else None,
         "page": page,
         "index": index,
         "brick_id": brick_id,
@@ -455,8 +479,78 @@ def _nav_enter(
         stack[-1] = entry
         return
     stack.append(entry)
+    if screen in EDITOR_SCREENS and isinstance(instance_id, int):
+        if len(stack) > EDITOR_STACK_LIMIT:
+            # Корень пути сохраняем: без него «Назад» из доп. полей некуда
+            # возвращаться. Отбрасываем самые старые промежуточные шаги.
+            del stack[1 : len(stack) - EDITOR_STACK_LIMIT + 1]
+        return
     if len(stack) > NAV_STACK_LIMIT:
         del stack[: len(stack) - NAV_STACK_LIMIT]
+
+
+def _nav_editor_path(
+    ui: dict[str, Any],
+    stack: list[dict[str, Any]],
+    instance_id: int,
+    screen: str,
+) -> None:
+    """
+    Оставляет в пути только экраны редактора ЭТОГО экземпляра.
+
+    Единая точка нормализации пути редактора: история конструктора, экраны
+    другого анонса и устаревшие записи отбрасываются. Открытие общего
+    редактора начинает путь заново — иначе «Назад» из доп. полей, открытых
+    после списка полей, вело бы в «Текстовые поля», а не в управление
+    анонсом. Внизу пути всегда лежит `NAV_EDITOR`: это тот экран, откуда
+    открываются и список полей, и доп. поля.
+    """
+    if screen == NAV_EDITOR:
+        # Общий редактор — корень пути: прежние вложенные экраны не
+        # остаются под ним.
+        stack.clear()
+    else:
+        stack[:] = [
+            entry
+            for entry in stack
+            if entry.get("screen") in EDITOR_SCREENS
+            and entry.get("instance_id") == instance_id
+        ]
+    if not stack:
+        stack.append(
+            {
+                "screen": NAV_EDITOR,
+                "draft_id": ui.get("draft_id"),
+                "revision": ui.get("revision"),
+                "source": None,
+                "instance_id": instance_id,
+                "page": None,
+                "index": None,
+                "brick_id": None,
+            }
+        )
+
+
+def _enter_editor_path(ui: dict[str, Any], instance_id: int | None) -> None:
+    """
+    Начинает путь редактора экземпляра с общего экрана управления.
+
+    Единая точка входа в редактор доставленного анонса: путь обрезается до
+    `NAV_EDITOR`, поэтому следующие экраны (список полей, доп. поля)
+    кладутся поверх управления, а «◀️ Назад» возвращает туда же. Путь
+    другого экземпляра и история конструктора при этом отбрасываются.
+    У живого черновика (`instance_id` нет) путь не трогается.
+    """
+    if isinstance(instance_id, int):
+        _nav_enter(ui, NAV_EDITOR, instance_id=int(instance_id))
+
+
+def _nav_entry_instance(entry: dict[str, Any] | None) -> int | None:
+    """id экземпляра из записи пути редактора (None — записи нет)."""
+    if not isinstance(entry, dict):
+        return None
+    value = entry.get("instance_id")
+    return value if isinstance(value, int) else None
 
 
 def _nav_pop(ui: dict[str, Any]) -> dict[str, Any] | None:
@@ -535,6 +629,7 @@ async def _nav_render(
             context,
             details,
             page=page if isinstance(page, int) else None,
+            instance_id=_nav_entry_instance(entry),
         )
     if screen_name == NAV_EXTRA_VALUE:
         brick_id = entry.get("brick_id")
@@ -548,7 +643,13 @@ async def _nav_render(
         )
         if extra is None:
             return None
-        return await _render_extra_value_prompt(update, context, details, extra)
+        return await _render_extra_value_prompt(
+            update,
+            context,
+            details,
+            extra,
+            instance_id=_nav_entry_instance(entry),
+        )
     if screen_name == NAV_TEMPLATE:
         return await _render_template_screen(update, context, details)
     if screen_name == NAV_PHOTOS:
@@ -566,6 +667,20 @@ async def _nav_render(
             instance_id=instance_id if isinstance(instance_id, int) else None,
             page=page if isinstance(page, int) else 0,
         )
+    if screen_name == NAV_EDITOR:
+        instance_id = _nav_entry_instance(entry)
+        instance = _instance_for(details, instance_id)
+        if instance is None:
+            return None
+        # Общий редактор анонса: возвращаем управление экземпляру (клавиатура
+        # анонса или текст единственной панели). Новых сообщений нет, а
+        # временный служебный экран (доп. поля, шаг мастера) закрывается:
+        # иначе в чате осталась бы вторая, уже нерабочая клавиатура.
+        await _close_service_screen(update, context)
+        await _show_announcement_controls(
+            context, ctx.chat(update).id, details, instance=instance
+        )
+        return AW_PREVIEW
     if screen_name == NAV_PREVIEW:
         return await _render_preview(update, context, details)
     if screen_name == NAV_HOME:
@@ -3033,6 +3148,37 @@ def _instance_for(details, instance_id: int | None = None):
     return instance
 
 
+def _editor_instance_id(
+    ui: dict[str, Any], details, instance_id: int | None = None
+) -> int | None:
+    """
+    Экземпляр редактора доставленного анонса для пути навигации.
+
+    `None` — черновик ещё не доставлен (история конструктора) или
+    экземпляра нет: тогда работает прежний путь мастера. У доставленного
+    анонса путь принадлежит конкретному экземпляру и не переносится на
+    другой анонс даже в том же чате.
+
+    Явный `instance_id` — вход в редактор из управления экземпляром. Без
+    него (пагинация, возврат после сохранения значения) путь продолжается
+    только если он УЖЕ редакторский: иначе активный экземпляр чата подменил
+    бы маршрут мастера чужим редактором.
+    """
+    if not details.publication_sent:
+        return None
+    if isinstance(instance_id, int):
+        instance = _instance_for(details, instance_id)
+        return None if instance is None else int(instance.id)
+    stack = _nav_stack(ui)
+    if not stack or stack[0].get("screen") != NAV_EDITOR:
+        return None
+    value = stack[0].get("instance_id")
+    if not isinstance(value, int):
+        return None
+    instance = _instance_for(details, value)
+    return None if instance is None else int(instance.id)
+
+
 def _field_edit_instance(ui: dict[str, Any]) -> int | None:
     """
     id экземпляра, чей текстовый вопрос сейчас открыт (2.5.3 §5).
@@ -3207,13 +3353,13 @@ async def _render_field_list(
         await _answer(update, announcement_controls.STALE_INSTANCE_TEXT, alert=True)
         return await _render_home(update, context)
     ui["field_instance_id"] = instance.id
-    # Список полей — корень СВОЕГО маршрута правки доставленного анонса, а не
-    # продолжение пути конструктора: под ним в стеке ещё лежат вопросы, на
-    # которые уже ответили. Без пометки `root` `_nav_enter` увидел бы там
-    # вопрос того же кирпичика и «схлопнул» только что открытый список как
-    # возврат на родителя — тогда «Назад» из ввода поля последнего кирпичика
-    # уводил бы на «Вопрос N из M» вместо страницы списка.
-    _nav_enter(ui, NAV_FIELDS, page=page, root=True)
+    # Список полей — вложенный экран СВОЕГО маршрута правки доставленного
+    # анонса, а не продолжение пути конструктора: под ним в стеке ещё лежат
+    # вопросы, на которые уже ответили. Путь нормализуется по экземпляру:
+    # история конструктора отбрасывается, а внизу остаётся общий редактор —
+    # иначе дедупликация ниже приняла бы новый список за возврат на вопрос
+    # того же кирпичика, и «Назад» из ввода поля уводил бы на «Вопрос N из M».
+    _nav_enter(ui, NAV_FIELDS, page=page, instance_id=instance.id)
     stack = _nav_stack(ui)
     if stack:
         # Возврат «Назад» с пути знает, чей это список: id экземпляра, а не
@@ -4368,6 +4514,7 @@ async def _render_extras(
     *,
     notice: str | None = None,
     page: int | None = None,
+    instance_id: int | None = None,
 ) -> int:
     """
     Экран «🧱 Дополнительные поля»: сразу список, внизу ровно «◀️ Назад».
@@ -4402,7 +4549,8 @@ async def _render_extras(
         max(0, int(current_page or 0)), len(entries), EXTRA_PAGE_SIZE
     )
     ui["extras_page"] = current_page
-    _nav_enter(ui, NAV_EXTRAS, page=current_page)
+    editor_instance = _editor_instance_id(ui, details, instance_id)
+    _nav_enter(ui, NAV_EXTRAS, page=current_page, instance_id=editor_instance)
     shown = entries[
         current_page * EXTRA_PAGE_SIZE : (current_page + 1) * EXTRA_PAGE_SIZE
     ]
@@ -4411,37 +4559,46 @@ async def _render_extras(
     intro = tr("wizard.extras.intro")
 
     def build(limits: list[int]) -> str:
-        lines = [header, "", intro]
+        # Заголовок и вступление — отдельные блоки каталога: пустое
+        # вступление (владелец вправе оставить его пустым) не должно давать
+        # ни пустой строки-разделителя, ни двойного перевода строки.
+        blocks = [header, intro]
         if not has_extended and not failed:
-            lines.extend(["", tr("wizard.extras.no_extended")])
-        if shown:
-            for offset, entry in enumerate(shown, start=1):
-                number = current_page * EXTRA_PAGE_SIZE + offset
-                field = entry["field"]
-                value = _full_value_text(field)
-                if field.status == FIELD_STATUS_MISSING:
-                    value_text = tr("wizard.build.znachenie_zadano")
-                elif field.status == FIELD_STATUS_SKIPPED:
-                    value_text = tr("wizard.status.skipped")
-                else:
-                    value_text = value or tr("wizard.build.pusto")
-                # H3 (требование D): строка списка — тоже показ значения.
-                # Раньше огромное значение обрывалось «…» без пометки; теперь
-                # у него бюджет на весь экран и честная пометка о сокращении.
-                shown_value = current_value.clip_html(
-                    escape_html(value_text), limit=limits[offset - 1]
-                )
-                lines.append(
-                    tr_safe(
-                        "wizard.build.znachenie",
-                        number=number,
-                        title=_h(entry["title"]),
-                        shown=shown_value,
-                    )
-                )
+            blocks.append(tr("wizard.extras.no_extended"))
         if not shown and has_extended:
-            lines.extend(["", tr("wizard.extras.empty")])
-        return "\n".join(lines)
+            blocks.append(tr("wizard.extras.empty"))
+        head = join_blocks(blocks)
+        # Строки списка — плотный список: между ними один перевод строки,
+        # а от текстовой обвязки их отделяет пустая строка.
+        lines: list[str] = []
+        for offset, entry in enumerate(shown, start=1):
+            number = current_page * EXTRA_PAGE_SIZE + offset
+            field = entry["field"]
+            value = _full_value_text(field)
+            if field.status == FIELD_STATUS_MISSING:
+                value_text = tr("wizard.build.znachenie_zadano")
+            elif field.status == FIELD_STATUS_SKIPPED:
+                value_text = tr("wizard.status.skipped")
+            else:
+                value_text = value or tr("wizard.build.pusto")
+            # H3 (требование D): строка списка — тоже показ значения.
+            # Раньше огромное значение обрывалось «…» без пометки; теперь
+            # у него бюджет на весь экран и честная пометка о сокращении.
+            shown_value = current_value.clip_html(
+                escape_html(value_text), limit=limits[offset - 1]
+            )
+            lines.append(
+                tr_safe(
+                    "wizard.build.znachenie",
+                    number=number,
+                    title=_h(entry["title"]),
+                    shown=shown_value,
+                )
+            )
+        if not lines:
+            return head
+        body = "\n".join(lines)
+        return f"{head}\n\n{body}" if head else body
 
     screen_text = current_value.fit_screen(build, blocks=max(len(shown), 1))
 
@@ -4512,13 +4669,23 @@ async def _enter_extras(
     details,
     *,
     notice: str | None = None,
+    instance_id: int | None = None,
 ) -> int:
+    """
+    Открывает список доп. полей; `instance_id` — экземпляр редактора.
+
+    `instance_id` передаётся только входом из управления доставленным
+    анонсом: по нему путь редактора отделяется от истории конструктора и
+    «◀️ Назад» возвращает в управление анонсом, а не в «Текстовые поля».
+    """
     try:
         updated = _ensure_stage(update, context, details, WizardStage.EXTRAS)
     except AnnouncementError as exc:
         await _answer(update, str(exc), alert=True)
         return await _resume_current(update, context, notice=str(exc))
-    return await _render_extras(update, context, updated, notice=notice)
+    return await _render_extras(
+        update, context, updated, notice=notice, instance_id=instance_id
+    )
 
 
 async def _back_from_extras(
@@ -4540,7 +4707,14 @@ async def _back_from_extras(
     if rendered is not None:
         return rendered
     if details.publication_sent:
-        return await _render_field_list(update, context, details)
+        # Путь потерян (рестарт службы, старый экран) у доставленного анонса:
+        # безопасный экран этапа — само управление анонсом, а не список
+        # текстовых полей. Список — отдельный раздел редактора, и возврат из
+        # доп. полей в него вводил бы в заблуждение.
+        await _show_announcement_controls(
+            context, ctx.chat(update).id, details, instance=_instance_for(details)
+        )
+        return AW_PREVIEW
     # Живой черновик: предыдущий шаг мастера (список открывают из вопросов
     # или шага фото), а не главное меню.
     return await _render_template_screen(update, context, details)
@@ -4632,7 +4806,9 @@ def _extra_value_text(
         lines.append(tr("wizard.question.skipped"))
     else:
         lines.append(tr("wizard.question.missing"))
-    return "\n\n".join(lines)
+    # Пустая строка каталога (`wizard.question.missing` может быть пустой по
+    # решению владельца) не оставляет пустого блока с лишним отступом.
+    return join_blocks(lines)
 
 
 async def _render_extra_value_prompt(
@@ -4644,6 +4820,7 @@ async def _render_extra_value_prompt(
     editing: bool = True,
     error: str | None = None,
     notice: str | None = None,
+    instance_id: int | None = None,
 ) -> int:
     ui = _ui(context)
     _set_details(ui, details)
@@ -4652,7 +4829,10 @@ async def _render_extra_value_prompt(
     ui["active_brick_id"] = field.brick_id
     ui["active_source"] = "extra"
     ui["editing"] = editing
-    _nav_enter(ui, NAV_EXTRA_VALUE, brick_id=field.brick_id)
+    editor_instance = _editor_instance_id(ui, details, instance_id)
+    _nav_enter(
+        ui, NAV_EXTRA_VALUE, brick_id=field.brick_id, instance_id=editor_instance
+    )
 
     def build(limits: list[int]) -> str:
         lines = [_extra_value_text(extra, field, description_limit=limits[0])]

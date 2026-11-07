@@ -47,6 +47,8 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import (
         add_announcement_extra,
@@ -298,7 +300,7 @@ class RouteTests(unittest.TestCase):
         await h.callback(f"tp_condf:{template_id}:custom")
 
         await h.callback(f"tp_condback:{template_id}:mode")
-        self.assertIn("Как скрывать текст", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "templates.cond.mode_title")
         await h.callback(f"tp_condback:{template_id}:bricks")
         self.assertIn("Время окончания", _labels(h), "кирпичик не потерян")
         await h.callback(f"tp_condback:{template_id}:list")
@@ -322,7 +324,9 @@ class RouteTests(unittest.TestCase):
         # §40 шаг 3: фрагмент обязан существовать и включать кирпичик.
         await h.text("–[совсем_другой]")
         self.assertIn("Свой фрагмент", h.screen_text(), "автор остался на вводе")
-        self.assertIn("нет в тексте шаблона", h.screen_text(), "причина названа")
+        cat.assert_shows(
+            self, h.screen_text(), "templates.cond.custom_not_all", "причина названа"
+        )
         self.assertEqual(_parts(h, template_id), [])
 
         await h.text("–[время_окончания]")
@@ -857,7 +861,7 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(
             h.answer_texts()[answers_before:], [], "нет ложного «кирпичик исчез»"
         )
-        self.assertIn("Как скрывать текст", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "templates.cond.mode_title")
 
         # Пользователь без прав на место — отказ, ничего не меняется.
         answers_before = len(h.answer_texts())

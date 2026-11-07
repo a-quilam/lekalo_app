@@ -20,6 +20,8 @@ from __future__ import annotations
 import asyncio
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     import announcement_controls as controls
     from announcement_store import (
@@ -113,7 +115,7 @@ async def _deliver(
     # Вопросов может быть несколько (content со всеми кирпичиками): отвечаем,
     # пока мастер не перейдёт к шагу фотографий.
     for _attempt in range(5):
-        if "Фотографии анонса" in h.screen_text():
+        if cat.text("wizard.photos.title") in h.screen_text():
             break
         await h.text("Значение")
     if photos == 0:

@@ -30,6 +30,8 @@ from unittest.mock import AsyncMock, patch
 
 from telegram.error import BadRequest, Forbidden
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import get_announcement_draft
     from tests.integration_harness import (
@@ -144,7 +146,7 @@ async def _to_photo_step(h, *, value: str = TEXT):
     await _start_to_template(h, place_id)
     await _choose_personal(h, template_id)
     await h.text(value)
-    if "Фотографии анонса" not in h.screen_text():
+    if cat.text("wizard.photos.title") not in h.screen_text():
         raise AssertionError(f"Не шаг фото: {h.screen_text()}")
     return _latest_draft(h)
 
@@ -162,7 +164,7 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
         await h.text("/start")
         draft = await _to_photo_step(h)
         self.assertIn(
-            "⏭ Пропустить",
+            cat.text("buttons.wizard.skip"),
             [label for label, _data in h.screen_buttons()],
             "на шаге фото нет кнопки пропуска",
         )
@@ -277,9 +279,10 @@ class TextAnnouncementNoDuplicatesTests(unittest.TestCase):
         # Повторное завершение не отправляет пост: только ответ на callback.
         self.assertEqual(new_sends, [], "повторное завершение отправило сообщение")
         self.assertEqual(len(h.posts()), 2, "ровно две доставленные версии")
-        self.assertIn(
-            "уже отправлена",
+        cat.assert_shows(
+            self,
             " ".join(text for text in h.answer_texts() if text),
+            "wizard.finish_and_deliver.eta_versiya_anonsa_otpravlena",
             "нет сообщения «уже отправлена»",
         )
 

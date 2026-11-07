@@ -77,13 +77,20 @@ class CatalogFileTests(unittest.TestCase):
         self.assertEqual(report.warnings, ())
         self.assertEqual(report.keys, len(ui_texts.DEFAULTS))
 
-    def test_catalog_values_equal_defaults(self) -> None:
-        """U4a переносит тексты литерально: файл совпадает с дефолтами."""
+    def test_catalog_covers_defaults_but_is_the_canon(self) -> None:
+        """
+        2.5.5 §3: канон текстов — YAML, а не вшитые `DEFAULTS`.
+
+        Владелец правит файл, поэтому значения могут расходиться с дефолтами
+        (последние остаются безопасным запасным вариантом при битом файле).
+        Проверяется только полнота: файл валиден и покрывает все ключи кода,
+        а каждый ключ файла известен `DEFAULTS` (лишних строк нет).
+        """
         report = ui_texts.reload_texts(CATALOG_PATH)
         self.assertTrue(report.ok, report.errors)
+        self.assertEqual(report.keys, len(ui_texts.DEFAULTS))
         catalog = ui_texts.texts()
-        for key, value in ui_texts.DEFAULTS.items():
-            self.assertEqual(catalog[key], value, key)
+        self.assertEqual(sorted(catalog), sorted(ui_texts.DEFAULTS))
 
     def test_default_values_are_used_by_code_not_duplicated(self) -> None:
         """
@@ -112,10 +119,15 @@ class CatalogFileTests(unittest.TestCase):
             root / "utils" / "current_value.py",
             root / "utils" / "screen.py",
         ]
+        # Источник — действующий каталог (владелец правит YAML), а не
+        # `DEFAULTS`. Пустые строки (`wizard.question.optional` и т.п.) и
+        # короткие служебные значения вроде «Да» не проверяем: они законно
+        # встречаются как обычные литералы.
+        catalog = ui_texts.texts()
         default_values = {
             value
-            for key, value in ui_texts.DEFAULTS.items()
-            if len(value) > 6 and "{" not in value
+            for key, value in catalog.items()
+            if value.strip() and len(value) > 6 and "{" not in value
         }
         duplicates: list[str] = []
         for path in sources:
@@ -138,7 +150,7 @@ class CatalogFileTests(unittest.TestCase):
         from utils import calendar_view
 
         weekdays = [
-            ui_texts.DEFAULTS[f"calendar.weekday.{name}"]
+            ui_texts.texts()[f"calendar.weekday.{name}"]
             for name in (
                 "pn",
                 "vt",
@@ -169,7 +181,7 @@ class CatalogFileTests(unittest.TestCase):
         ):
             self.assertEqual(
                 calendar_view.MONTH_NAMES[number],
-                ui_texts.DEFAULTS[f"calendar.month.{name}"],
+                ui_texts.texts()[f"calendar.month.{name}"],
             )
 
     def test_required_keys_are_marked(self) -> None:
@@ -357,13 +369,15 @@ class TrRenderingTests(_TempCatalog):
 
     def test_placeholders_are_substituted(self) -> None:
         ui_texts.reload_texts(CATALOG_PATH)
+        header = ui_texts.texts()["wizard.question.header"]
         self.assertEqual(
             ui_texts.tr("wizard.question.header", step=2, total=5, title="Дата"),
-            "🧩 Вопрос 2 из 5: Дата",
+            header.format(title="Дата", step=2, total=5),
         )
+        counter = ui_texts.texts()["wizard.photos.counter"]
         self.assertEqual(
             ui_texts.tr("wizard.photos.counter", count=3, limit=10),
-            "Добавлено фото: 3 из 10.",
+            counter.format(count=3, limit=10),
         )
 
     def test_html_injection_is_escaped(self) -> None:
@@ -380,10 +394,11 @@ class TrRenderingTests(_TempCatalog):
 
     def test_html_key_keeps_own_markup_but_escapes_values(self) -> None:
         ui_texts.reload_texts(CATALOG_PATH)
+        template = ui_texts.texts()["wizard.question.description_html"]
         text = ui_texts.tr(
             "wizard.question.description_html", description="<b>не тег</b> & x"
         )
-        self.assertTrue(text.startswith("📝 <code>"))
+        self.assertIn(template.split("{", 1)[0], text, "разметка каталога потеряна")
         self.assertIn("&lt;b&gt;не тег&lt;/b&gt; &amp; x", text)
         # Разметка каталога осталась разметкой.
         self.assertIn("<code>", text)
@@ -400,7 +415,14 @@ class TrRenderingTests(_TempCatalog):
         ui_texts.reload_texts(CATALOG_PATH)
         with self.assertLogs("utils.ui_texts", level=logging.ERROR) as logs:
             text = ui_texts.tr("wizard.question.header", step=1, total=3)
-        self.assertEqual(text, "🧩 Вопрос 1 из 3: ")
+        # Не хватило переменной каталога — показывается ВШИТЫЙ дефолт этой же
+        # строки (не шаблон файла), поэтому ожидание строится из `DEFAULTS`.
+        self.assertEqual(
+            text,
+            ui_texts.DEFAULTS["wizard.question.header"].format(
+                title="", step=1, total=3
+            ),
+        )
         self.assertIn("title", "".join(logs.output))
 
     def test_missing_variable_never_raises(self) -> None:
@@ -418,26 +440,35 @@ class TrRenderingTests(_TempCatalog):
             self.assertEqual(ui_texts.tr("menu.такого_ключа_нет"), "")
 
     def test_none_value_is_empty_not_literal_none(self) -> None:
+        """
+        `None` — пустое значение, а не строка «None».
+
+        Смысл проверки не изменился: подстановка `None` даёт ровно то же,
+        что и пустая строка, по шаблону действующего каталога.
+        """
         ui_texts.reload_texts(CATALOG_PATH)
+        template = ui_texts.texts()["wizard.question.header"]
         self.assertEqual(
             ui_texts.tr("wizard.question.header", step=1, total=1, title=None),
-            "🧩 Вопрос 1 из 1: ",
+            template.format(title="", step=1, total=1),
         )
+        self.assertNotIn("None", ui_texts.tr("wizard.question.header", title=None))
 
     def test_tr_safe_does_not_double_escape(self) -> None:
         ui_texts.reload_texts(CATALOG_PATH)
+        template = ui_texts.texts()["wizard.question.current_value"]
         self.assertEqual(
             ui_texts.tr_safe(
                 "wizard.question.current_value", value="<b>жирный</b> & x"
             ),
-            "Текущее значение: <b>жирный</b> & x",
+            template.replace("{value}", "<b>жирный</b> & x"),
         )
 
     def test_texts_returns_copy(self) -> None:
         ui_texts.reload_texts(CATALOG_PATH)
         snapshot = ui_texts.texts()
         snapshot["menu.main"] = "подмена"
-        self.assertEqual(ui_texts.tr("menu.main"), ui_texts.DEFAULTS["menu.main"])
+        self.assertEqual(ui_texts.tr("menu.main"), ui_texts.texts()["menu.main"])
 
 
 class CatalogScreenTests(_TempCatalog):

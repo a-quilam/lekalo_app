@@ -36,6 +36,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import sessionmaker
 
 from migrations import DEFAULT_MIGRATIONS, LATEST_VERSION, run_migrations
+from tests import ui_texts_expect as cat
 from tests.stage19a_helpers import make_engine, temp_db_path
 
 try:
@@ -700,7 +701,12 @@ class TemplatesSectionNeverStartsAnnouncementTests(unittest.TestCase):
         await h.callback(f"tp_delete:{template_id}")
         await h.callback(f"tp_delete_yes:{template_id}")
 
-        self.assertIn("Удалить его нельзя", h.screen_text(), "нужен понятный отказ")
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "templates.module.shablon_nelzya_udalit_nemu",
+            "нужен понятный отказ",
+        )
         with h.session_factory() as session:
             self.assertIsNotNone(
                 get_personal_template(session, DEFAULT_USER_ID, template_id)
@@ -756,9 +762,9 @@ class TemplatesSectionNeverStartsAnnouncementTests(unittest.TestCase):
         await h.callback(f"tp_open:{personal_id}")
         # Подделка: удаление стандарта из карточки личного шаблона.
         await h.callback(f"tp_delete:{standard_id}")
-        self.assertIn("больше не работает", _alert(h).lower())
+        cat.assert_stale(self, _alert(h))
         await h.callback(f"tp_delete_yes:{personal_id}")
-        self.assertIn("больше не работает", _alert(h).lower())
+        cat.assert_stale(self, _alert(h))
         with h.session_factory() as session:
             self.assertIsNotNone(
                 get_personal_template(session, DEFAULT_USER_ID, personal_id)
@@ -853,7 +859,9 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
         self.assertNotIn(f"plm_admins:{foreign}", buttons)
         self.assertIn(f"plm_admin_request:{foreign}", buttons)
         await h.callback(f"plm_admin_request:{foreign}")
-        self.assertIn("Я администратор места", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "places.admin_request.ya_admin_mesta_naznachit"
+        )
         with h.session_factory() as session:
             self.assertEqual(
                 int(
@@ -889,9 +897,9 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
         await h.callback(f"plm_open:{foreign}")
         # Карточка открыта тем же id: проверяется именно роль, а не совпадение.
         await h.callback(f"plm_edit:{foreign}")
-        self.assertIn("больше не работает", _alert(h).lower())
+        cat.assert_stale(self, _alert(h))
         await h.callback(f"plm_admins:{foreign}")
-        self.assertIn("больше не работает", _alert(h).lower())
+        cat.assert_stale(self, _alert(h))
         from admin_state import load_admin_session
 
         self.assertIsNone(load_admin_session(DEFAULT_USER_ID))
@@ -920,9 +928,9 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
         before = load_place_session(DEFAULT_USER_ID)
         # Пагинация списка и выдачи неприменима в фазе карточки.
         await h.callback("plm_page:8")
-        self.assertIn("больше не работает", _alert(h).lower())
+        cat.assert_stale(self, _alert(h))
         await h.callback("plm_spage:8")
-        self.assertIn("больше не работает", _alert(h).lower())
+        cat.assert_stale(self, _alert(h))
         # Stale-кнопки не меняют состояние: всё ещё карточка того же места.
         after_stale = load_place_session(DEFAULT_USER_ID) or {}
         self.assertEqual(after_stale, before or {}, "состояние не сброшено")
@@ -945,7 +953,7 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("manage_places")
         await h.callback("plm_add")
-        self.assertIn("Создание анонса сейчас не начнётся", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.create_input.manage_hint")
         await h.text("Новая площадка R2")
         await h.callback("pl_create_confirm")
         await h.text("Москва")
@@ -953,7 +961,11 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
         await h.callback("pl_create_skip")
         await h.callback("pl_create_skip")
 
-        self.assertIn("✅ Место и его стандартный шаблон добавлены", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "places.create_place_from_state.mesto_dobavleno_vmeste_standart",
+        )
         self.assertIsNone(h.dialog_state(name=CONVERSATION_NAME))
         self.assertEqual(_drafts(h), 0)
         with h.session_factory() as session:
@@ -983,7 +995,7 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
         self.assertIn(f"pl_pick:{place_id}", _callbacks(h))
         await h.callback(f"pl_pick:{place_id}")
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_QUESTIONS_PHASE)
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         self.assertEqual(_drafts(h), 1)
 
 

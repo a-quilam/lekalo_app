@@ -47,7 +47,7 @@ from rich_message import (
     RichMessageError,
     validate_rich_message,
 )
-from utils.ui_texts import DEFAULTS
+from utils.ui_texts import tr
 
 # Точный набор ключей блоков официальной схемы. Лишний/недостающий ключ —
 # нарушение контракта, а не «мелкая деталь сериализации».
@@ -131,7 +131,7 @@ class HelpRichOfficialSchemaTests(unittest.TestCase):
         heading = _blocks(self.payload)[0]
         self.assertEqual(set(heading), HEADING_KEYS)
         self.assertEqual(heading["type"], "heading")
-        self.assertEqual(heading["text"], DEFAULTS["help.rich.title"])
+        self.assertEqual(heading["text"], tr("help.rich.title"))
         # size обязателен: 1 — самый крупный заголовок.
         self.assertEqual(heading["size"], 1)
         # Поля "heading" в схеме нет.
@@ -186,14 +186,14 @@ class HelpRichOfficialSchemaTests(unittest.TestCase):
     def test_help_specific_expectations_survive(self) -> None:
         """Семантика справки не потеряна при смене схемы (§51–52)."""
         blocks = _blocks(self.payload)
-        self.assertEqual(blocks[0]["text"], DEFAULTS["help.rich.title"])
+        self.assertEqual(blocks[0]["text"], tr("help.rich.title"))
         texts = [b["text"] for b in blocks if b["type"] == "paragraph"]
-        self.assertIn(DEFAULTS["help.rich.intro"], texts)
-        self.assertIn(DEFAULTS["help.rich.hint"], texts)
+        self.assertIn(tr("help.rich.intro"), texts)
+        self.assertIn(tr("help.rich.hint"), texts)
         sections = [b["summary"] for b in blocks if b["type"] == "details"]
         self.assertEqual(
             sections,
-            [DEFAULTS[f"help.rich.section{number}"] for number in range(1, 11)],
+            [tr(f"help.rich.section{number}") for number in range(1, 11)],
         )
 
     def test_commands_section_keeps_readable_text(self) -> None:
@@ -201,8 +201,7 @@ class HelpRichOfficialSchemaTests(unittest.TestCase):
         commands = next(
             b
             for b in _blocks(self.payload)
-            if b["type"] == "details"
-            and b["summary"] == DEFAULTS["help.rich.section10"]
+            if b["type"] == "details" and b["summary"] == tr("help.rich.section10")
         )
         list_block = next(b for b in commands["blocks"] if b["type"] == "list")
         texts = [
@@ -278,10 +277,10 @@ class AboutRichOfficialSchemaTests(unittest.TestCase):
 
     def test_semantics_survive_serialization(self) -> None:
         blocks = _blocks(self.payload)
-        self.assertEqual(blocks[0]["text"], DEFAULTS["about.rich.title"])
+        self.assertEqual(blocks[0]["text"], tr("about.rich.title"))
         self.assertEqual(
             [b["summary"] for b in blocks if b["type"] == "details"],
-            [DEFAULTS[f"about.rich.section{number}"] for number in range(1, 7)],
+            [tr(f"about.rich.section{number}") for number in range(1, 7)],
         )
 
 

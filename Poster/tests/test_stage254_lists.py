@@ -34,6 +34,8 @@ from __future__ import annotations
 
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import (
         choose_announcement_template,
@@ -481,14 +483,14 @@ class PlacesKeyboardTests(unittest.TestCase):
 
         # Навигация не сломана: поиск открывает ввод, «назад» возвращает хаб.
         await h.callback("pl_search")
-        self.assertIn("Введите название или", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.search_input")
         await h.callback("main_menu")
         await h.callback("places")
         await h.callback("pl_all")
-        self.assertIn("пока нет мест", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.all.empty")
         self.assertIn((ADD_PLACE, "pl_add"), h.screen_buttons())
         await h.callback("main_menu")
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
 
     @scenario_test
     async def test_announcement_place_picker_keeps_one_row(self, h) -> None:
@@ -505,12 +507,12 @@ class PlacesKeyboardTests(unittest.TestCase):
         )
         # Навигация не сломана.
         await h.callback("pl_pick_search")
-        self.assertIn("Введите название или", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "places.pick_search_input")
         await h.callback("main_menu")
         await h.text("/start")
         await h.callback("pick_place")
         await h.callback("main_menu")
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
 
     @scenario_test
     async def test_wizard_place_list_keeps_its_own_actions(self, h) -> None:
@@ -522,7 +524,9 @@ class PlacesKeyboardTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("aw_start")
         await h.callback("aw_new")
-        self.assertIn("Шаг 1. Выберите место", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.place_hub.shag_1_vyberite_mesto"
+        )
         search_row = _row_with(h, "aw_place_search")
         self.assertIsNotNone(search_row)
         assert search_row is not None
@@ -530,8 +534,14 @@ class PlacesKeyboardTests(unittest.TestCase):
         self.assertEqual(_data(h, "aw_place_all:"), ["aw_place_all:0"])
         self.assertEqual(_data(h, "pl_add"), [], "добавление места не появилось")
         await h.callback("aw_place_all:0")
-        self.assertIn("В справочнике пока нет мест", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "admin.places.v_spravochnike_poka_net")
         await h.callback("aw_place_search")
-        self.assertIn("Поиск места", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.render_search_prompt.poisk_mesta_otpravte_nazvanie",
+        )
         await h.callback("aw_place_back")
-        self.assertIn("Шаг 1. Выберите место", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.place_hub.shag_1_vyberite_mesto"
+        )

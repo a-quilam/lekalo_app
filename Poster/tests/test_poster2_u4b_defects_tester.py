@@ -37,6 +37,7 @@ try:
     from handlers.announcement_wizard import CONVERSATION_NAME
     from models import PlaceAdmin, PlaceInviteLink, utcnow
     from place_store import create_place
+    from tests import ui_texts_expect as cat
     from tests.integration_harness import (
         DEFAULT_USER_ID,
         HARNESS_IMPORT_ERROR,
@@ -141,7 +142,9 @@ class DuplicateDraftOnSecondStartTests(unittest.TestCase):
             h.screen_text(),
             "введённое значение не должно теряться при повторном открытии ссылки",
         )
-        self.assertIn("Текущее значение: Мой концерт", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.question.current_value", value="Мой концерт"
+        )
 
 
 @unittest.skipIf(DEFECTS_IMPORT_ERROR, DEFECTS_IMPORT_ERROR or "")

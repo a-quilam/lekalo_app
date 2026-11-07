@@ -14,6 +14,9 @@ from datetime import date
 
 from sqlalchemy import func, select
 
+from tests import ui_texts_expect as cat
+from utils.ui_texts import tr
+
 try:
     from announcement_store import (
         FIELD_STATUS_KNOWN,
@@ -70,6 +73,7 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 OTHER_TG = 8_270_002
 # §18 (2.5): вместо экрана «✅ Анонс готов» после доставки сразу управление.
+_PHOTOS_TITLE = tr("wizard.photos.title")
 EDIT_TITLE = "✏️ Изменить анонс"
 TemplateSpec = tuple[str, str, str, dict[str, object]]
 
@@ -257,10 +261,17 @@ async def _confirm_place(h) -> None:
 
 
 async def _start_to_template(h, place_id: int, query: str = "Дом") -> None:
+    """
+    Экран выбора шаблона опознаётся по его кнопкам, а не по тексту.
+
+    Формулировку заголовка владелец правит в `config/ui_texts.yaml`, поэтому
+    дословная строка — не признак экрана. Признак — кнопки шаблонов
+    (`aw_template:`), по которым дальше и идёт сценарий.
+    """
     await _open_place(h, place_id, query)
     await _confirm_place(h)
-    if "Шаг 2. Выберите шаблон" not in h.screen_text():
-        raise AssertionError(f"Не экран шаблона: {h.screen_text()}")
+    if not _callbacks(h, "aw_template"):
+        raise AssertionError(f"Не экран выбора шаблона: {h.screen_text()[:200]!r}")
 
 
 async def _choose_personal(h, template_id: int) -> None:
@@ -275,8 +286,8 @@ async def _no_photos(h) -> None:
     — единственный финал этого шага (кнопки «Готово» нет). Доставка как
     функция не менялась: её покрытие остаётся в тестах ниже.
     """
-    if "Фотографии анонса" not in h.screen_text():
-        raise AssertionError(f"Не шаг фото: {h.screen_text()}")
+    if not _callbacks(h, "aw_photo_none"):
+        raise AssertionError(f"Не шаг фото: {h.screen_text()[:200]!r}")
     await h.callback(_callback(h, "aw_photo_none"))
 
 
@@ -485,16 +496,31 @@ class AnnouncementWizardPlaceTests(unittest.TestCase):
 
         await _open_new(h)
         await h.callback("aw_place_all:0")
-        self.assertIn("Всего: 10", h.screen_text())
-        self.assertIn("Страница 1", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.render_all_places.vsego_stranica",
+            total=10,
+            value=1,
+        )
         await h.callback(_callback(h, "aw_place_all", ":1"))
-        self.assertIn("Страница 2", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.render_all_places.vsego_stranica",
+            total=10,
+            value=2,
+        )
         await h.callback("aw_place_back")
-        self.assertIn("Шаг 1. Выберите место", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.place_hub.shag_1_vyberite_mesto"
+        )
 
         await h.callback("aw_place_search")
         await h.text("Тестовое")
-        self.assertIn("Найдено мест: 9", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.render_search_results.naydeno_mest", total=9
+        )
         await h.callback(_callback(h, "aw_place_results", ":1"))
         # Poster 2.5 §14: пять результатов на страницу — на второй странице
         # из девяти найденных остаются четыре.
@@ -506,11 +532,15 @@ class AnnouncementWizardPlaceTests(unittest.TestCase):
         self.assertIn("Дом культуры", h.screen_text())
         self.assertIn("совпадение: ДК «Тестовый»", h.screen_text())
         await h.callback(f"aw_place_open:{target_id}")
-        self.assertIn("Проверьте место", h.screen_text())
-        self.assertIn("Адрес и ссылка из справочника", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "wizard.place_card.proverte_mesto")
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.place_card.izvestnye_adres_ssylka_budut"
+        )
 
         await h.callback("aw_place_back")
-        self.assertIn("Результаты поиска", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.render_search_results.rezultaty_poiska"
+        )
         # Poster 2.5 §14: у места семь названий (каноническое, псевдоним и
         # пять добавленных) — это длинный однотипный список, значит пять
         # записей на страницу и строка `◀️ | 1/2 | ▶️`.
@@ -530,7 +560,11 @@ class AnnouncementWizardPlaceTests(unittest.TestCase):
         self.assertTrue(
             any("ДК «Тестовый»" in label for label, _data in h.screen_buttons())
         )
-        self.assertIn("Новое место при этом не создаётся", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.render_place_names.vyberite_kanonicheskoe",
+        )
         self.assertEqual(len(_callbacks(h, "aw_place_name_pick")), 5)
         self.assertIn(("1/2", "noop:1:2"), h.screen_buttons())
         self.assertNotIn("◀️", [label for label, _data in h.screen_buttons()])
@@ -546,7 +580,9 @@ class AnnouncementWizardPlaceTests(unittest.TestCase):
         await h.callback(_callback(h, "aw_place_name_pick", f":{alias_id}:0"))
         self.assertIn("ДК «Тестовый» (альтернативное)", h.screen_text())
         await _confirm_place(h)
-        self.assertIn("Шаг 2. Выберите шаблон", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.render_template.shag_2_vyberite_shablon"
+        )
 
         draft = _latest_draft(h)
         self.assertEqual(draft.place_id, target_id)
@@ -614,7 +650,7 @@ class AnnouncementWizardTemplateTests(unittest.TestCase):
 
         await h.text("Значение")
         # Poster 2.0 S3 п.6: последний кирпичик ведёт на шаг фотографий.
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(_PHOTOS_TITLE, h.screen_text())
         self.assertTrue(_callbacks(h, "aw_photo_none"))
         self.assertFalse(_callbacks(h, "aw_send"))
         await _no_photos(h)
@@ -673,16 +709,18 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
         await _start_to_template(h, place_id)
         await _choose_personal(h, template_id)
 
-        self.assertIn("Вопрос 1 из 8", h.screen_text())
-        self.assertIn("Отправьте короткий текст", h.screen_text())
-        self.assertIn("Это поле можно пропустить", h.screen_text())
-        self.assertIn("Поле пока не заполнено", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 8))
+        cat.assert_shows(self, h.screen_text(), "wizard.hint.short_text")
+        # 2.5.5 §3: в каталоге optional/missing пусты — блоков-разделителей
+        # с этими подсказками на экране быть не должно (пустых строк тоже).
+        cat.assert_no_empty_block(self, h.screen_text(), "wizard.question.optional")
+        cat.assert_no_empty_block(self, h.screen_text(), "wizard.question.missing")
         await h.text("Коротко")
 
-        self.assertIn("Вопрос 2 из 8", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 8))
         await h.text("Длинный текст")
 
-        self.assertIn("Вопрос 3 из 8", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(3, 8))
         self.assertIn("Выберите дату в календаре", h.screen_text())
         # U2a: компактный календарь уже на вопросе — быстрые даты и месяцы.
         self.assertTrue(_callback(h, "aw_calday"))
@@ -691,31 +729,31 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
         chosen_day = date.fromisoformat(day_callback.rsplit(":", 1)[-1])
         await h.callback(day_callback)
 
-        self.assertIn("Вопрос 4 из 8", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(4, 8))
         await h.text("18:30")
 
-        self.assertIn("Вопрос 5 из 8", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(5, 8))
         invalid_url = await h.text("not-a-url")
         self.assertIn("⚠️", h.screen_text())
-        self.assertIn("Вопрос 5 из 8", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(5, 8))
         self.assertNotIn(invalid_url.effective_message.message_id, h.deleted_ids())
         await h.text("example.com/event")
 
-        self.assertIn("Вопрос 6 из 8", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(6, 8))
         invalid_number = await h.text("много")
         self.assertIn("⚠️", h.screen_text())
-        self.assertIn("Вопрос 6 из 8", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(6, 8))
         self.assertNotIn(invalid_number.effective_message.message_id, h.deleted_ids())
         await h.text("42")
 
-        self.assertIn("Вопрос 7 из 8", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(7, 8))
         await h.callback(_callback(h, "aw_choice", ":0"))
-        self.assertIn("Вопрос 8 из 8", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(8, 8))
         await h.callback(_callback(h, "aw_choice", ":0"))
         await h.callback(_callback(h, "aw_choice", ":1"))
         await h.callback(_callback(h, "aw_choice_done"))
         # Poster 2.0 S3 п.6: после последнего кирпичика — шаг фото.
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(_PHOTOS_TITLE, h.screen_text())
         self.assertTrue(_callbacks(h, "aw_photo_none"))
         self.assertFalse(_callbacks(h, "aw_send"))
         self.assertEqual(h.posts(), [])
@@ -742,13 +780,17 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
 
         # U2b: обзор запрашивается по callback в состоянии AW_PREVIEW.
         await _preview(h)
-        self.assertIn("Всё заполнено. Анонс собирается", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "wizard.ready.collecting")
         await h.callback(_callback(h, "aw_save"))
         self.assertEqual(h.posts(), posts_after_delivery)
         # §18 (2.5): доставленный анонс «сохранить» не меняет: короткий
         # ответ о том, что отправленная версия не тронута, и список полей
         # на самом управлении (2.5.3 §5) вместо служебного экрана.
-        self.assertIn("Отправленный анонс не менялся", h.answer_texts()[-1])
+        cat.assert_shows(
+            self,
+            h.answer_texts()[-1],
+            "wizard.render_preview.chernovik_sohranen_otpravlennyy",
+        )
         self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не показан")
 
         draft = _latest_draft(h)
@@ -806,7 +848,7 @@ class AnnouncementWizardExtrasTests(unittest.TestCase):
         await h.text("Главное")
         # Poster 2.0 S3 п.6: последний ответ ведёт на шаг фото; extras —
         # уже после доставки, с экрана управления.
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(_PHOTOS_TITLE, h.screen_text())
         self.assertEqual(h.posts(), [])
         await _no_photos(h)
         self.assertEqual(h.dialog_state(name=CONVERSATION_NAME), AW_PREVIEW)
@@ -854,7 +896,8 @@ class AnnouncementWizardExtrasTests(unittest.TestCase):
         self.assertTrue(found, f"Личный кирпичик не найден: {h.screen_buttons()}")
         await h.callback(_callback(h, "aw_exedit", f":{extra_id}"))
         # H2: секции и позиции больше нет — кирпичик сразу ждёт значение.
-        self.assertIn("Поле пока не заполнено", h.screen_text())
+        # Блок «Поле пока не заполнено» в каталоге пуст и не оставляет дыры.
+        cat.assert_no_empty_block(self, h.screen_text(), "wizard.question.missing")
         await h.text("Дополнительно")
         self.assertIn("Доп 0", h.screen_text())
         self.assertIn("Дополнительно", h.screen_text())
@@ -984,7 +1027,11 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         # отправленная версия не тронута. 2.5.3 §5: служебного экрана нет,
         # поэтому пояснение приходит ОДНИМ ответом на callback, а в чате
         # снова список текстовых полей.
-        self.assertIn("Отправленный анонс не менялся", h.answer_texts()[-1])
+        cat.assert_shows(
+            self,
+            h.answer_texts()[-1],
+            "wizard.render_preview.chernovik_sohranen_otpravlennyy",
+        )
         self.assertNotEqual("Сохранено.", h.answer_texts()[-1])
         self.assertTrue(h.live_callbacks("anf_sel:"), "список полей не показан")
         posts_after_save = h.posts()
@@ -999,7 +1046,9 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         await h.restart()
         await h.text("/start")
         await h.callback("aw_start")
-        self.assertIn("Черновик можно продолжить", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.home.nezavershennye_anonsy_mozhno"
+        )
         self.assertIn("Дом культуры", h.screen_text())
         await h.callback(_callback(h, "aw_open", f":{draft_id}"))
         _assert_delivered_controls(h)
@@ -1045,8 +1094,9 @@ class AnnouncementWizardPersistenceTests(unittest.TestCase):
         await _no_photos(h)
         _assert_delivered_controls(h)
         await _preview(h)
-        self.assertIn("Здесь показана часть текста", h.screen_text())
-        self.assertIn("Полный текст сохранён в черновике", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.preview_block.predprosmotr_sokraschen_polnye"
+        )
         self.assertNotIn(long_value, h.screen_text())
 
         draft = _latest_draft(h)
@@ -1083,7 +1133,7 @@ class AnnouncementWizardSafetyTests(unittest.TestCase):
         await h.callback(stale_skip)
         # §18 (2.5): предупреждение об устаревшей кнопке уходит ответом на
         # callback, а управление анонсом остаётся рабочим (2.5.2 §2).
-        self.assertIn("Данные изменились", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
         # 2.5.3 §5: после устаревшего callback автор остаётся на управлении
         # анонсом — открытый список полей. «◀️ Назад» возвращает кнопки
         # экземпляра (`anp_`), ни сообщение, ни версия не меняются.
@@ -1106,7 +1156,7 @@ class AnnouncementWizardSafetyTests(unittest.TestCase):
 
         # Повторное нажатие того же устаревшего callback ничего не меняет.
         await h.callback(stale_skip)
-        self.assertIn("Данные изменились", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
         with h.session_factory() as session:
             fields = build_announcement_fields(
                 session,
@@ -1158,8 +1208,11 @@ class AnnouncementWizardSafetyTests(unittest.TestCase):
             )
 
         await _preview(h)
-        self.assertIn("Не удалось собрать текст для просмотра", h.screen_text())
-        self.assertIn("Черновик сохранён, данные на месте", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.render_preview_error.obzor_anonsa_udalos_sobrat",
+        )
         self.assertIn("Обновить", h.screen_text() + str(h.screen_buttons()))
         draft = _latest_draft(h)
         # Анонс уже доставлен: сбой пересборки не откатывает готовый статус.
@@ -1169,8 +1222,8 @@ class AnnouncementWizardSafetyTests(unittest.TestCase):
         retry = _callback(h, "aw_apply")
         self.assertIn(f":{draft.id}:{draft.revision}", retry)
         await h.callback(retry)
-        self.assertIn("Не удалось собрать", h.screen_text())
-        self.assertNotIn("Данные изменились", h.screen_text())
+        self.assertIn("Не получилось собрать", h.screen_text())
+        cat.assert_not_shows(self, h.screen_text(), "errors.stale.wizard")
 
 
 @unittest.skipIf(
@@ -1210,18 +1263,22 @@ class AnnouncementWizardStandardTemplateTests(unittest.TestCase):
 
         # Назад из первого вопроса показывает выбранный снимок, а не выбор.
         await h.callback(_callback(h, "aw_qback"))
-        self.assertIn("Выбран шаблон", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.selected_template.vybrannyy_shablon_tip_versiya",
+        )
         self.assertFalse(_callbacks(h, "aw_template"))
         await h.callback(_callback(h, "aw_cont"))
         for _field in askable:
             self.assertNotIn("Название места", h.screen_text())
-            self.assertIn("Вопрос", h.screen_text())
+            cat.assert_shows(self, h.screen_text(), "wizard.question.header")
             self.assertIn("Пропустить", str(h.screen_buttons()))
             await h.callback(_callback(h, "aw_qskip"))
 
         # Poster 2.0 S3 п.6: последний пропуск ведёт на шаг фото, и уже
         # «Без фотографий» завершает анонс.
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(_PHOTOS_TITLE, h.screen_text())
         self.assertTrue(_callbacks(h, "aw_photo_none"))
         self.assertFalse(_callbacks(h, "aw_send"))
         await _no_photos(h)

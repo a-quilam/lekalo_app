@@ -32,6 +32,8 @@ from unittest.mock import patch
 from sqlalchemy import select
 from sqlalchemy import text as sql_text
 
+from tests import ui_texts_expect as cat
+
 try:
     from telegram.error import BadRequest
 
@@ -704,7 +706,7 @@ class ChatApplicationTests(R4TesterCase):
         await h.text("/start", user_id=OWNER)
         await h.callback(f"tp_pick:{template_id}", user_id=OWNER)
         await h.callback(find(h, "aw_qskip"), user_id=OWNER)
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         await h.photo("alb-0", media_group_id="r4-album", user_id=OWNER)
         await h.photo("alb-1", media_group_id="r4-album", user_id=OWNER)
         await asyncio.sleep(0.5)
@@ -738,7 +740,9 @@ class ChatApplicationTests(R4TesterCase):
             ["alb-0", "alb-1"],
         )
         renders = [
-            call for call in h.screens() if "Фотографии анонса" in record_text(call)
+            call
+            for call in h.screens()
+            if cat.text("wizard.photos.title") in record_text(call)
         ]
         self.assertEqual(renders, [], "альбом создал лишний служебный экран")
 
@@ -920,7 +924,9 @@ class HumorTests(R4TesterCase):
         with patch("utils.ui_humor.pick_variant", return_value=ui_humor.HUMOR_JOKES[0]):
             await self.walk(h, source.id, place_id)
         text = h.screen_text()
-        self.assertIn("Сейчас отправить нельзя", text)
+        cat.assert_shows(
+            self, text, "bricks.proposal_preview.otpravit_seychas_nelzya_kod_html"
+        )
         self.assertFalse(has(h, "bp_send"), "отправка при занятом коде недоступна")
         for variant in ui_humor.HUMOR_JOKES:
             self.assertNotIn(variant, text, "шутка в предупреждении")
@@ -937,7 +943,7 @@ class HumorTests(R4TesterCase):
         text = h.screen_text()
         for variant in ui_humor.HUMOR_JOKES:
             self.assertNotIn(variant, text, "юмор не отключился флагом")
-        self.assertIn("Фотографии анонса", text, "экран шага фото сломан")
+        self.assertIn(cat.text("wizard.photos.title"), text, "экран шага фото сломан")
 
 
 class ForgeryAndIdorTests(R4TesterCase):
@@ -970,8 +976,9 @@ class ForgeryAndIdorTests(R4TesterCase):
         for data in ("bp_start:0", "bp_start:", "bp_start:abc", "bp_page:-1"):
             await h.callback(data, user_id=OWNER)
         self.assertEqual(h.screen_text(), before, "битая кнопка изменила экран")
-        self.assertTrue(
-            any("больше не работает" in text.lower() for text in alert_texts(h)),
+        cat.assert_stale(
+            self,
+            " ".join(alert_texts(h)),
             f"нет ответа на битую кнопку: {alert_texts(h)!r}",
         )
 
@@ -1009,7 +1016,9 @@ class ForgeryAndIdorTests(R4TesterCase):
         self.ensure_user(h, STRANGER)
         await self.open_hub(h, user_id=STRANGER)
         await h.callback("bp_mine", user_id=STRANGER)
-        self.assertIn("Вы пока не отправляли предложения", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "bricks.proposal_list.vy_otpravlyali_predlozheniy"
+        )
 
         # Прямой id чужого предложения на экране списка.
         await h.callback(f"bp_open:{proposal_id}", user_id=STRANGER)

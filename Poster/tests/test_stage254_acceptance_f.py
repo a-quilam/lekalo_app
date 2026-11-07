@@ -54,6 +54,7 @@ import unittest
 from telegram import MessageEntity
 
 from template_parser import BrickNode, LinkNode, parse_template, render_to_html
+from tests import ui_texts_expect as cat
 from utils.tg_html import entities_to_template_markup
 
 LINE = "[место]([ссылка_места])"
@@ -573,7 +574,9 @@ class StandardTemplateLifecycleTests(unittest.TestCase):
         await h.callback(f"tp_edit:{template_id}")
         draft = _draft_block(h.screen_text())
         await h.text(draft)
-        self.assertIn("Проверьте текст перед сохранением", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "templates.build.predprosmotr_podtverzhdenie"
+        )
         await h.callback("tp_save")
 
         self.assertIn("Текст остался прежним", h.screen_text())

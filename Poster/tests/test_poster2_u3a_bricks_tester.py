@@ -22,6 +22,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from tests import ui_texts_expect as cat
+
 try:
     from brick_store import archive_personal_brick, create_personal_brick
     from models import BrickProposal
@@ -198,7 +200,7 @@ class HubRowOnlyTesterCase(unittest.TestCase):
         screen = h.screen_text()
         self.assertNotIn("bp_start", datas(h))
         self.assertNotIn("«📨» в его строке", screen)
-        self.assertIn("Можно создать, например", screen)
+        cat.assert_shows(self, screen, "bricks.hub.empty")
 
         await h.callback("bp_start", user_id=OWNER)
         self.assertTrue(alerts(h))
@@ -212,8 +214,9 @@ class HubRowOnlyTesterCase(unittest.TestCase):
         await h.callback("bp_mine", user_id=OWNER)
         screen = h.screen_text()
         self.assertIn("Мои предложения", screen)
-        self.assertIn("«📨»", screen)
-        self.assertIn("рядом с нужным кирпичиком", screen)
+        cat.assert_shows(
+            self, screen, "bricks.proposal_list.vy_otpravlyali_predlozheniy"
+        )
         self.assertNotIn("Предложить кирпичик", screen)
 
 

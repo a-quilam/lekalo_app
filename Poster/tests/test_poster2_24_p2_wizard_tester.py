@@ -46,6 +46,9 @@ from __future__ import annotations
 
 import unittest
 
+from tests import ui_texts_expect as cat
+from utils.ui_texts import tr
+
 try:
     from announcement_store import (
         add_announcement_extra,
@@ -82,14 +85,14 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 # --- литералы владельца (каталог ui_texts.yaml) ------------------------------
 
 EXTRAS_TITLE = "🧩 Дополнительные поля"
-QUESTION_PREFIX = "🧩 Вопрос"
-PHOTO_STEP = "📷 Фотографии анонса"
+
+PHOTO_STEP = tr("wizard.photos.title")
 # §18 (2.5): итогового экрана «✅ Анонс готов» нет — после доставки редактор.
 DELIVERED_HEAD = "✏️ Изменить анонс"
 EDIT_HEAD = "✏️ Изменить анонс"
-TEMPLATE_HEAD = "🧩 Выбран шаблон"
+TEMPLATE_HEAD = cat.fragment("wizard.selected_template.vybrannyy_shablon_tip_versiya")
 MANAGER_HEAD = "🧩 Поля анонса"
-MENU_FRAGMENT = "Что хотите сделать?"
+MENU_FRAGMENT = tr("menu.main")
 INTERNAL_FRAGMENT = "Что-то пошло не так"
 
 LABEL_SKIP = "⏭ Пропустить"
@@ -105,9 +108,7 @@ LABEL_DELIVERED_MENU = "🏠 В меню"
 # 2.5.3 §5: прежней подписи «📝 Данные» больше нет — экран открывает список
 # текстовых полей на самом управлении анонса.
 LABEL_DATA_REMOVED = "📝 Данные"
-CURRENT_VALUE = "Текущее значение:"
-
-MISSING_FRAGMENT = "не заполнено"
+CURRENT_VALUE = cat.text("wizard.question.current_value", value="")
 
 
 # --- наблюдение за экраном ---------------------------------------------------
@@ -514,14 +515,16 @@ class ExtrasListTests(unittest.TestCase):
             "должен открыться экран значения выбранного кирпичика",
         )
         self.assertIn(
-            LABEL_SKIP,
+            cat.text("buttons.wizard.skip"),
             _labels(h),
             "на экране значения доп. поля нужна кнопка «⏭ Пропустить»",
         )
-        self.assertTrue(
-            any(MISSING_FRAGMENT in h.screen_text() for _ in [0]),
-            f"незаполненное поле должно быть честно показано незаполненным: "
-            f"{h.screen_text()[:400]!r}",
+        # 2.5.5 §3: строка `wizard.question.missing` в каталоге пуста, поэтому
+        # пустого блока-разделителя на экране быть не должно.
+        self.assertNotIn(
+            "\n\n\n",
+            h.screen_text(),
+            f"пустая строка каталога оставила разрыв: {h.screen_text()[:400]!r}",
         )
 
         await h.text("ADD")
@@ -814,14 +817,18 @@ class QuestionScreenTests(unittest.TestCase):
                 [],
                 f"{label}: на экране вопроса только «Назад» | «Пропустить»",
             )
-            self.assertIn(LABEL_SKIP, labels, f"{label}: нужна «⏭ Пропустить»")
+            self.assertIn(
+                cat.text("buttons.wizard.skip"),
+                labels,
+                f"{label}: нужна «⏭ Пропустить»",
+            )
             self.assertTrue(
                 any(_is_back(*item) for item in _flat_buttons(h)),
                 f"{label}: нужна «◀️ Назад»",
             )
 
         # Пустой вопрос.
-        self.assertIn(QUESTION_PREFIX, h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "wizard.question.header")
         assert_clean("пустое поле")
 
         # Заполненное поле (возврат с шага фото).
@@ -829,7 +836,7 @@ class QuestionScreenTests(unittest.TestCase):
         await h.text("5")
         self.assertIn(PHOTO_STEP, h.screen_text())
         await h.callback(_callback(h, "aw_photo_back"))
-        self.assertIn(QUESTION_PREFIX, h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "wizard.question.header")
         self.assertIn(CURRENT_VALUE, h.screen_text())
         assert_clean("заполненное поле")
 
@@ -870,17 +877,17 @@ class SkipSemanticsTests(unittest.TestCase):
         """Пропуск заполненного поля сохраняет значение и идёт дальше."""
         draft, bricks = await self._two_questions(h)
         await h.text("M")
-        self.assertIn("Вопрос 2 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2))
         await h.callback(_callback(h, "aw_qback"))
-        self.assertIn("Вопрос 1 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 2))
 
         posts_before = len(h.post_records())
         await h.callback(_callback(h, "aw_qskip"))
         _assert_no_internal(self, h, "пропуск заполненного поля")
 
-        self.assertIn(
-            "Вопрос 2 из 2",
+        self.assertRegex(
             h.screen_text(),
+            cat.question_re(2, 2),
             "после пропуска — следующий вопрос",
         )
         state = _value(h, draft.id, bricks["main"])
@@ -905,11 +912,11 @@ class SkipSemanticsTests(unittest.TestCase):
     async def test_s9_skip_on_empty_question_stays_empty_and_moves_on(self, h):
         """Пропуск пустого поля: значение не задано, вопрос пройден."""
         draft, bricks = await self._two_questions(h)
-        self.assertIn("Вопрос 1 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 2))
         await h.callback(_callback(h, "aw_qskip"))
         _assert_no_internal(self, h, "пропуск пустого поля")
 
-        self.assertIn("Вопрос 2 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2))
         state = _value(h, draft.id, bricks["main"])
         self.assertTrue(
             state is None or state[0] == "empty_optional",
@@ -946,7 +953,7 @@ class SkipSemanticsTests(unittest.TestCase):
         self.assertIsNotNone(state)
         self.assertEqual(state[0], "valid")
         self.assertEqual(state[1].get("text"), "N")
-        self.assertIn("Вопрос 2 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2))
 
 
 # --- IV. «Пропустить» на экране значения доп. поля --------------------------
@@ -1124,7 +1131,7 @@ class BackNavigationTests(unittest.TestCase):
         )
         await _start_to_template(h, place_id)
         await _choose_personal(h, template_id)
-        self.assertIn(QUESTION_PREFIX, h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "wizard.question.header")
 
         await h.callback(_callback(h, "aw_qback"))
         _assert_no_internal(self, h, "назад с первого вопроса")
@@ -1225,7 +1232,7 @@ class BackNavigationTests(unittest.TestCase):
         await _start_to_template(h, place_id)
         await _choose_personal(h, template_id)
         await h.text("M")
-        self.assertIn("Вопрос 2 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2))
         draft = _latest_draft(h)
         back_data = _callback(h, "aw_qback")
 
@@ -1238,12 +1245,13 @@ class BackNavigationTests(unittest.TestCase):
             h.screen_text(),
             "после рестарта «Назад» не выбрасывает в главное меню",
         )
+        screen = h.screen_text()
         self.assertTrue(
-            QUESTION_PREFIX in h.screen_text()
-            or PHOTO_STEP in h.screen_text()
-            or TEMPLATE_HEAD in h.screen_text(),
+            cat.shows(screen, "wizard.question.header")
+            or PHOTO_STEP in screen
+            or TEMPLATE_HEAD in screen,
             "«Назад» без стека ведёт на безопасный актуальный экран шага: "
-            f"{h.screen_text()[:300]!r}",
+            f"{screen[:300]!r}",
         )
         state = _value(h, draft.id, bricks["main"])
         self.assertIsNotNone(state, "черновик и его значения не теряются")

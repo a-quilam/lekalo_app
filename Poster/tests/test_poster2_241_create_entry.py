@@ -25,6 +25,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from tests import ui_texts_expect as cat
+
 try:
     from announcement_store import list_announcement_drafts
     from handlers import places as places_module
@@ -247,7 +249,7 @@ class PlacePickerEntryTests(unittest.TestCase):
         await h.text("/start")
         await h.callback("pick_place")
         await h.callback(_callback(h, "main_menu"))
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         self.assertEqual(_rows(h), MENU_ROWS)
 
 
@@ -345,7 +347,7 @@ class PlacePickerBehaviourTests(unittest.TestCase):
         await h.callback("pick_place")
         await h.callback(f"pl_pick:{place_id}")
 
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         self.assertEqual(_draft_count(h), 1, "тап по месту не создал черновик")
 
     @scenario_test

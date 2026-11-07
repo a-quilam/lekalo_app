@@ -45,6 +45,7 @@ from models import (
 )
 from place_store import create_place
 from template_store import create_personal_template
+from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     HARNESS_IMPORT_ERROR,
     Harness,
@@ -496,7 +497,11 @@ class BrickProposalFlowTests(unittest.TestCase):
         await h.callback("bp_target:place", user_id=OWNER_TG)
         await h.callback(f"bp_place:{place_id}", user_id=OWNER_TG)
         self.assertNotIn("bp_send", " ".join(self.callbacks(h)))
-        self.assertIn("нельзя", h.screen_text().lower())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "bricks.proposal_preview.otpravit_seychas_nelzya_kod_html",
+        )
         self.assertEqual(self._proposal_count(h), 0)
 
     @scenario_test
@@ -561,7 +566,9 @@ class BrickProposalFlowTests(unittest.TestCase):
         self, h: Harness
     ) -> None:
         await self.open_my(h)
-        self.assertIn("пока не отправляли", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "bricks.proposal_list.vy_otpravlyali_predlozheniy"
+        )
         place_id = self.make_place(h, "Зал статусов")
         source = self.make_personal(h, OWNER_TG, code="статус_26")
         pending_id = self.direct_proposal(h, OWNER_TG, source.id, place_id=place_id)
@@ -661,7 +668,9 @@ class BrickProposalFlowTests(unittest.TestCase):
         source = self.make_personal(h, OWNER_TG, code="приват_ui_26")
         proposal_id = self.direct_proposal(h, OWNER_TG, source.id, place_id=place_id)
         await self.open_my(h, OTHER_TG)
-        self.assertIn("пока не отправляли", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "bricks.proposal_list.vy_otpravlyali_predlozheniy"
+        )
         await h.callback(f"bp_open:{proposal_id}", user_id=OTHER_TG)
         self.assertIn("не найдено", h.screen_text().lower())
         self.assertEqual(self.proposal_status(h, proposal_id), "pending")
@@ -890,7 +899,11 @@ class BrickProposalFlowTests(unittest.TestCase):
         await self.open_place_proposal(h, place_id, proposal_id)
         before = self.brick_count(h)
         await h.callback(f"adm_bprop_approve:{proposal_id}", user_id=ADMIN_TG)
-        self.assertIn("Одобрить предложение", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "admin.proposal_approve_confirm.odobrit_predlozhenie_kirpi_html",
+        )
         self.assertEqual(self.proposal_status(h, proposal_id), "pending")
         self.assertEqual(self.brick_count(h), before)
         await h.callback("adm_bprop_back", user_id=ADMIN_TG)
@@ -907,7 +920,11 @@ class BrickProposalFlowTests(unittest.TestCase):
         proposal_id = self.direct_proposal(h, OWNER_TG, source.id, place_id=place_id)
         await self.open_place_proposal(h, place_id, proposal_id)
         await h.callback(f"adm_bprop_reject:{proposal_id}", user_id=ADMIN_TG)
-        self.assertIn("Отклонить предложение", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "admin.proposal_reject_confirm.otklonit_predlozhenie_kirpi_html",
+        )
         await h.callback("adm_bprop_back", user_id=ADMIN_TG)
         self.assertEqual(self.proposal_status(h, proposal_id), "pending")
         await h.callback(f"adm_bprop_reject:{proposal_id}", user_id=ADMIN_TG)
@@ -1008,7 +1025,11 @@ class BrickProposalFlowTests(unittest.TestCase):
         proposal_id = self.direct_proposal(h, OWNER_TG, source.id, place_id=place_id)
         await self.open_place_proposal(h, place_id, proposal_id)
         await h.callback(f"adm_bprop_approve:{proposal_id}", user_id=ADMIN_TG)
-        self.assertIn("Одобрить предложение", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "admin.proposal_approve_confirm.odobrit_predlozhenie_kirpi_html",
+        )
         self.ensure_user(h, NEW_ADMIN_TG, "newadmin26")
         with h.session_factory() as session:
             created = create_admin_transfer(
@@ -1178,7 +1199,7 @@ class BrickProposalFlowTests(unittest.TestCase):
         await h.callback(f"adm_bprop_approve:{proposal_id}", user_id=ADMIN_TG)
         await h.callback(f"adm_bprop_approve_yes:{proposal_id}", user_id=ADMIN_TG)
         self.assertEqual(self.proposal_status(h, proposal_id), "approved")
-        self.assertIn("Не удалось доставить", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "admin.conflict.author_undelivered")
         self.assertEqual(self.author_messages(h), [])
 
     @scenario_test
@@ -1194,8 +1215,12 @@ class BrickProposalFlowTests(unittest.TestCase):
         await h.callback(f"adm_bprop_approve_yes:{proposal_id}", user_id=ADMIN_TG)
         messages = self.author_messages(h)
         self.assertEqual(len(messages), before + 1)
-        self.assertIn("одобрено", str(messages[-1].get("text")).lower())
-        self.assertIn("Автору отправлено", h.screen_text())
+        cat.assert_shows(
+            self,
+            str(messages[-1].get("text")),
+            "admin.notify_proposal_author.vashe_predlozhenie_kirpichik_html",
+        )
+        cat.assert_shows(self, h.screen_text(), "admin.conflict.author_delivered")
 
     @scenario_test
     async def test_38_pending_has_no_ttl_and_old_proposal_remains_decidable(

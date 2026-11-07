@@ -36,6 +36,7 @@ from delivery import (
     needs_control_panel,
     send_announcement_post,
 )
+from tests import ui_texts_expect as cat
 
 try:
     from announcement_store import get_announcement_draft
@@ -508,7 +509,7 @@ async def _to_photo_step(
         await h.callback(skip)
     else:
         await h.text(value)
-    if "Фотографии анонса" not in h.screen_text():
+    if cat.text("wizard.photos.title") not in h.screen_text():
         raise AssertionError(f"Не шаг фото: {h.screen_text()}")
     return _latest_draft(h)
 
@@ -666,8 +667,10 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
 
         # Одна строка про лимит вместо прежнего экрана восстановления.
         screen = h.screen_text()
-        self.assertIn("Не отправлено: текст не помещается", screen)
-        self.assertIn("при лимите 1024", screen)
+        cat.assert_shows(self, screen, "wizard.length_refusal.not_pomeschaetsya")
+        cat.assert_shows(
+            self, screen, "wizard.length_refusal.not_pomeschaetsya", limit=1024
+        )
         self.assertNotIn("Самые длинные поля", screen)
         labels = [label for label, _data in h.screen_buttons()]
         self.assertFalse(any("Изменить другое поле" in label for label in labels))
@@ -683,7 +686,7 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
         # Poster 2.4 (P2): «✏️ Изменить ответ» удалено — экран вопроса сам
         # принимает новый текст.
         await h.text("Короткий анонс")
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
         await h.callback(_callback(h, "aw_photo_none"))
         sent = _stored(h, draft.id)
         self.assertEqual(sent.publication_status, "sent")
@@ -698,7 +701,9 @@ class AnnouncementDeliveryScenarioTests(unittest.TestCase):
         long_value = "Длинный текст анонса " * 150
         draft = await _to_photo_step(h, content="[main]", value=long_value)
         await h.photo("dropped-photo")
-        self.assertIn("при лимите 1024", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.length_refusal.not_pomeschaetsya", limit=1024
+        )
 
         # Удаление снимка — обычным путём: обзор черновика → «Фотографии».
         await h.callback("main_menu")
@@ -864,7 +869,7 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         # Вторая копия анонса не отправлена; устаревший callback лишь
         # отвечает «Данные изменились» и показывает актуальный экран.
         self.assertEqual(len(h.posts()), 2, "повторное завершение отправило анонс")
-        self.assertIn("Данные изменились", h.answer_texts()[-1])
+        cat.assert_shows(self, h.answer_texts()[-1], "errors.stale.wizard")
 
     @scenario_test
     async def test_edit_and_apply_replaces_the_copy_instead_of_promoting(
@@ -1039,7 +1044,7 @@ class TextAnnouncementSingleCopyTests(unittest.TestCase):
         await _choose_personal(h, template_id)
         await h.text("Значение")
         first = _latest_draft(h)
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
 
         # Сбой доставки первого анонса.
         h.bot.errors_by_type["message"] = Forbidden("Forbidden: bot was blocked")

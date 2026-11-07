@@ -25,6 +25,7 @@ import unittest
 from unittest.mock import patch
 
 from models import Place, PlaceName
+from tests import ui_texts_expect as cat
 
 try:
     from admin_state import load_admin_session, save_admin_session
@@ -44,7 +45,7 @@ TARGET_TG = 8_810_200
 UNKNOWN_TG = 8_810_300
 
 DENIED_ALERT = "У вас нет доступа к разделу администрирования."
-STALE_ALERT = "Эта кнопка больше не работает. Откройте раздел администрирования заново."
+STALE_ALERT = cat.text("errors.stale.admin")
 
 
 def patched_superadmin():
@@ -155,7 +156,9 @@ class AliasesBackTests(unittest.TestCase):
             await h.text("/admin")
             await h.callback(f"adm_place:{place_id}")
             await h.callback(f"adm_edit_place:{place_id}")
-            self.assertIn("Изменить место", h.screen_text())
+            cat.assert_shows(
+                self, h.screen_text(), "admin.build.redaktirovanie_mesta_nazvanie"
+            )
             await h.callback(f"adm_aliases:{place_id}")
             self.assertIn("Альтернативные названия", h.screen_text())
             self.assertTrue(callbacks(h, "adm_alias_rename:"))
@@ -223,9 +226,9 @@ CANCEL_TARGETS: tuple[tuple[str, str], ...] = (
 
 # Ожидаемый маркер текста целевой фазы (кнопка «Назад» рендерит её сразу).
 TARGET_MARKERS = {
-    "place": "🛡 Место",
-    "edit_menu": "Изменить место",
-    "edit_aliases": "Альтернативные названия",
+    "place": cat.fragment("admin.place.mesto"),
+    "edit_menu": cat.fragment("admin.build.redaktirovanie_mesta_nazvanie"),
+    "edit_aliases": cat.fragment("admin.edit_aliases.alternativnye_nazvaniya_naydeno"),
 }
 
 
@@ -297,7 +300,7 @@ class ReplyKeyboardRemoveTests(unittest.TestCase):
         self.assertTrue(removals, "на /start не отправлен ReplyKeyboardRemove")
         self.assertFalse(removals[0]["reply_markup"].selective)
         # Дальше UI живёт на inline-кнопках: главное меню на месте.
-        self.assertIn("Что хотите сделать?", h.screen_text())
+        self.assertIn(cat.text("menu.main"), h.screen_text())
         labels = [label for label, _data in h.screen_buttons()]
         self.assertIn("📝 Создать анонс", labels)
         # Служебное сообщение не остаётся в чате.
@@ -322,7 +325,7 @@ class ReplyKeyboardRemoveTests(unittest.TestCase):
             reply_keyboard_removals(h),
             "старт конструктора не снял легаси reply-клавиатуру",
         )
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
         self.assertTrue(callbacks(h, "aw_"), "конструктор должен жить на inline")
 
     @scenario_test
@@ -333,7 +336,7 @@ class ReplyKeyboardRemoveTests(unittest.TestCase):
         await h.callback(f"pl_pick:{place_id}")
 
         self.assertTrue(reply_keyboard_removals(h))
-        self.assertIn("Вопрос 1", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1))
 
     @scenario_test
     async def test_admin_panel_drops_legacy_reply_keyboard(self, h):
@@ -392,9 +395,10 @@ class AssignSearchOutcomeTests(unittest.TestCase):
             await self._open_search(h)
             await h.text("@a_quilam")
         text = h.screen_text()
-        self.assertIn("Poster пока не знает", text)
+        cat.assert_shows(
+            self, text, "admin.assign_not_found.polzovatel_nayden_izvesten_botu"
+        )
         self.assertIn("@a_quilam", text)
-        self.assertIn("/start", text)
         self.assertFalse(callbacks(h, "adm_pick:"))
 
     @scenario_test
@@ -414,9 +418,10 @@ class AssignSearchOutcomeTests(unittest.TestCase):
             await self._open_search(h)
             await h.text(str(UNKNOWN_TG))
         text = h.screen_text()
-        self.assertIn("Poster пока не знает", text)
+        cat.assert_shows(
+            self, text, "admin.assign_not_found.polzovatel_nayden_telegram_user"
+        )
         self.assertIn(str(UNKNOWN_TG), text)
-        self.assertIn("/start", text)
         self.assertFalse(callbacks(h, "adm_pick:"))
 
     @scenario_test
@@ -429,7 +434,11 @@ class AssignSearchOutcomeTests(unittest.TestCase):
             for garbage in ("!!!", "   ", "@"):
                 with self.subTest(garbage=garbage):
                     await h.text(garbage)
-                    self.assertIn("Введите @username", h.screen_text())
+                    cat.assert_shows(
+                        self,
+                        h.screen_text(),
+                        "admin.assign_search.poisk_poluchatelya_vvedite",
+                    )
                     # Фаза не потеряна: следующий корректный ввод ищет.
                     self.assertIn("Поиск получателя", h.screen_text())
                     state = load_admin_session(SUPERADMIN_TG)

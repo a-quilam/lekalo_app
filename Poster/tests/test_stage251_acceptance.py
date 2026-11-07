@@ -51,9 +51,11 @@ from announcement_store import (
 from conditional_parts import create_conditional_part
 from models import AnnouncementValue, Template
 from template_store import create_personal_template, update_template_content
+from tests import ui_texts_expect as cat
 from tests.stage19a_helpers import make_engine
 from tests.stage23_helpers import OWNER_TG, TemplateDatabaseTestCase
 from user_store import get_or_create_user
+from utils.ui_texts import tr
 
 try:
     from handlers.announcement_wizard import PHOTO_PAGE_SIZE, RESUME_PAYLOAD_KEY
@@ -78,7 +80,6 @@ try:
         _start_to_template,
     )
     from utils import screen as screen_utils
-    from utils import ui_texts
 
     INTEGRATION_IMPORT_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
@@ -93,7 +94,7 @@ BACK_DATA = "help_back"
 ABOUT_LABEL = "ℹ️ О проекте"
 ABOUT_DATA = "help_about"
 RICH_KEY = "help_rich_message_id"
-MENU_TEXT = "Что хотите сделать?"
+MENU_TEXT = tr("menu.main")
 
 CONTENT_V1 = "**[main] – [cost]**\nКонец"
 HIDDEN_FRAGMENT = " – [cost]"
@@ -148,7 +149,7 @@ class RichHelpAcceptanceTests(unittest.TestCase):
             blocks[0],
             {
                 "type": "heading",
-                "text": ui_texts.DEFAULTS["help.rich.title"],
+                "text": tr("help.rich.title"),
                 "size": 1,
             },
             "первый блок — heading с максимальным размером",
@@ -197,7 +198,7 @@ class RichHelpAcceptanceTests(unittest.TestCase):
             [],
             "Rich Message не должен считаться отправленным",
         )
-        notice = ui_texts.DEFAULTS["help.rich.unavailable"].split(".")[0]
+        notice = tr("help.rich.unavailable").split(".")[0]
         self.assertIn(notice, h.screen_text(), "нет понятной плашки сбоя")
         self.assertEqual(
             h.screen_buttons(),
@@ -270,17 +271,19 @@ class HelpBackAcceptanceTests(unittest.TestCase):
         )
         await _start_to_template(h, place_id)
         await _choose_personal(h, template_id)
-        self.assertIn("Вопрос 1 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(1, 2))
 
         await h.text("Первый ответ")
-        self.assertIn("Вопрос 2 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2))
 
         await h.callback("help")
         payload = screen_utils.load_payload(h.user_id) or {}
         self.assertIn(RESUME_PAYLOAD_KEY, payload, "справка сняла resume-снимок")
 
         await h.callback(BACK_DATA)
-        self.assertIn("Вопрос 2 из 2", h.screen_text(), "не вернулись на текущий шаг")
+        self.assertRegex(
+            h.screen_text(), cat.question_re(2, 2), "не вернулись на текущий шаг"
+        )
         self.assertIn(
             RESUME_PAYLOAD_KEY,
             screen_utils.load_payload(h.user_id) or {},
@@ -304,13 +307,13 @@ class HelpBackAcceptanceTests(unittest.TestCase):
         draft_id = _latest_draft(h).id
 
         await h.text("Ответ до рестарта")
-        self.assertIn("Вопрос 2 из 2", h.screen_text())
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2))
 
         await h.restart()
         await h.text("/help")
         await h.callback(BACK_DATA)
 
-        self.assertIn("Вопрос 2 из 2", h.screen_text(), "шаг не восстановлен")
+        self.assertRegex(h.screen_text(), cat.question_re(2, 2), "шаг не восстановлен")
         self.assertEqual(
             (_stored_value(h, draft_id, bricks["main"]) or {}).get("text"),
             "Ответ до рестарта",
@@ -508,7 +511,7 @@ class PhotoGridAcceptanceTests(unittest.TestCase):
         await _start_to_template(h, place_id)
         await _choose_personal(h, template_id)
         await h.text("Текст анонса")
-        self.assertIn("Фотографии анонса", h.screen_text())
+        self.assertIn(cat.text("wizard.photos.title"), h.screen_text())
 
         for index in range(8):
             await h.photo(f"grid-{index}", media_group_id="mg-grid")

@@ -26,6 +26,7 @@ from unittest.mock import patch
 from sqlalchemy import select
 
 from models import Brick
+from tests import ui_texts_expect as cat
 
 try:
     from announcement_store import (
@@ -61,12 +62,21 @@ def _callbacks(h, prefix: str) -> list[str]:
 
 
 def _without_notice(text: str) -> str:
-    """Убирает одноразовую строку «сохранено» — она не часть экрана."""
+    """
+    Убирает одноразовую плашку «значение сохранено» — она не часть экрана.
+
+    Подпись плашки задаёт каталог (`alerts.wizard.znachenie_sohraneno`,
+    «✓ {title}»), поэтому сравнение идёт по ключу, а не по литералу.
+    """
+    notice_keys = (
+        "alerts.wizard.znachenie_sohraneno",
+        "wizard.skip_question.znachenie_ostavleno",
+    )
     blocks = text.split("\n\n")
     return "\n\n".join(
         block
         for block in blocks
-        if not block.startswith(("Значение «", "Значение поля «"))
+        if not any(cat.shows(block.strip(), key) for key in notice_keys)
     )
 
 
@@ -441,7 +451,7 @@ class HumorQuestionScreenTests(unittest.TestCase):
             await h.callback(f"tp_pick:{template_id}")
             self.assertNotIn(JOKE_PROBE, h.screen_text())
             await h.text("Заголовок анонса")
-            self.assertIn("Вопрос 2 из 2", h.screen_text())
+            self.assertRegex(h.screen_text(), cat.question_re(2, 2))
             joked_text = h.screen_text()
             joked_buttons = h.screen_buttons()
             self.assertIn(JOKE_PROBE, joked_text)
@@ -456,7 +466,7 @@ class HumorQuestionScreenTests(unittest.TestCase):
                 plain_buttons = h.screen_buttons()
         after_plain = _details(h, _latest_draft(h).draft_id)
         self.assertNotIn(JOKE_PROBE, plain_text)
-        self.assertIn("Вопрос 2 из 2", plain_text)
+        self.assertRegex(plain_text, cat.question_re(2, 2))
         # Описание кирпичика видно на экране вопроса (S5 п.5).
         self.assertIn("Что будет &amp; чего не будет", plain_text)
 
@@ -509,7 +519,7 @@ class HumorQuestionScreenTests(unittest.TestCase):
             # перерисовывают тот же вопрос без изменения данных: ключ и
             # текст обязаны совпасть.
             await h.callback(_callback(h, "aw_qback"))
-            self.assertIn("Вопрос 1 из 2", h.screen_text())
+            self.assertRegex(h.screen_text(), cat.question_re(1, 2))
             await h.callback(_callback(h, "aw_qskip"))
             second_again = h.screen_text()
 
@@ -561,7 +571,7 @@ class HumorQuestionScreenTests(unittest.TestCase):
             await h.callback(f"tp_pick:{template_id}")
             self.assertIn(JOKE_PROBE, h.screen_text())
             await h.text("Заголовок анонса")
-            self.assertIn("Вопрос 2 из 2", h.screen_text())
+            self.assertRegex(h.screen_text(), cat.question_re(2, 2))
             # Невалидная дата: экран диагностики, юмор запрещён.
             await h.text("не дата вовсе")
             error_text = h.screen_text()
@@ -598,9 +608,9 @@ class HumorQuestionScreenTests(unittest.TestCase):
             self.assertNotIn(joke, question_screen, "флаг выключает и вопросы")
             self.assertNotIn(joke, empty_screen, "флаг главнее пустого анонса")
         # Экран вопроса остаётся рабочим: юмор не влияет на смысл.
-        self.assertIn("Вопрос 1 из 1", question_screen)
+        self.assertRegex(question_screen, cat.question_re(1, 1))
         self.assertIn("Имя и фамилия ведущего", question_screen)
-        self.assertIn("Фотографии анонса", empty_screen)
+        self.assertIn(cat.text("wizard.photos.title"), empty_screen)
         for joke in ui_humor.HUMOR_JOKES:
             self.assertNotIn(joke, empty_screen, "при выключенном флаге шуток нет")
 
@@ -698,7 +708,7 @@ class HumorEscapingTests(unittest.TestCase):
 
             self.assertIn(ESCAPED_EVIL_JOKE, photo_text, photo_text)
             self.assertNotIn(EVIL_JOKE, photo_text, "фраза не экранирована")
-            self.assertNotIn(INTERNAL_ERROR_FRAGMENT, photo_text)
+            cat.assert_not_shows(self, photo_text, "errors.internal")
             _assert_html_balanced(self, photo_text)
             callbacks = [data for _label, data in photo_buttons if data]
             self.assertTrue(
@@ -709,7 +719,7 @@ class HumorEscapingTests(unittest.TestCase):
                 any(data.startswith("aw_photo_back") for data in callbacks),
                 f"кнопка «Назад» шага фото потеряна: {photo_buttons}",
             )
-            self.assertIn("Фотографии анонса", photo_text)
+            self.assertIn(cat.text("wizard.photos.title"), photo_text)
 
             # Тот же путь дальше: служебный экран обзора пустого анонса
             # (второй потребитель `get_humor_line`) тоже экранирует фразу.
@@ -719,7 +729,7 @@ class HumorEscapingTests(unittest.TestCase):
 
         self.assertIn(ESCAPED_EVIL_JOKE, preview_text, preview_text)
         self.assertNotIn(EVIL_JOKE, preview_text, "фраза не экранирована")
-        self.assertNotIn(INTERNAL_ERROR_FRAGMENT, preview_text)
+        cat.assert_not_shows(self, preview_text, "errors.internal")
         _assert_html_balanced(self, preview_text)
         self.assertTrue(h.screen_buttons(), "экран обзора остался без кнопок")
 
@@ -751,10 +761,10 @@ class HumorEscapingTests(unittest.TestCase):
                 photo_text = h.screen_text()
                 photo_buttons = h.screen_buttons()
 
-        self.assertNotIn(INTERNAL_ERROR_FRAGMENT, photo_text)
+        cat.assert_not_shows(self, photo_text, "errors.internal")
         self.assertNotIn(EVIL_JOKE, photo_text, "злая фраза не должна дойти")
         _assert_html_balanced(self, photo_text)
-        self.assertIn("Фотографии анонса", photo_text)
+        self.assertIn(cat.text("wizard.photos.title"), photo_text)
         default_joke = next(
             joke for joke in ui_humor.DEFAULT_JOKES if joke in photo_text
         )

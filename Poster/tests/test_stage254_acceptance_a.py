@@ -14,8 +14,7 @@ Telegram не используются.
 1. Готовый анонс (1 фото) → «📝 Текстовые поля» → выбор «Время начала»:
    нового `sendMessage` нет; у того же `message_id` появляется клавиатура
    `⏳ Ожидаю <поле>` (неактивная: без `callback_data`, сериализация
-   `disabled`), строка `18:00 | 18:30 | 19:00`, строка
-   `◀️ Назад | ⏭ Пропустить`.
+   `disabled`), строка `18:00 | 18:30 | 19:00`, одна кнопка «Отменить».
 2. `18:30` → время изменено в анонсе на месте, `message_id` сохранён,
    клавиатура вернулась к списку полей с АКТУАЛЬНЫМИ значениями, сообщения
    об успехе нет.
@@ -23,12 +22,12 @@ Telegram не используются.
 4. Рестарт (новый harness-контекст, состояния диалога пусты) — управление
    продолжает работать: список открывается, поле выбирается, значение
    сохраняется.
-5. Текстовое поле (описание): подсказка `⏳ Ожидаю …`, строка
-   `◀️ Назад | ⏭ Пропустить`, отправка текста применяется сразу, без
+5. Текстовое поле (описание): подсказка `⏳ Ожидаю …`, одна кнопка
+   «Отменить», отправка текста применяется сразу, без
    «Теперь введите описание».
-6. «Назад» → список полей; «Пропустить» → прежнее значение сохранено, список
-   полей; медиагруппа (2+ фото) — управление через её ЕДИНСТВЕННУЮ панель,
-   второй панели и отдельных `sendMessage` нет.
+6. «Отменить» → список полей; прежнее значение сохранено; медиагруппа
+   (2+ фото) — управление через её ЕДИНСТВЕННУЮ панель, второй панели и
+   отдельных `sendMessage` нет.
 7. Нет конкурирующих клавиатур: после каждого шага в чате ровно одна
    актуальная управляющая клавиатура у анонса (или его панели).
 8. Дата и контакт — та же схема; дата открывается кнопками календаря на
@@ -50,6 +49,8 @@ from __future__ import annotations
 import asyncio
 import re
 import unittest
+
+from utils.ui_texts import tr
 
 try:
     from telegram.error import BadRequest
@@ -88,10 +89,9 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 # Подписи и тексты — требование владельца, а не значения из каталога:
 # тест обязан заметить подмену текста в конфигурации.
-PHOTOS_TITLE = "📷 Фотографии анонса"
+PHOTOS_TITLE = tr("wizard.photos.title")
 WAIT = "⏳ Ожидаю"
-BACK = "◀️ Назад"
-SKIP = "⏭ Пропустить"
+CANCEL = "Отменить"
 PRESETS = ("18:00", "18:30", "19:00")
 
 # Типы вызовов, создающих НОВОЕ сообщение в чате.
@@ -240,16 +240,16 @@ def _field_callback(h, brick_id: int) -> str:
 
 def _field_list_body() -> str:
     """Тело списка полей на панели медиагруппы (заголовок и подсказка)."""
-    return "📝 Текстовые поля\n\nВыберите поле, чтобы изменить его. Изменение сразу обновляет анонс в чате."
+    return f"{tr('wizard.fields.title')}\n\n{tr('wizard.fields.hint')}"
 
 
 async def _ensure_list(h, instance_id: int) -> None:
     """Открывает список полей из любого текущего состояния управления."""
     if _field_buttons(h):
         return
-    input_back = h.live_callbacks("anq_back:")
-    if input_back:
-        await h.callback(input_back[0])
+    input_cancel = h.live_callbacks("anq_abort:")
+    if input_cancel:
+        await h.callback(input_cancel[0])
         return
     if not h.live_callbacks(f"anp_data:{instance_id}"):
         raise AssertionError(f"нет живого управления: {h.live_buttons()}")
@@ -371,7 +371,7 @@ class TimeFieldInPlaceTests(unittest.TestCase):
             [
                 [WAIT + " 🕒 Время начала"],
                 list(PRESETS),
-                [BACK, SKIP],
+                [CANCEL],
             ],
             "клавиатура ввода отличается от контракта",
         )
@@ -394,12 +394,10 @@ class TimeFieldInPlaceTests(unittest.TestCase):
                 button.callback_data,
             )
 
-        # Строка 3 — «Назад | Пропустить».
-        self.assertEqual([button.text for button in rows[2]], [BACK, SKIP])
-        self.assertEqual(
-            [button.callback_data.split(":")[0] for button in rows[2]],
-            ["anq_back", "anq_skip"],
-        )
+        # Строка 3 — одна «Отменить» в стиле `danger` (2.5.5 §1).
+        self.assertEqual([button.text for button in rows[2]], [CANCEL])
+        self.assertTrue(rows[2][0].callback_data.startswith("anq_abort:"))
+        self.assertEqual(rows[2][0].style, "danger")
         _assert_one_control(h, message_id, "клавиатура ввода")
 
     @scenario_test
@@ -570,7 +568,7 @@ class TextFieldInPlaceTests(unittest.TestCase):
         rows = _rows(_markup_for(h, message_id))
         self.assertEqual(
             _row_texts(rows),
-            [[WAIT + " 📝 Описание"], [BACK, SKIP]],
+            [[WAIT + " 📝 Описание"], [CANCEL]],
             "клавиатура текстового поля отличается от контракта",
         )
         self.assertTrue(is_disabled(rows[0][0]))
@@ -613,7 +611,7 @@ class BackSkipAndAlbumTests(unittest.TestCase):
     """§1 п.6: навигация возвращает список, альбом живёт на одной панели."""
 
     @scenario_test
-    async def test_g_back_and_skip_keep_previous_value(self, h) -> None:
+    async def test_g_cancel_keeps_previous_value(self, h) -> None:
         await h.text("/start")
         draft, _place_id = await _delivered_standard(h, photos=1)
         active = _only_active(h, draft.id)
@@ -622,30 +620,21 @@ class BackSkipAndAlbumTests(unittest.TestCase):
         before = _stored(h, draft.id)
 
         start = len(h.calls)
-        await h.callback(_input_callbacks(h, "back")[0])
-        after_back = _stored(h, draft.id)
-        self.assertTrue(_field_buttons(h), "«Назад» не вернул список полей")
-        self.assertEqual(after_back.publication_text, before.publication_text)
-        self.assertEqual(after_back.revision, before.revision)
-        self.assertEqual(_created_since(h, start), [])
-        _assert_one_control(h, message_id, "после «Назад»")
-
-        await h.callback(_field_callback(h, START_ID))
-        start = len(h.calls)
-        await h.callback(_input_callbacks(h, "skip")[0])
-        after_skip = _stored(h, draft.id)
-        self.assertTrue(_field_buttons(h), "«Пропустить» не вернул список")
+        await h.callback(_input_callbacks(h, "abort")[0])
+        after = _stored(h, draft.id)
+        self.assertTrue(_field_buttons(h), "«Отменить» не вернул список полей")
         self.assertEqual(
-            after_skip.publication_text, before.publication_text, "значение изменилось"
+            after.publication_text, before.publication_text, "значение изменилось"
         )
-        self.assertEqual(after_skip.revision, before.revision, "черновик изменён")
+        self.assertEqual(after.revision, before.revision, "черновик изменён")
         self.assertEqual(
             h.bot.content_text(h.chat_id, message_id),
             before.publication_text,
             "анонс переписан",
         )
-        self.assertEqual(_created_since(h, start), [])
-        _assert_one_control(h, message_id, "после «Пропустить»")
+        self.assertEqual(_created_since(h, start), [], "«Отменить» создала сообщение")
+        self.assertEqual(_messages_since(h, start), [], "появилось сообщение")
+        _assert_one_control(h, message_id, "после «Отменить»")
 
     @scenario_test
     async def test_h_album_uses_single_panel_in_place(self, h) -> None:
@@ -683,7 +672,7 @@ class BackSkipAndAlbumTests(unittest.TestCase):
         rows = _rows(_markup_for(h, panel_id))
         self.assertEqual(
             _row_texts(rows),
-            [[WAIT + " 🕒 Время начала"], list(PRESETS), [BACK, SKIP]],
+            [[WAIT + " 🕒 Время начала"], list(PRESETS), [CANCEL]],
             "клавиатура ввода не в панели",
         )
         self.assertTrue(is_disabled(rows[0][0]))
@@ -737,10 +726,14 @@ class DateAndContactTests(unittest.TestCase):
 
         markup = _markup_for(h, message_id)
         rows = _rows(markup)
-        self.assertTrue(is_disabled(rows[0][0]), "подсказки-даты нет")
-        self.assertIn("Дата", rows[0][0].text)
-        self.assertEqual(rows[-1][0].text, BACK)
-        self.assertEqual(rows[-1][1].text, SKIP)
+        # У поля-даты подсказки нет: календарь сам объясняет, чего ждут
+        # (2.5.5 §1). Последняя строка — одна «Отменить».
+        self.assertFalse(
+            [button for row in rows for button in row if is_disabled(button)],
+            "у даты не должно быть неактивной подсказки",
+        )
+        self.assertEqual(rows[-1][0].text, CANCEL)
+        self.assertTrue(rows[-1][0].callback_data.startswith("anq_abort:"))
         callbacks = [
             button.callback_data
             for row in rows
@@ -793,7 +786,7 @@ class DateAndContactTests(unittest.TestCase):
         rows = _rows(_markup_for(h, message_id))
         self.assertEqual(
             _row_texts(rows),
-            [[WAIT + " ☎️ Контакт"], [BACK, SKIP]],
+            [[WAIT + " ☎️ Контакт"], [CANCEL]],
             "клавиатура контакта отличается от контракта",
         )
         self.assertIsNone(rows[0][0].callback_data)
@@ -895,7 +888,7 @@ class RestartTests(unittest.TestCase):
 
             created = _created_count(fresh)
             # «Назад» восстанавливает список без состояния диалога.
-            await fresh.callback(fresh.live_callbacks("anq_back:")[0])
+            await fresh.callback(fresh.live_callbacks("anq_abort:")[0])
             self.assertTrue(_field_buttons(fresh), "список полей не открылся")
             self.assertEqual(_created_count(fresh), created, "список создал сообщение")
             _assert_one_control(fresh, message_id, "список после рестарта")

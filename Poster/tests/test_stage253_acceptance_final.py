@@ -43,6 +43,8 @@ from __future__ import annotations
 
 import unittest
 
+from tests import ui_texts_expect as cat
+
 try:
     from sqlalchemy import text
 
@@ -570,10 +572,21 @@ class LongTextInDeliveredAnnouncementTests(unittest.TestCase):
         # 2.5.4 §1: ошибка ввода приходит ответом на сообщение автора
         # (ввод живёт на анонсе, отдельного экрана/вопроса нет).
         shown = "\n".join([h.screen_text(), *h.answer_texts(), *h.reply_texts()])
-        self.assertIn(LENGTH_REFUSAL, shown, f"нет короткой ошибки: {shown!r}")
+        cat.assert_shows(
+            self,
+            shown,
+            "wizard.length_refusal.edit_not_applied",
+            f"нет короткой ошибки: {shown!r}",
+        )
         # Лимит считается по итоговому тексту анонса: значение заменяет прежнее
         # в шаблоне «Строка 0: [f0]», то есть 10 + 1500 символов.
-        self.assertIn("1510 символов при лимите 1024", shown)
+        cat.assert_shows(
+            self,
+            shown,
+            "wizard.length_refusal.edit_not_applied",
+            length=1510,
+            limit=1024,
+        )
         # Ввод не потерян: сообщение с текстом осталось в чате.
         self.assertNotIn(long_message.message.message_id, h.deleted_ids())
         # Значение сохранено как неопубликованная правка.
@@ -625,6 +638,11 @@ class LongTextInDeliveredAnnouncementTests(unittest.TestCase):
             h.live_buttons(),
         )
         self.assertEqual(h.live_callbacks("anq_back"), [], "вернулся старый «Назад»")
+        self.assertEqual(
+            h.live_callbacks("anq_abort"),
+            [],
+            "на экране ошибки не должно быть «Отменить» ввода",
+        )
 
         await h.restart()
         self.assertIsNone(
@@ -740,7 +758,12 @@ class FullAuthorPathTests(unittest.TestCase):
         # 2.5.4 §1: ошибка ввода приходит ответом на сообщение автора
         # (ввод живёт на анонсе, отдельного экрана/вопроса нет).
         shown = "\n".join([h.screen_text(), *h.answer_texts(), *h.reply_texts()])
-        self.assertIn(LENGTH_REFUSAL, shown, f"нет короткой ошибки: {shown!r}")
+        cat.assert_shows(
+            self,
+            shown,
+            "wizard.length_refusal.edit_not_applied",
+            f"нет короткой ошибки: {shown!r}",
+        )
         self.assertNotIn(long_message.message.message_id, h.deleted_ids())
         refused = _stored(h, draft.id)
         self.assertEqual(refused.publication_status, "sent")

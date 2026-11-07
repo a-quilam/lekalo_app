@@ -30,6 +30,7 @@ import unittest
 from place_store import create_place
 from template_state import load_template_session
 from template_store import create_personal_template
+from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     DEFAULT_USER_ID,
     HARNESS_IMPORT_ERROR,
@@ -157,7 +158,14 @@ class WizardPaginationTests(unittest.TestCase):
         await h.callback("aw_new")
         await h.callback("aw_place_all:0")
 
-        self.assertEqual(h.screen_text().count("Всего: 6. Страница 1."), 1)
+        self.assertEqual(
+            len(
+                cat.pattern(
+                    "wizard.render_all_places.vsego_stranica", total=6, value=1
+                ).findall(h.screen_text())
+            ),
+            1,
+        )
         self.assertEqual(
             len([data for data in _callbacks(h) if data.startswith("aw_place_open:")]),
             5,
@@ -174,7 +182,13 @@ class WizardPaginationTests(unittest.TestCase):
         )
 
         await h.callback("aw_place_all:1")
-        self.assertIn("Страница 2", h.screen_text())
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.render_all_places.vsego_stranica",
+            total=6,
+            value=2,
+        )
         self.assertEqual(
             [
                 (label, data)
@@ -234,7 +248,9 @@ class WizardPaginationTests(unittest.TestCase):
         await h.callback(f"aw_place_open:{place_ids[0]}")
         await _confirm_place(h)
 
-        self.assertIn("Шаг 2. Выберите шаблон", h.screen_text())
+        cat.assert_shows(
+            self, h.screen_text(), "wizard.render_template.shag_2_vyberite_shablon"
+        )
         # Стандартный шаблон места — отдельная кнопка того же префикса;
         # страницу делят только личные шаблоны.
         personal = [
