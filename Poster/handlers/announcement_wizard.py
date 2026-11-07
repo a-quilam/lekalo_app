@@ -151,6 +151,7 @@ from utils import (
     pagination,
     screen,
     ui_humor,
+    user_events,
 )
 from utils import tg_context as ctx
 from utils.parsers import app_today
@@ -230,6 +231,34 @@ PRIVATE_CHAT_ONLY = tr("errors.private_chat_only")
 
 def _user_id(update: Update) -> int:
     return ctx.user(update).id
+
+
+# Короткие технические коды журнала событий (этап B). `SCREEN_FIELD_INPUT`
+# повторяет код из `handlers/announcement_panel.py`: экран один и тот же,
+# а журнал должен оставаться сопоставимым по коду.
+SCREEN_FIELD_INPUT = "field_input"
+
+
+def _event_field_saved(update: Update, instance: object, field: object) -> None:
+    """
+    Пишет в журнал факт сохранения значения поля доставленного анонса.
+
+    В `detail` — только идентификаторы экземпляра и кирпичика: значение поля
+    (то есть содержимое анонса) сюда не попадает никогда. Ошибка журнала не
+    поднимается — `event_log` её глотает.
+    """
+    user_events.event_log(
+        _user_id(update),
+        "field.edit.save",
+        screen=SCREEN_FIELD_INPUT,
+        result="ok",
+        detail=(
+            f"instance={getattr(instance, 'id', '?')} "
+            f"field={getattr(field, 'brick_id', '?')}"
+        ),
+        # Фабрика сессии ЭТОГО модуля: тесты подменяют её на временную базу.
+        session_factory=SessionLocal,
+    )
 
 
 def _is_private_chat(update: Update) -> bool:
@@ -3805,6 +3834,9 @@ async def _save_field_input_value(
         return await _field_input_error(
             update, context, details, instance, field, str(exc)
         )
+    # Журнал событий (этап B): подтверждённая запись значения поля. В detail
+    # только идентификаторы — значение поля (содержимое анонса) не пишется.
+    _event_field_saved(update, instance, field)
     _set_details(ui, updated)
     fresh = updated
     if updated.publication_sent:

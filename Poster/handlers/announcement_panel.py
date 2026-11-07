@@ -52,9 +52,58 @@ from database import SessionLocal
 from handlers import announcement_field_input, wizard_questions
 from handlers import announcement_wizard as wizard
 from utils import tg_context as ctx
+from utils import user_events
 from utils.ui_texts import tr
 
 logger = logging.getLogger(__name__)
+
+# Технические коды экранов и действий журнала событий (этап B). Короткие
+# латинские коды: они попадают в .txt-снимок репорта, и по ним видно, ГДЕ
+# пользователь нажал, без содержимого экрана и значений полей.
+SCREEN_FIELD_LIST = "field_list"
+SCREEN_PHOTOS = "photos"
+SCREEN_EXTRAS = "extras"
+SCREEN_FIELD_INPUT = "field_input"
+SCREEN_MAIN_MENU = "main_menu"
+PANEL_SCREENS = {
+    announcement_controls.ACTION_DATA: SCREEN_FIELD_LIST,
+    announcement_controls.ACTION_PHOTOS: SCREEN_PHOTOS,
+    announcement_controls.ACTION_EXTRAS: SCREEN_EXTRAS,
+    announcement_controls.ACTION_MENU: SCREEN_MAIN_MENU,
+}
+
+
+def _event(
+    update: Update,
+    action: str,
+    *,
+    screen: str | None = None,
+    result: str | None = None,
+    detail: str | None = None,
+) -> None:
+    """
+    Пишет техническое событие в журнал, не мешая обработчику.
+
+    Журнал — диагностика (этап B): сбой записи не должен ломать навигацию,
+    поэтому фактические вызовы идут через `user_events.event_log`, который
+    глотает ошибки. В `detail` передаются только идентификаторы: значение
+    поля и текст сообщения сюда не попадают никогда.
+    """
+    user = update.effective_user
+    if user is None:
+        return
+    user_events.event_log(
+        user.id,
+        action,
+        screen=screen,
+        scenario=None,
+        result=result,
+        detail=detail,
+        # Фабрика сессии ЭТОГО модуля: интеграционные тесты подменяют её
+        # на временную базу, и журнал обязан писать туда же.
+        session_factory=SessionLocal,
+    )
+
 
 # Какое состояние диалога соответствует экрану после действия панели.
 # «В меню» не открывает экран конструктора — состояние закрывается.
@@ -126,18 +175,30 @@ async def handle_panel_callback(
 
     instance = _instance(instance_id)
     if instance is None or instance.is_archived:
+        _event(update, "screen.open", screen="announcement_panel", result="stale")
         await _stale_answer(update)
         return
     if instance.chat_id != ctx.chat(update).id:
         # Кнопка пересланного анонса в другом чате не открывает редактор:
         # экран и клавиатура экземпляра принадлежат чату доставки.
+        _event(update, "screen.open", screen="announcement_panel", result="stale")
         await _stale_answer(update)
         return
     details = _details(ctx.user(update).id, instance)
     if details is None:
+        _event(update, "screen.open", screen="announcement_panel", result="stale")
         await _stale_answer(update)
         return
 
+    # Журнал событий (этап B): только техническое действие и id экземпляра.
+    # Содержимое анонса и значения полей сюда не попадают.
+    _event(
+        update,
+        "screen.open",
+        screen=PANEL_SCREENS[action],
+        result="ok",
+        detail=f"instance={instance.id}",
+    )
     await wizard._answer(update)
     if action == announcement_controls.ACTION_MENU:
         # Панель и сам анонс остаются на месте: «В меню» — навигация.
@@ -201,6 +262,14 @@ async def handle_field_callback(
         return
 
     if action == announcement_controls.FIELD_ACTION_BACK:
+        # Журнал событий (этап B): только навигация и id экземпляра.
+        _event(
+            update,
+            "screen.back",
+            screen=SCREEN_FIELD_LIST,
+            result="ok",
+            detail=f"instance={instance.id}",
+        )
         await wizard._answer(update)
         # Список полей — вложенный экран редактора: «◀️ Назад» возвращает
         # ровно на управление анонсом и оставляет путь редактора этого
@@ -295,6 +364,13 @@ async def handle_field_input_callback(
         if len(tail) != 1 or not tail[0].isdigit():
             await _stale_answer(update)
             return
+        _event(
+            update,
+            "field.edit.cancel",
+            screen=SCREEN_FIELD_INPUT,
+            result="ok",
+            detail=f"instance={instance.id} field={brick_id}",
+        )
         state = await wizard._cancel_field_length_edit(
             update, context, details, instance, field, int(tail[0])
         )
@@ -306,6 +382,13 @@ async def handle_field_input_callback(
         # отбрасывается, прежнее значение остаётся: до кнопки в БД ничего не
         # писалось. Автор возвращается к списку полей (он же снимает режим
         # ввода), текстовых сообщений не отправляется.
+        _event(
+            update,
+            "field.edit.cancel",
+            screen=SCREEN_FIELD_INPUT,
+            result="ok",
+            detail=f"instance={instance.id} field={brick_id}",
+        )
         state = await wizard._return_to_field_list(
             update, context, details, instance.id
         )

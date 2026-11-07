@@ -4082,6 +4082,89 @@ MIGRATION_28_SNAPSHOT_CONDITIONAL_PARTS = Migration(
 )
 
 
+# --- Версия 29: журнал событий пользователя и репорты (этап B) ------------
+#
+# Фундамент системы репортов: пользователь нажимает «Сообщить о проблеме» —
+# бот прикладывает снимок СВОИХ последних действий за час, чтобы разработчик
+# видел шаги, а не только текст жалобы.
+#
+# `user_event_log` — структурированный журнал технических событий:
+# `action` (короткий тип, `screen.open`, `field.edit.save`), `screen`
+# (раздел), `scenario` (сценарий, если применим), `result`, `detail`.
+# Содержимое сообщений и значения полей анонса сюда НЕ пишутся (см.
+# `utils/user_events.py`). Журнал ограничен по времени: retention удаляет
+# строки старше `RETENTION_DAYS` по `created_at`.
+#
+# `reports` — постоянный (переживает рестарт) репорт пользователя:
+# `events_snapshot` хранит готовый текст .txt-снимка В БД, а не во временном
+# файле; `notified_user_ids` — JSON-список уже уведомлённых superadmin
+# (защита от повторной доставки после рестарта). Авторизация закрытия —
+# только `status='active'` + `UPDATE ... WHERE status='active'`: двойное
+# архивирование второго UPDATE не проходит.
+#
+# Обе таблицы описаны только Core-таблицами (`utils/user_events.py`,
+# `report_store.py`), в `models.py` их нет: `create_all` не должен создавать
+# их в обход журнала миграций (как `announcement_instances`).
+
+MIGRATION_29_USER_EVENT_LOG_REPORTS = Migration(
+    version=29,
+    name="user_event_log_reports",
+    statements=(
+        # Журнал событий одного пользователя. Индекс (telegram_user_id,
+        # created_at) — чтение «события пользователя N за период» для снимка
+        # репорта; индекс по created_at — единственный запрос retention.
+        """
+        CREATE TABLE user_event_log (
+            id INTEGER NOT NULL PRIMARY KEY,
+            telegram_user_id INTEGER NOT NULL,
+            created_at DATETIME NOT NULL,
+            action TEXT NOT NULL,
+            screen TEXT,
+            scenario TEXT,
+            result TEXT,
+            detail TEXT
+        )
+        """,
+        """
+        CREATE INDEX ix_user_event_log_user_created
+            ON user_event_log (telegram_user_id, created_at)
+        """,
+        """
+        CREATE INDEX ix_user_event_log_created
+            ON user_event_log (created_at)
+        """,
+        # Постоянный репорт. `username`/`display_name` — снимок на момент
+        # отправки: авторизация по ним не делается, только `author_user_id`.
+        # `events_snapshot` — готовый текст снимка событий (.txt-содержимое).
+        """
+        CREATE TABLE reports (
+            id INTEGER NOT NULL PRIMARY KEY,
+            author_user_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            username TEXT,
+            display_name TEXT,
+            body TEXT NOT NULL,
+            screen_label TEXT NOT NULL,
+            created_at DATETIME NOT NULL,
+            events_snapshot TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            developer_reply TEXT,
+            replied_at DATETIME,
+            closed_at DATETIME,
+            notified_user_ids TEXT,
+            CONSTRAINT ck_reports_status
+                CHECK (status IN ('active', 'archived'))
+        )
+        """,
+        # Список и счётчик действующих/архивных репортов: новые к старым.
+        """
+        CREATE INDEX ix_reports_status_created
+            ON reports (status, created_at)
+        """,
+    ),
+)
+
+
 DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_1_USERS_PLACES,
     MIGRATION_2_PLACE_CONTACTS_UI,
@@ -4111,6 +4194,7 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_26_ANNOUNCEMENT_INSTANCES,
     MIGRATION_27_CONDITIONAL_PARTS,
     MIGRATION_28_SNAPSHOT_CONDITIONAL_PARTS,
+    MIGRATION_29_USER_EVENT_LOG_REPORTS,
 )
 
 LATEST_VERSION = DEFAULT_MIGRATIONS[-1].version if DEFAULT_MIGRATIONS else 0

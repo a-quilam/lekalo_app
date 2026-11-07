@@ -585,7 +585,7 @@ class TemplateContentMigrationTests(unittest.TestCase):
                 "SELECT version, name FROM schema_migrations ORDER BY version "
                 "DESC LIMIT 1",
             ),
-            [(28, "template_snapshot_conditional_parts")],
+            [(29, "user_event_log_reports")],
         )
 
     def test_post_migration_schema_equals_fresh_create_all(self) -> None:

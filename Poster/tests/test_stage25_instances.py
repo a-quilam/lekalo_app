@@ -101,11 +101,11 @@ class Migration26Tests(unittest.TestCase):
 
     def test_fresh_install_has_instances_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 28)
-        # 2.5.1 добавила 28 (`template_snapshot_conditional_parts`):
-        # проверяется позиция 26/27, последняя версия в журнале — 28.
+        self.assertEqual(LATEST_VERSION, 29)
+        # 2.5.1 добавила 28 (`template_snapshot_conditional_parts`), этап B —
+        # 29 (`user_event_log_reports`): проверяется позиция 25–27.
         self.assertEqual(
-            _journal(self.path)[-4:-1],
+            _journal(self.path)[-5:-2],
             [
                 (25, "single_address_brick"),
                 (26, MIGRATION_26_NAME),
@@ -192,7 +192,7 @@ class Migration26Tests(unittest.TestCase):
         self.assertEqual(_journal(self.path)[-1], (27, MIGRATION_27_NAME))
         # 2.5.1 доводит базу до 28; повторный прогон по-прежнему no-op.
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(_journal(self.path)[-1], (28, MIGRATION_28_NAME))
+        self.assertIn((28, MIGRATION_28_NAME), _journal(self.path))
         latest = {
             str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
         }

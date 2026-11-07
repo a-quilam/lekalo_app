@@ -111,6 +111,7 @@ class MigrationMechanismTests(unittest.TestCase):
                 (26, "announcement_instances"),
                 (27, "template_conditional_parts"),
                 (28, "template_snapshot_conditional_parts"),
+                (29, "user_event_log_reports"),
             ],
         )
 
@@ -223,6 +224,7 @@ class MigrationMechanismTests(unittest.TestCase):
                 (26, "announcement_instances"),
                 (27, "template_conditional_parts"),
                 (28, "template_snapshot_conditional_parts"),
+                (29, "user_event_log_reports"),
             ],
         )
 

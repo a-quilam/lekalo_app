@@ -105,9 +105,11 @@ class Migration28SnapshotRulesTests(unittest.TestCase):
 
     def test_fresh_install_has_snapshot_rules_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 28)
+        self.assertEqual(LATEST_VERSION, 29)
+        # Этап B добавил 29 (`user_event_log_reports`), поэтому позиция 28
+        # проверяется со сдвигом на одну запись.
         self.assertEqual(
-            _journal(self.path)[-2:],
+            _journal(self.path)[-3:-1],
             [
                 (27, MIGRATION_27_NAME),
                 (28, MIGRATION_28_NAME),
@@ -156,7 +158,9 @@ class Migration28SnapshotRulesTests(unittest.TestCase):
         self.assertNotIn(
             "conditional_rules_frozen", _columns(self.path, "template_snapshots")
         )
-        self.assertEqual(self.migrate(), LATEST_VERSION)
+        # Вклад ИМЕННО 28: до 29 база доводится отдельным шагом, иначе в
+        # добавочный набор попали бы объекты следующей миграции.
+        self.assertEqual(self.migrate(DEFAULT_MIGRATIONS[:28]), 28)
         after = {
             str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
         }
@@ -172,7 +176,14 @@ class Migration28SnapshotRulesTests(unittest.TestCase):
         self.assertEqual(self.migrate(), LATEST_VERSION)
         self.assertEqual(
             {str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")},
-            after,
+            after
+            | {
+                "user_event_log",
+                "reports",
+                "ix_user_event_log_user_created",
+                "ix_user_event_log_created",
+                "ix_reports_status_created",
+            },
             "повторный запуск ничего не меняет",
         )
 

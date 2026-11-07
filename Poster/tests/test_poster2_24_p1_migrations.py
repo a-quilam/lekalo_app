@@ -101,25 +101,26 @@ class Migration25JournalTests(_Migration25TestCase):
     def test_version_25_follows_24_and_is_named(self) -> None:
         # Poster 2.5 C1 добавила 26 (`announcement_instances`), D1 — 27
         # (`template_conditional_parts`), 2.5.1 — 28
-        # (`template_snapshot_conditional_parts`); миграция 25 остаётся на
-        # своём месте.
-        self.assertEqual(LATEST_VERSION, 28)
+        # (`template_snapshot_conditional_parts`), этап B — 29
+        # (`user_event_log_reports`); миграция 25 остаётся на своём месте.
+        self.assertEqual(LATEST_VERSION, 29)
         self.assertEqual(
             [(migration.version, migration.name) for migration in DEFAULT_MIGRATIONS],
             [
                 *[
                     (migration.version, migration.name)
-                    for migration in DEFAULT_MIGRATIONS[:-4]
+                    for migration in DEFAULT_MIGRATIONS[:-5]
                 ],
                 (25, MIGRATION_25_NAME),
                 (26, "announcement_instances"),
                 (27, "template_conditional_parts"),
                 (28, "template_snapshot_conditional_parts"),
+                (29, "user_event_log_reports"),
             ],
         )
         self.assertEqual(
             [migration.version for migration in DEFAULT_MIGRATIONS],
-            list(range(1, 29)),
+            list(range(1, 30)),
             "версии идут без пропусков и в порядке возрастания",
         )
 
@@ -134,13 +135,14 @@ class Migration25JournalTests(_Migration25TestCase):
         finally:
             connection.close()
         self.assertEqual(
-            versions[-5], (24, "template_content_and_extras_without_sections")
+            versions[-6], (24, "template_content_and_extras_without_sections")
         )
-        self.assertEqual(versions[-4], (25, MIGRATION_25_NAME))
-        self.assertEqual(versions[-3], (26, "announcement_instances"))
-        self.assertEqual(versions[-2], (27, "template_conditional_parts"))
-        self.assertEqual(versions[-1], (28, "template_snapshot_conditional_parts"))
-        self.assertEqual(len(versions), 28)
+        self.assertEqual(versions[-5], (25, MIGRATION_25_NAME))
+        self.assertEqual(versions[-4], (26, "announcement_instances"))
+        self.assertEqual(versions[-3], (27, "template_conditional_parts"))
+        self.assertEqual(versions[-2], (28, "template_snapshot_conditional_parts"))
+        self.assertEqual(versions[-1], (29, "user_event_log_reports"))
+        self.assertEqual(len(versions), 29)
 
     def test_repeated_run_is_idempotent(self) -> None:
         self.migrate_to_24()

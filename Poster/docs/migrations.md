@@ -2268,6 +2268,50 @@ Poster 2.5.1 (требование владельца): правила вход�
   COLUMN` дописывает её в конец, поэтому порядок колонок после миграции
   совпадает со свежим `create_all`.
 
+### Версия 29 (этап B) — `user_event_log_reports`
+
+Фундамент системы репортов (без UI и команды `/report` — они на этапе C).
+
+- **`user_event_log`** — структурированный журнал технических действий
+  пользователя: `id INTEGER PK`, `telegram_user_id INTEGER NOT NULL`,
+  `created_at DATETIME NOT NULL` (UTC), `action TEXT NOT NULL`,
+  `screen`/`scenario`/`result`/`detail TEXT` (nullable). Индексы
+  `ix_user_event_log_user_created (telegram_user_id, created_at)` — чтение
+  «события пользователя N за последний час» для снимка репорта — и
+  `ix_user_event_log_created (created_at)` для retention.
+- **Что запрещено писать.** Содержимое сообщений пользователя, значения
+  полей анонса, токены/ключи/пароли. В `detail` допускаются только
+  технические параметры (идентификаторы, счётчики, коды). Правило
+  закреплено комментарием в `utils/user_events.py` и тестом.
+- **Retention.** `RETENTION_DAYS = 7`, удаление по `created_at`. Фоновых
+  потоков и заданий PTB нет: очистка запускается из `event_log` раз в
+  `CLEANUP_EVERY` (200) записей — счётчик модуля, при рестарте просто
+  сдвигается расписание.
+- **`reports`** — постоянный репорт: `id INTEGER PK`,
+  `author_user_id INTEGER NOT NULL` (Telegram user ID, единственный
+  авторизационный ключ), `chat_id INTEGER NOT NULL`, `username`/
+  `display_name TEXT` (снимок на момент отправки, nullable), `body TEXT
+  NOT NULL`, `screen_label TEXT NOT NULL`, `created_at DATETIME NOT NULL`,
+  `events_snapshot TEXT NOT NULL` (готовый текст .txt-снимка событий в БД,
+  не временный файл), `status TEXT NOT NULL DEFAULT 'active'` с
+  `CHECK (status IN ('active','archived'))`, `developer_reply`/`replied_at`/
+  `closed_at` (nullable), `notified_user_ids TEXT` (JSON-список уже
+  уведомлённых superadmin — защита от повторной доставки после рестарта).
+  Индекс `ix_reports_status_created (status, created_at)` — список и
+  счётчик в кабинете.
+- **Слой доступа** — `report_store.py`: `create_report`, `active_reports`/
+  `archived_reports` (пагинация, новые к старым), `count_active`,
+  `get_report`, `archive_report` (условный `UPDATE ... WHERE status =
+  'active'` → rowcount; второе закрытие не переписывает первое),
+  `save_reply` (только для действующего), `record_notification`
+  (идемпотентно).
+- Обе таблицы описаны только Core-таблицами (`utils/user_events.py`,
+  `report_store.py`) и намеренно не добавлены в `models.py`, чтобы
+  `create_all` не создавал их в обход журнала миграций.
+- Миграция только добавочная: на базе версии 28 создаются ровно две
+  таблицы и три индекса, `PRAGMA integrity_check` = `ok`, повторный запуск
+  ничего не меняет.
+
 ## 9. Как добавлять миграции в будущих этапах
 
 1. **Никогда** не редактировать применённую миграцию и не удалять строки
