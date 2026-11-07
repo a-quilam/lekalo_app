@@ -327,6 +327,7 @@ class HelpStructureTests(unittest.TestCase):
             "/bricks",
             "/admin",
             "/cancel",
+            "/report",
         }
         details = [
             block

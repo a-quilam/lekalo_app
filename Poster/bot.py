@@ -3,7 +3,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -26,6 +26,7 @@ from handlers.bricks import bricks_handlers
 from handlers.main_menu import main_menu_handlers
 from handlers.noop import noop_handlers
 from handlers.places import places_handlers
+from handlers.report import report_handlers
 from handlers.templates import templates_handlers
 from handlers.user_tracking import track_user
 from log_config import setup_logging
@@ -190,6 +191,37 @@ async def _announcement_cleanup_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         logger.exception("Автоочистка анонсов завершилась ошибкой.")
 
 
+async def post_init_set_my_commands(application: Application) -> None:
+    """
+    Публичный список команд бота: единственная `/report` (этап C).
+
+    Описание — из каталога текстов. Сбой Telegram логируется и НЕ мешает
+    запуску: без списка команд бот работоспособен, а причина видна в логе.
+    """
+    try:
+        await application.bot.set_my_commands(
+            [
+                BotCommand(
+                    command="report",
+                    description=tr("report.command.description"),
+                )
+            ]
+        )
+    except Exception:  # noqa: BLE001 — список команд не критичен для запуска
+        logger.exception("Не удалось обновить список команд бота.")
+
+
+async def post_init_application(application: Application) -> None:
+    """
+    Совмещённый post_init: автоочистка анонсов + список команд.
+
+    `ApplicationBuilder` держит ОДИН hook: отдельные `.post_init(...)` молча
+    перезаписывают друг друга, поэтому обе задачи вызываются отсюда.
+    """
+    await post_init_announcement_cleanup(application)
+    await post_init_set_my_commands(application)
+
+
 def build_application() -> Application:
     """
     Собирает приложение со ВСЕМИ обработчиками (без запуска — тестируемо).
@@ -228,7 +260,7 @@ def build_application() -> Application:
         .get_updates_read_timeout(POLLING_GET_UPDATES_READ_TIMEOUT)
         .get_updates_write_timeout(POLLING_GET_UPDATES_WRITE_TIMEOUT)
         .get_updates_pool_timeout(POLLING_GET_UPDATES_POOL_TIMEOUT)
-        .post_init(post_init_announcement_cleanup)
+        .post_init(post_init_application)
         .post_shutdown(post_shutdown_announcement_cleanup)
         .build()
     )
@@ -254,6 +286,14 @@ def build_application() -> Application:
     # Кнопки списка текстовых полей (`anf_`) — там же: список живёт на самом
     # анонсе и работает без состояния диалога (2.5.3 §5).
     for handler in field_handlers():
+        application.add_handler(handler)
+
+    # `/report` и его кнопки — ДО конструктора: команда обязана работать из
+    # любого состояния (включая активный диалог анонса), иначе fallback
+    # `.*`/`handle_unknown_command` перехватил бы её. Текстовый обработчик
+    # формы активен только в этапе `text` (check_update), поэтому обычный
+    # ввод конструктора идёт прежним путём.
+    for handler in report_handlers():
         application.add_handler(handler)
 
     # Адаптивный мастер анонсов Stage 27B — первым: у него собственные

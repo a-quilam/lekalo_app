@@ -34,6 +34,7 @@ try:
     from telegram import (
         CallbackQuery,
         Chat,
+        Document,
         Message,
         MessageEntity,
         PhotoSize,
@@ -56,6 +57,7 @@ try:
     import handlers.main_menu as main_menu_module
     import handlers.place_invite as place_invite_module
     import handlers.places as places_module
+    import handlers.report as report_module
     import handlers.templates as templates_module
     import handlers.user_tracking as user_tracking_module
     import handlers.wizard_live as wizard_live_module
@@ -277,6 +279,33 @@ class FakeBot:
             }
         )
         return message
+
+    async def send_document(self, *args: Any, **kwargs: Any) -> Any:
+        """
+        Отправка файла (этап C: .txt-снимок событий в репорте).
+
+        Как и остальные `send_*`, возвращает фиктивное сообщение с растущим
+        message_id. Само вложение сохраняется в записи вызова (`document`,
+        `filename`): тест проверяет содержимое снимка, не разбирая файл.
+        """
+        record = self._record("document", args, kwargs)
+        message = self._make_message({**kwargs, "args": args, "text": None})
+        document = Document(file_id="fake_document", file_unique_id="fake_unique")
+        message = Message(
+            message_id=message.message_id,
+            date=FIXTURE_DATE,
+            chat=message.chat,
+            from_user=User(id=self.id, first_name=self.first_name, is_bot=True),
+            document=document,
+        )
+        message.set_bot(self)  # type: ignore[arg-type]
+        self.call_message_ids[id(record)] = (message.message_id,)
+        return message
+
+    async def set_my_commands(self, *args: Any, **kwargs: Any) -> bool:
+        """Публичный список команд (этап C: единственная /report)."""
+        self._record("set_my_commands", args, kwargs)
+        return True
 
     async def edit_message_text(self, *args: Any, **kwargs: Any) -> None:
         # Реализм Telegram: идентичное содержимое (текст + клавиатура) —
@@ -698,6 +727,7 @@ class Harness:
             announcement_panel_module.SessionLocal,
             wizard_live_module.SessionLocal,
             place_invite_module.SessionLocal,
+            report_module.SessionLocal,
         )
         screen_module.SessionLocal = self.session_factory
         places_module.SessionLocal = self.session_factory
@@ -714,6 +744,7 @@ class Harness:
         announcement_panel_module.SessionLocal = self.session_factory
         wizard_live_module.SessionLocal = self.session_factory
         place_invite_module.SessionLocal = self.session_factory
+        report_module.SessionLocal = self.session_factory
 
         # Уведомления об ошибках троттлятся по (chat_id, time.monotonic) —
         # без сброса тесты «повторно заметили бы» чужие уведомления
@@ -780,6 +811,7 @@ class Harness:
         announcement_panel_module.SessionLocal = self._orig_session_local[12]
         wizard_live_module.SessionLocal = self._orig_session_local[13]
         place_invite_module.SessionLocal = self._orig_session_local[14]
+        report_module.SessionLocal = self._orig_session_local[15]
         errors_module._last_error_notice.clear()
         errors_module._last_error_notice.update(self._orig_error_notice)
         self.engine.dispose()
