@@ -2000,6 +2000,50 @@ DEFAULTS: dict[str, str] = {
     "buttons.report.compose": "Составить репорт",
     "buttons.report.send": "Отправить репорт",
     "buttons.report.view": "Посмотреть",
+    # --- Репорты: раздел администрирования (Poster 2.5.5, этап D) -------
+    # Список активных и архив, карточка, ответ разработчика. Тексты
+    # админ-раздела отделены от текстов формы /report (этап C), чтобы
+    # правка одного сценария не меняла другой.
+    "admin.reports.title": "🛠 Репорты",
+    "admin.reports.active_total": "Активных репортов: {total}",
+    "admin.reports.intro": "Выберите репорт, чтобы прочитать его и ответить автору.",
+    "admin.reports.empty": "Активных репортов нет.",
+    "admin.reports.card_title": "Репорт №{report_id}",
+    "admin.reports.author": "Автор: {author_label} (ID {author_user_id})",
+    "admin.reports.section": "Раздел: {screen_label}",
+    "admin.reports.created": "Создан: {created_at}",
+    "admin.reports.body": "Текст:\n{body}",
+    "admin.reports.missing": "Репорт не найден.",
+    "admin.reports.already_closed": "Репорт уже закрыт: ответ отправлен в другом окне.",
+    "admin.reports.reply_prompt": "Напишите ответ пользователю.",
+    "admin.reports.reply_prompt_change": (
+        "Напишите новый ответ пользователю. Предыдущий текст сохранён, пока вы не пришлёте новый."
+    ),
+    "admin.reports.reply_empty": "Ответ не может быть пустым. Напишите текст ответа.",
+    "admin.reports.reply_preview": "Предпросмотр ответа:\n\n{reply}",
+    "admin.reports.reply_preview_hint": (
+        "Проверьте текст: он будет отправлен автору репорта."
+    ),
+    "admin.reports.reply_sent": "Ответ отправлен пользователю, репорт закрыт.",
+    "admin.reports.reply_failed": (
+        "Не удалось отправить ответ. Репорт остаётся активным — попробуйте ещё раз."
+    ),
+    "admin.reports.user_reply": "Спасибо за репорт! Ответ разработчика:\n\n{reply}",
+    "admin.reports.archive_title": "🗄 Архив репортов",
+    "admin.reports.archive_total": "Закрытых репортов: {total}",
+    "admin.reports.archive_empty": "В архиве пока нет репортов.",
+    "admin.reports.reply_label": "Ответ разработчика:\n{reply}",
+    "admin.reports.reply_missing": "Ответ не сохранён.",
+    "admin.reports.closed": "Закрыт: {closed_at}",
+    "buttons.reports.open": "🛠 Репорты",
+    "buttons.reports.counter": "Активных: {count}",
+    "buttons.reports.item": "{screen_label} — {author_label}",
+    "buttons.reports.archive": "🗄 Архив",
+    "buttons.reports.resolved": "✅ Решено",
+    "buttons.reports.reply_cancel": "Отмена",
+    "buttons.reports.reply_change": "✏️ Изменить",
+    "buttons.reports.reply_send": "📤 Отправить",
+    "buttons.reports.cabinet": "🏠 В меню кабинета",
 }
 
 

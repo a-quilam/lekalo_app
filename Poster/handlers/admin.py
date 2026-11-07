@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from html import escape as html_escape
+from io import BytesIO
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -43,6 +44,7 @@ from telegram.ext import (
     filters,
 )
 
+import report_store
 from admin_state import (
     clear_admin_session,
     load_admin_session,
@@ -171,7 +173,9 @@ from template_state import clear_template_session
 from user_store import get_or_create_user
 from utils import current_value, pagination, screen
 from utils import tg_context as ctx
-from utils.ui_texts import tr, tr_safe
+from utils.tg_html import split_html, utf16_len
+from utils.ui_texts import join_blocks, tr, tr_plain, tr_safe
+from utils.user_events import event_log
 
 logger = logging.getLogger(__name__)
 
@@ -231,7 +235,31 @@ PHASES = {
     "invite",
     # Poster 2.5 A3: служебный подраздел управления администратором места.
     "place_admins",
+    # Poster 2.5.5 D: раздел «Репорты» — список, карточка, ответ, архив.
+    "reports_list",
+    "report_card",
+    "report_reply_input",
+    "report_reply_preview",
+    "reports_archive",
+    "report_archive_card",
 }
+
+# Фазы раздела «Репорты»: доступны только суперадминистраторам.
+REPORTS_PHASES = frozenset(
+    {
+        "reports_list",
+        "report_card",
+        "report_reply_input",
+        "report_reply_preview",
+        "reports_archive",
+        "report_archive_card",
+    }
+)
+
+# Предел ответа разработчика: сообщение пользователю добавляет к ответу
+# префикс каталога, поэтому 3500 символов оставляют запас до лимита Telegram
+# (4096). Форма репорта использует такой же предел (`handlers/report.py`).
+MAX_REPORT_REPLY = 3500
 
 # Poster 2.5 A3: действия администратора доступны и с карточки места, и из
 # подраздела «Управление администратором» — это один и тот же механизм.
@@ -244,7 +272,7 @@ _SUPER_ONLY_PHASES = {
     "confirm_replace",
     "confirm_revoke",
     "proposal_global_list",
-}
+} | REPORTS_PHASES
 SUPER_ONLY_PHASES = _SUPER_ONLY_PHASES
 
 
@@ -1246,6 +1274,9 @@ def _places_content(
                     )
                 ]
             )
+            # Poster 2.5.5 D: вход в раздел «Репорты» — отдельная строка
+            # со счётчиком действующих жалоб (только суперадмин).
+            empty_rows.append(_reports_entry_row(session))
         empty_rows.append(
             [
                 InlineKeyboardButton(
@@ -1322,6 +1353,8 @@ def _places_content(
                 )
             ]
         )
+        # Poster 2.5.5 D: раздел «Репорты» — отдельная строка со счётчиком.
+        rows.append(_reports_entry_row(session))
     rows.append(
         [
             InlineKeyboardButton(
@@ -1330,6 +1363,366 @@ def _places_content(
         ]
     )
     return text, InlineKeyboardMarkup(rows)
+
+
+def _report_author_label(report: report_store.Report) -> str:
+    """@username, иначе имя, иначе ID (подпись автора в списке и карточке)."""
+    return report.author_label()
+
+
+def _report_item_label(report: report_store.Report) -> str:
+    """
+    Подпись кнопки репорта: «Раздел — автор», не длиннее лимита кнопки.
+
+    Подпись — plain-текст (`tr_plain`): разметку Telegram в кнопке не
+    разбирает, а название раздела приходит из каталога без тегов.
+    """
+    label = tr_plain(
+        "buttons.reports.item",
+        screen_label=report.screen_label,
+        author_label=_report_author_label(report),
+    )
+    if len(label) <= BUTTON_TEXT_LIMIT:
+        return label
+    return label[: max(BUTTON_TEXT_LIMIT - 1, 1)] + "…"
+
+
+def _reports_page(
+    session: Session,
+    state: dict,
+    *,
+    archived: bool,
+) -> tuple[list[report_store.Report], int, int]:
+    """
+    Страница репортов и выровненное смещение.
+
+    Хранилище само приводит номер страницы к допустимому; здесь смещение
+    нужно для строки навигации, поэтому после запроса оно пересчитывается
+    от общего числа — как у остальных списков кабинета.
+    """
+    offset_key = "reports_archive_offset" if archived else "reports_offset"
+    offset = max(_page_value(state, offset_key), 0)
+    page = offset // report_store.REPORTS_PAGE_SIZE
+    loader = report_store.archived_reports if archived else report_store.active_reports
+    items, total = loader(session, page=page)
+    offset = _clamp_offset(offset, total, report_store.REPORTS_PAGE_SIZE)
+    if offset != _page_value(state, offset_key):
+        items, total = loader(session, page=offset // report_store.REPORTS_PAGE_SIZE)
+    state[offset_key] = offset
+    return items, total, offset
+
+
+def _reports_list_content(
+    session: Session, state: dict
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Список действующих репортов: новые к старым, по пять на страницу."""
+    items, total, offset = _reports_page(session, state, archived=False)
+    heading = tr("admin.reports.title")
+    if total == 0:
+        text = join_blocks([heading, tr("admin.reports.empty")])
+    else:
+        text = join_blocks(
+            [
+                heading,
+                tr("admin.reports.active_total", total=total),
+                tr("admin.reports.intro"),
+            ]
+        )
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                _report_item_label(report), callback_data=f"rpts_card:{report.id}"
+            )
+        ]
+        for report in items
+    ]
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "rpts_page", page_size=report_store.REPORTS_PAGE_SIZE
+    )
+    if nav:
+        rows.append(nav)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                tr("buttons.reports.archive"), callback_data="rpts_archive"
+            )
+        ]
+    )
+    rows.append(
+        [InlineKeyboardButton(tr("buttons.nav.back"), callback_data="rpts_cabinet")]
+    )
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _reports_archive_content(
+    session: Session, state: dict
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Архив репортов: те же правила списка, но записи только для чтения."""
+    items, total, offset = _reports_page(session, state, archived=True)
+    heading = tr("admin.reports.archive_title")
+    if total == 0:
+        text = join_blocks([heading, tr("admin.reports.archive_empty")])
+    else:
+        text = join_blocks(
+            [
+                heading,
+                tr("admin.reports.archive_total", total=total),
+                tr("admin.reports.intro"),
+            ]
+        )
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                _report_item_label(report), callback_data=f"rpts_acard:{report.id}"
+            )
+        ]
+        for report in items
+    ]
+    nav = pagination.nav_keyboard_for_offset(
+        offset, total, "rpts_archive_page", page_size=report_store.REPORTS_PAGE_SIZE
+    )
+    if nav:
+        rows.append(nav)
+    rows.append(
+        [
+            InlineKeyboardButton(tr("buttons.nav.back"), callback_data="rpts_back"),
+            InlineKeyboardButton(
+                tr("buttons.reports.cabinet"), callback_data="rpts_cabinet"
+            ),
+        ]
+    )
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _report_reply_parts(reply: str) -> list[str]:
+    """
+    Части сообщения автору: префикс каталога + ответ, без потери данных.
+
+    Ответ ограничен `MAX_REPORT_REPLY`, но экранирование HTML может удлинить
+    его (например, `<` → `&lt;`). Поэтому сообщение режется штатным
+    `split_html` по границам тегов/сущностей: каждая часть — валидный HTML.
+    """
+    # Ответ — пользовательский текст; `tr` экранирует его сам, поэтому
+    # `<` и `&` в ответе не ломают HTML-разметку сообщения.
+    text = tr("admin.reports.user_reply", reply=reply)
+    if utf16_len(text) <= 4000:
+        return [text]
+    return split_html(text, 4000)
+
+
+def _report_reply_delivered_parts(state: dict, reply: str) -> int:
+    """
+    Сколько частей ответа уже подтверждено Telegram (0 — ни одной).
+
+    Прогресс хранится в состоянии вместе с самим текстом: новый ответ,
+    введённый пользователем, никогда не считается частично доставленным.
+    """
+    progress = state.get("report_reply_delivered")
+    if not isinstance(progress, dict) or progress.get("text") != reply:
+        return 0
+    count = progress.get("parts")
+    if not isinstance(count, int) or isinstance(count, bool):
+        return 0
+    return max(count, 0)
+
+
+def _report_body_block(report: report_store.Report, *, limit: int) -> str:
+    """Текст репорта с бюджетом экрана: сокращение честно помечено."""
+    body = _h(report.body)
+    return tr_safe(
+        "admin.reports.body",
+        body=current_value.clip_html(body, limit=limit),
+    )
+
+
+def _report_card_text(
+    report: report_store.Report, *, reply: str | None = None, closed: bool = False
+) -> str:
+    """Карточка репорта: автор, раздел, дата, полный текст (и ответ в архиве)."""
+    head = [
+        tr("admin.reports.card_title", report_id=report.id),
+        tr(
+            "admin.reports.author",
+            author_label=_report_author_label(report),
+            author_user_id=report.author_user_id,
+        ),
+        tr("admin.reports.section", screen_label=report.screen_label),
+        tr("admin.reports.created", created_at=_date_label(report.created_at)),
+    ]
+    tail: list[str] = []
+    if closed:
+        tail.append(
+            tr(
+                "admin.reports.reply_label",
+                # `tr` экранирует ответ — это пользовательский текст.
+                reply=reply if reply else tr("admin.reports.reply_missing"),
+            )
+        )
+        tail.append(tr("admin.reports.closed", closed_at=_date_label(report.closed_at)))
+
+    def build(limits: list[int]) -> str:
+        return join_blocks([*head, _report_body_block(report, limit=limits[0]), *tail])
+
+    # H3: бюджет считается от фактической обвязки, чтобы длинный текст
+    # репорта не вынес карточку за лимит Telegram.
+    limits = current_value.value_limits(build([0]), 1)
+    return current_value.clip_screen(build(limits))
+
+
+def _report_card_content(
+    report: report_store.Report,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Карточка действующего репорта: «Решено» и возврат к списку."""
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    tr("buttons.reports.resolved"),
+                    callback_data=f"rpts_reply:{report.id}",
+                )
+            ],
+            [InlineKeyboardButton(tr("buttons.nav.back"), callback_data="rpts_back")],
+        ]
+    )
+    return _report_card_text(report), keyboard
+
+
+def _report_archive_card_content(
+    report: report_store.Report,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Архивная карточка: ответ разработчика и дата закрытия, без действий."""
+    keyboard = InlineKeyboardMarkup(
+        [[InlineKeyboardButton(tr("buttons.nav.back"), callback_data="rpts_archive")]]
+    )
+    return (
+        _report_card_text(report, reply=report.developer_reply, closed=True),
+        keyboard,
+    )
+
+
+def _report_reply_input_content(*, changing: bool) -> tuple[str, InlineKeyboardMarkup]:
+    """Шаг 1 ответа: приглашение ввести текст и «Отмена»."""
+    prompt = (
+        tr("admin.reports.reply_prompt_change")
+        if changing
+        else tr("admin.reports.reply_prompt")
+    )
+    return prompt, InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    tr("buttons.reports.reply_cancel"),
+                    callback_data="rpts_reply_cancel",
+                )
+            ]
+        ]
+    )
+
+
+def _report_reply_preview_content(
+    reply: str,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Шаг 2 ответа: предпросмотр и три действия."""
+    text = join_blocks(
+        [
+            # `tr` экранирует ответ: `<` и `&` не ломают HTML-разметку экрана.
+            tr("admin.reports.reply_preview", reply=reply),
+            tr("admin.reports.reply_preview_hint"),
+        ]
+    )
+    return current_value.clip_screen(text), InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    tr("buttons.reports.reply_cancel"),
+                    callback_data="rpts_reply_cancel",
+                ),
+                InlineKeyboardButton(
+                    tr("buttons.reports.reply_change"),
+                    callback_data="rpts_reply_change",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    tr("buttons.reports.reply_send"),
+                    callback_data="rpts_reply_send",
+                )
+            ],
+        ]
+    )
+
+
+def _report_file_name(report: report_store.Report) -> str:
+    """Имя .txt-снимка: то же, что у этапа C (`report_ГГГГММДД_ЧЧММСС.txt`)."""
+    return f"report_{report.created_at:%Y%m%d_%H%M%S}.txt"
+
+
+async def _send_report_snapshot(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    report: report_store.Report,
+) -> None:
+    """Отправляет .txt-снимок событий; ошибка Telegram не ломает экран."""
+    try:
+        await context.bot.send_document(
+            chat_id=chat_id,
+            document=BytesIO((report.events_snapshot or "").encode("utf-8")),
+            filename=_report_file_name(report),
+        )
+    except Exception as exc:  # noqa: BLE001 — текст карточки уже показан
+        logger.warning("Снимок репорта %s не отправлен: %s", report.id, exc)
+
+
+def _reports_event(
+    user_id: int,
+    action: str,
+    *,
+    report_id: int | None = None,
+    result: str | None = None,
+    detail: str | None = None,
+) -> None:
+    """
+    Техническое событие раздела «Репорты».
+
+    `detail` — только идентификатор и технические параметры: текст жалобы
+    и ответа разработчика в журнал не попадают (контракт `user_events`).
+    """
+    parts: list[str] = []
+    if report_id is not None:
+        parts.append(f"report_id={report_id}")
+    if detail:
+        parts.append(detail)
+    event_log(
+        user_id,
+        action,
+        screen="admin_reports",
+        result=result,
+        detail="; ".join(parts) or None,
+        session_factory=SessionLocal,
+    )
+
+
+def _reports_entry_row(session: Session) -> list[InlineKeyboardButton]:
+    """
+    Строка входа в раздел «Репорты» для меню кабинета (только суперадмин).
+
+    Счётчик — отдельная неактивная кнопка с no-op callback'ом (PTB 22.8 не
+    знает `disabled`). Сбой БД не ломает кабинет: счётчик просто не
+    показывается, а кнопка входа остаётся рабочей.
+    """
+    row = [InlineKeyboardButton(tr("buttons.reports.open"), callback_data="rpts_list")]
+    try:
+        total = report_store.count_active(session)
+    except Exception as exc:  # noqa: BLE001 — кабинет важнее счётчика
+        logger.warning("Счётчик активных репортов недоступен: %s", exc)
+        return row
+    row.append(
+        InlineKeyboardButton(
+            tr("buttons.reports.counter", count=total),
+            callback_data=f"noop:0:{max(total, 0)}",
+        )
+    )
+    return row
 
 
 def _place_text(
@@ -2648,6 +3041,83 @@ def _confirmation_content(
     return text, keyboard
 
 
+def _reports_phase_content(
+    session: Session, state: dict, phase: str
+) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Экран фаз раздела «Репорты».
+
+    Репорт каждый раз читается из БД: статус мог измениться в другом окне,
+    и карточка обязана показывать актуальные данные. Отсутствующий репорт
+    — «Репорт не найден.» с возвратом к списку, а не исключение.
+    """
+
+    def _list_fallback() -> tuple[str, InlineKeyboardMarkup]:
+        # Возврат к списку: собственное состояние раздела сбрасывается.
+        state.pop("report_reply", None)
+        state.pop("report_reply_delivered", None)
+        if phase in {"reports_archive", "report_archive_card"}:
+            state["phase"] = "reports_archive"
+            return _reports_archive_content(session, state)
+        state["phase"] = "reports_list"
+        return _reports_list_content(session, state)
+
+    if phase == "reports_list":
+        return _reports_list_content(session, state)
+    if phase == "reports_archive":
+        return _reports_archive_content(session, state)
+
+    if phase in {"report_reply_input", "report_reply_preview"}:
+        reply = state.get("report_reply")
+        if phase == "report_reply_preview":
+            # Предпросмотр без текста бессмыслен: возвращаемся к вводу,
+            # репорт при этом остаётся открытым.
+            if not isinstance(reply, str) or not reply:
+                state["phase"] = "report_reply_input"
+                return _report_reply_input_content(changing=True)
+            return _report_reply_preview_content(reply)
+        return _report_reply_input_content(
+            changing=bool(state.get("report_reply_changing"))
+        )
+
+    if phase == "report_archive_card":
+        report_id = state.get("report_archive_id")
+        report = (
+            report_store.get_report(session, report_id)
+            if isinstance(report_id, int) and not isinstance(report_id, bool)
+            else None
+        )
+        if report is None or not report.is_archived:
+            state.pop("report_archive_id", None)
+            state.pop("report_reply", None)
+            state.pop("report_reply_delivered", None)
+            return _list_fallback()
+        return _report_archive_card_content(report)
+
+    report_id = state.get("report_id")
+    report = (
+        report_store.get_report(session, report_id)
+        if isinstance(report_id, int) and not isinstance(report_id, bool)
+        else None
+    )
+    if report is None:
+        state.pop("report_id", None)
+        state.pop("report_reply", None)
+        state.pop("report_reply_delivered", None)
+        return _list_fallback()
+    if not report.is_active:
+        # Другой суперадмин уже закрыл репорт: показываем архивную карточку,
+        # действия недоступны. Фаза переключается, чтобы ввод текста ответа
+        # больше не принимался, и состояние ответа сбрасывается.
+        state.pop("report_reply", None)
+        state.pop("report_reply_delivered", None)
+        state.pop("report_reply_changing", None)
+        state["phase"] = "report_archive_card"
+        state["report_archive_id"] = report.id
+        return _report_archive_card_content(report)
+    return _report_card_content(report)
+
+
 async def _render_phase(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -2688,6 +3158,8 @@ async def _render_phase(
 
         if phase == "places":
             text, keyboard = _places_content(session, state, access_kind, user_id)
+        elif phase in REPORTS_PHASES:
+            text, keyboard = _reports_phase_content(session, state, phase)
         elif phase == "place":
             if details is None:
                 state.clear()
@@ -6782,6 +7254,489 @@ async def _notify_conflict_admins(
     return delivered, undelivered
 
 
+async def _reports_denied(update: Update) -> bool:
+    """
+    Отказ не-суперадмину на ЛЮБОМ callback раздела «Репорты».
+
+    Возвращает True, если доступ запрещён: обработчик обязан выйти. Роль
+    берётся из `update.effective_user`, а не из callback-данных.
+    """
+    if is_superadmin(ctx.user(update).id):
+        return False
+    await ctx.query(update).answer(DENIED_ALERT, show_alert=True)
+    return True
+
+
+def _reports_state(update: Update) -> dict | None:
+    """Состояние кабинета, если сейчас открыт раздел «Репорты»."""
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") not in REPORTS_PHASES:
+        return None
+    return state
+
+
+def _reports_open_list(state: dict) -> None:
+    """Сброс к списку действующих репортов."""
+    state.clear()
+    state.update(_new_state())
+    state["phase"] = "reports_list"
+    state["reports_offset"] = 0
+
+
+async def handle_reports_open(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Вход в раздел «Репорты» из меню кабинета."""
+    if await _reports_denied(update):
+        return
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "places":
+        await _stale(update)
+        return
+    await ctx.query(update).answer()
+    _reports_open_list(state)
+    _reports_event(ctx.user(update).id, "admin_reports.list_opened")
+    await _render_phase(update, context, state)
+
+
+async def handle_reports_page(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Страница списка действующих репортов (смещение в callback)."""
+    if await _reports_denied(update):
+        return
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "reports_list":
+        await _stale(update)
+        return
+    try:
+        offset = int((ctx.query(update).data or "")[len("rpts_page:") :])
+    except (TypeError, ValueError):
+        await _stale(update)
+        return
+    await ctx.query(update).answer()
+    state["reports_offset"] = max(offset, 0)
+    await _render_phase(update, context, state)
+
+
+async def handle_reports_archive(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Архив репортов (вход из списка и возврат из архивной карточки)."""
+    if await _reports_denied(update):
+        return
+    state = _reports_state(update)
+    if state is None or state.get("phase") not in {
+        "reports_list",
+        "report_archive_card",
+        "reports_archive",
+    }:
+        await _stale(update)
+        return
+    await ctx.query(update).answer()
+    state["phase"] = "reports_archive"
+    if not isinstance(state.get("reports_archive_offset"), int):
+        state["reports_archive_offset"] = 0
+    state.pop("report_archive_id", None)
+    _reports_event(ctx.user(update).id, "admin_reports.archive_opened")
+    await _render_phase(update, context, state)
+
+
+async def handle_reports_archive_page(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Страница архива репортов."""
+    if await _reports_denied(update):
+        return
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "reports_archive":
+        await _stale(update)
+        return
+    try:
+        offset = int((ctx.query(update).data or "")[len("rpts_archive_page:") :])
+    except (TypeError, ValueError):
+        await _stale(update)
+        return
+    await ctx.query(update).answer()
+    state["reports_archive_offset"] = max(offset, 0)
+    await _render_phase(update, context, state)
+
+
+async def handle_reports_card(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Карточка действующего репорта: полный текст и .txt-снимок."""
+    if await _reports_denied(update):
+        return
+    state = _reports_state(update)
+    if state is None or state.get("phase") not in {"reports_list", "report_card"}:
+        await _stale(update)
+        return
+    report_id = _proposal_callback_id(str(ctx.query(update).data or ""))
+    if report_id is None:
+        await _stale(update)
+        return
+    with SessionLocal() as session:
+        report = report_store.get_report(session, report_id)
+    if report is None:
+        await ctx.query(update).answer(tr("admin.reports.missing"), show_alert=True)
+        return
+    await ctx.query(update).answer()
+    state["phase"] = "report_card"
+    state["report_id"] = report_id
+    state.pop("report_reply", None)
+    state.pop("report_reply_delivered", None)
+    state.pop("report_reply_changing", None)
+    _reports_event(
+        ctx.user(update).id, "admin_reports.report_opened", report_id=report_id
+    )
+    await _render_phase(update, context, state)
+    # .txt-снимок идёт отдельным сообщением вместе с карточкой: он нужен и
+    # для действующего репорта, и для уже закрытого (гонка двух окон).
+    await _send_report_snapshot(context, ctx.chat(update).id, report)
+
+
+async def handle_reports_archive_card(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Архивная карточка: ответ разработчика, дата закрытия, без действий."""
+    if await _reports_denied(update):
+        return
+    state = _reports_state(update)
+    if state is None or state.get("phase") not in {
+        "reports_archive",
+        "report_archive_card",
+    }:
+        await _stale(update)
+        return
+    report_id = _proposal_callback_id(str(ctx.query(update).data or ""))
+    if report_id is None:
+        await _stale(update)
+        return
+    with SessionLocal() as session:
+        report = report_store.get_report(session, report_id)
+    if report is None or not report.is_archived:
+        await ctx.query(update).answer(tr("admin.reports.missing"), show_alert=True)
+        return
+    await ctx.query(update).answer()
+    state["phase"] = "report_archive_card"
+    state["report_archive_id"] = report_id
+    state.pop("report_id", None)
+    state.pop("report_reply", None)
+    state.pop("report_reply_delivered", None)
+    state.pop("report_reply_changing", None)
+    _reports_event(
+        ctx.user(update).id, "admin_reports.archive_opened", report_id=report_id
+    )
+    await _render_phase(update, context, state)
+    await _send_report_snapshot(context, ctx.chat(update).id, report)
+
+
+async def handle_reports_back(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«◀️ Назад» из карточки — к списку действующих репортов."""
+    if await _reports_denied(update):
+        return
+    state = _reports_state(update)
+    if state is None:
+        await _stale(update)
+        return
+    await ctx.query(update).answer()
+    state.pop("report_id", None)
+    state.pop("report_reply", None)
+    state.pop("report_reply_delivered", None)
+    state.pop("report_reply_changing", None)
+    state.pop("report_archive_id", None)
+    state["phase"] = "reports_list"
+    _reports_event(ctx.user(update).id, "admin_reports.list_opened")
+    await _render_phase(update, context, state)
+
+
+async def handle_reports_cabinet(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«🏠 В меню кабинета»: возврат в список мест/меню кабинета."""
+    if await _reports_denied(update):
+        return
+    state = _reports_state(update)
+    if state is None:
+        await _stale(update)
+        return
+    await ctx.query(update).answer()
+    state.clear()
+    state.update(_new_state())
+    await _render_phase(update, context, state)
+
+
+async def handle_report_reply_start(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«Решено»: шаг 1 — приглашение написать ответ пользователю."""
+    if await _reports_denied(update):
+        return
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "report_card":
+        await _stale(update)
+        return
+    report_id = _proposal_callback_id(str(ctx.query(update).data or ""))
+    if report_id is None or state.get("report_id") != report_id:
+        await _stale(update)
+        return
+    with SessionLocal() as session:
+        report = report_store.get_report(session, report_id)
+    if report is None or not report.is_active:
+        # Репорт закрыли в другом окне до начала ответа.
+        await ctx.query(update).answer(
+            tr("admin.reports.already_closed"), show_alert=True
+        )
+        state.pop("report_reply", None)
+        state.pop("report_reply_delivered", None)
+        await _render_phase(update, context, state)
+        return
+    await ctx.query(update).answer()
+    state["phase"] = "report_reply_input"
+    state.pop("report_reply", None)
+    state.pop("report_reply_delivered", None)
+    state.pop("report_reply_changing", None)
+    _reports_event(
+        ctx.user(update).id, "admin_reports.reply_started", report_id=report_id
+    )
+    await _render_phase(update, context, state)
+
+
+async def handle_report_reply_change(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«Изменить» в предпросмотре: вернуться к вводу, текст сохранён."""
+    if await _reports_denied(update):
+        return
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "report_reply_preview":
+        await _stale(update)
+        return
+    if not isinstance(state.get("report_reply"), str):
+        await _stale(update)
+        return
+    await ctx.query(update).answer()
+    state["phase"] = "report_reply_input"
+    state["report_reply_changing"] = True
+    await _render_phase(update, context, state)
+
+
+async def handle_report_reply_cancel(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«Отмена» ответа: возврат к карточке, репорт остаётся активным."""
+    if await _reports_denied(update):
+        return
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") not in {
+        "report_reply_input",
+        "report_reply_preview",
+    }:
+        await _stale(update)
+        return
+    await ctx.query(update).answer()
+    state["phase"] = "report_card"
+    state.pop("report_reply", None)
+    state.pop("report_reply_delivered", None)
+    state.pop("report_reply_changing", None)
+    _reports_event(
+        ctx.user(update).id,
+        "admin_reports.reply_cancelled",
+        report_id=(
+            state.get("report_id") if isinstance(state.get("report_id"), int) else None
+        ),
+    )
+    await _render_phase(update, context, state)
+
+
+async def handle_report_reply_send(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    «Отправить»: сообщение автору репорта, затем закрытие репорта.
+
+    Порядок жёсткий: сначала проверка актуального статуса, затем доставка
+    на `reports.chat_id`, и только после подтверждённой доставки — запись
+    ответа и атомарное закрытие (`archive_report`, `WHERE status='active'`).
+    Сбой доставки оставляет репорт активным и даёт возможность повтора;
+    повторное нажатие после успеха ничего не дублирует.
+
+    Длинный ответ уходит несколькими частями. Прогресс фиксируется в
+    состоянии после КАЖДОЙ подтверждённой части, поэтому сбой посередине и
+    повтор отправляют только недостающие части: заголовок «Спасибо за
+    репорт!» (он в первой части) и уже доставленный текст не дублируются.
+    """
+    if await _reports_denied(update):
+        return
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {
+        "report_reply_input",
+        "report_reply_preview",
+        "report_card",
+    }:
+        await _stale(update)
+        return
+    report_id = state.get("report_id")
+    reply = state.get("report_reply")
+    if not isinstance(report_id, int) or isinstance(report_id, bool):
+        await _stale(update)
+        return
+
+    with SessionLocal() as session:
+        report = report_store.get_report(session, report_id)
+    if report is None:
+        await ctx.query(update).answer(tr("admin.reports.missing"), show_alert=True)
+        return
+    if not report.is_active:
+        # Другой суперадмин уже закрыл репорт — второй ответ невозможен.
+        # Экран переводится в архивную карточку: администратор видит ответ
+        # первого и дату закрытия, а не приглашение писать в закрытый репорт
+        # (иначе повторный ввод снова упирается в отказ).
+        await ctx.query(update).answer(
+            tr("admin.reports.already_closed"), show_alert=True
+        )
+        state["phase"] = "report_archive_card"
+        state["report_archive_id"] = report.id
+        state.pop("report_id", None)
+        state.pop("report_reply", None)
+        state.pop("report_reply_delivered", None)
+        state.pop("report_reply_changing", None)
+        await _render_phase(update, context, state)
+        return
+    if not isinstance(reply, str) or not reply.strip():
+        await _stale(update)
+        return
+
+    # Доставка автору репорта: адрес — сохранённый chat_id репорта, а не
+    # чат администратора. Длинный ответ (после экранирования HTML) уходит
+    # несколькими частями без потери данных.
+    #
+    # Повтор после сбоя не дублирует сообщение: в состоянии запоминается
+    # текст и число подтверждённых частей, поэтому дошлются только
+    # недостающие. Совпадение текста — единственный признак; новый ответ
+    # пользователь вводит заново, и он отличается.
+    parts = _report_reply_parts(reply)
+    delivered_parts = _report_reply_delivered_parts(state, reply)
+    if delivered_parts < len(parts):
+        for index in range(delivered_parts, len(parts)):
+            try:
+                await context.bot.send_message(
+                    chat_id=report.chat_id,
+                    text=parts[index],
+                    parse_mode="HTML",
+                )
+            except Exception as exc:  # noqa: BLE001 — репорт остаётся активным
+                logger.warning("Ответ на репорт %s не доставлен: %s", report_id, exc)
+                _reports_event(
+                    user_id,
+                    "admin_reports.reply_failed",
+                    report_id=report_id,
+                    result="error",
+                    detail=f"error={type(exc).__name__}",
+                )
+                await ctx.query(update).answer(
+                    tr("admin.reports.reply_failed"), show_alert=True
+                )
+                return
+            # Фиксируем прогресс ПОСЛЕ подтверждённой части: при сбое
+            # посередине повтор дошлёт только недостающее и не продублирует
+            # ни заголовок, ни уже ушедший текст.
+            state["report_reply_delivered"] = {"text": reply, "parts": index + 1}
+            if not save_admin_session(user_id, state):
+                logger.warning(
+                    "Прогресс доставки ответа на репорт %s не сохранён.", report_id
+                )
+
+    # Доставка подтверждена: сохраняем ответ и закрываем репорт ОДНИМ
+    # условным UPDATE (`status='active'`) — ответ и статус не расходятся,
+    # а гонка двух закрытий безопасна.
+    closed = False
+    with SessionLocal() as session:
+        try:
+            closed = bool(report_store.archive_report(session, report_id, reply=reply))
+        except Exception as exc:  # noqa: BLE001 — доставлено, но не сохранено
+            logger.error("Ответ на репорт %s не сохранён: %s", report_id, exc)
+            _reports_event(
+                user_id,
+                "admin_reports.reply_failed",
+                report_id=report_id,
+                result="error",
+                detail=f"error={type(exc).__name__}",
+            )
+            await ctx.query(update).answer(
+                tr("admin.reports.reply_failed"), show_alert=True
+            )
+            return
+
+    state["phase"] = "report_card"
+    state.pop("report_reply", None)
+    state.pop("report_reply_delivered", None)
+    state.pop("report_reply_changing", None)
+    if not closed:
+        # Гонка двух закрытий: сообщение ушло, но репорт закрыл другой
+        # администратор — повторно ничего не отправляем.
+        await ctx.query(update).answer(
+            tr("admin.reports.already_closed"), show_alert=True
+        )
+        _reports_event(
+            user_id,
+            "admin_reports.reply_failed",
+            report_id=report_id,
+            result="error",
+            detail="reason=already_closed",
+        )
+        await _render_phase(update, context, state)
+        return
+    await ctx.query(update).answer(tr("admin.reports.reply_sent"))
+    _reports_event(user_id, "admin_reports.reply_sent", report_id=report_id)
+    await _render_phase(update, context, state, notice=tr("admin.reports.reply_sent"))
+
+
+async def handle_report_reply_text(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Шаг 2: текст ответа обычным сообщением — только в своей фазе."""
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") != "report_reply_input":
+        return
+    if not is_superadmin(ctx.user(update).id):
+        clear_admin_session(ctx.user(update).id)
+        await _render_denied(update, context)
+        return
+    raw = ctx.message(update).text or ""
+    cleanup: list[int] = []
+    message = getattr(update, "message", None)
+    if message is not None and message.message_id is not None:
+        cleanup.append(int(message.message_id))
+    if not raw.strip():
+        await _render_phase(
+            update,
+            context,
+            state,
+            notice=tr("admin.reports.reply_empty"),
+            cleanup_ids=cleanup,
+            drop_input=True,
+        )
+        return
+    if len(raw) > MAX_REPORT_REPLY:
+        await _render_phase(
+            update,
+            context,
+            state,
+            notice=tr("report.screen.too_long", limit=MAX_REPORT_REPLY),
+            cleanup_ids=cleanup,
+            drop_input=True,
+        )
+        return
+    state["report_reply"] = raw
+    state["phase"] = "report_reply_preview"
+    await _render_phase(update, context, state, cleanup_ids=cleanup, drop_input=True)
+
+
 async def handle_admin_stale(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -6964,6 +7919,32 @@ def admin_handlers() -> list[BaseHandler]:
             filters.TEXT & ~filters.COMMAND,
             handle_transfer_text,
             allowed_phases=TRANSFER_INPUT_PHASES,
+        ),
+        # Poster 2.5.5 D: раздел «Репорты» (суперадмин). Префикс `rpts_` —
+        # вне `adm_`, иначе финальный stale-обработчик `^adm_` перехватывал
+        # бы неизвестные (и будущие) кнопки раздела.
+        CallbackQueryHandler(handle_reports_open, pattern=r"^rpts_list$"),
+        CallbackQueryHandler(handle_reports_page, pattern=r"^rpts_page:\d+$"),
+        CallbackQueryHandler(handle_reports_archive, pattern=r"^rpts_archive$"),
+        CallbackQueryHandler(
+            handle_reports_archive_page, pattern=r"^rpts_archive_page:\d+$"
+        ),
+        CallbackQueryHandler(handle_reports_card, pattern=r"^rpts_card:\d+$"),
+        CallbackQueryHandler(handle_reports_archive_card, pattern=r"^rpts_acard:\d+$"),
+        CallbackQueryHandler(handle_reports_back, pattern=r"^rpts_back$"),
+        CallbackQueryHandler(handle_reports_cabinet, pattern=r"^rpts_cabinet$"),
+        CallbackQueryHandler(handle_report_reply_start, pattern=r"^rpts_reply:\d+$"),
+        CallbackQueryHandler(
+            handle_report_reply_change, pattern=r"^rpts_reply_change$"
+        ),
+        CallbackQueryHandler(
+            handle_report_reply_cancel, pattern=r"^rpts_reply_cancel$"
+        ),
+        CallbackQueryHandler(handle_report_reply_send, pattern=r"^rpts_reply_send$"),
+        AdminTextHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_report_reply_text,
+            allowed_phases=frozenset({"report_reply_input"}),
         ),
         CallbackQueryHandler(handle_admin_stale, pattern=r"^adm_"),
     ]
