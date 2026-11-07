@@ -88,6 +88,7 @@ try:
         scenario_test,
     )
     from tests.test_stage27b_announcement_ui import (
+        TemplateSpec,
         _choose_personal,
         _open_field_question,
         _seed_personal_template,
@@ -256,7 +257,7 @@ async def _start_wizard(h, *, fields: int = 1):
     """Открывает конструктор и останавливается на первом вопросе."""
     await h.text("/start")
     place_id, _alias = _seed_place(h)
-    specs = [
+    specs: list[TemplateSpec] = [
         (f"f{index}", f"Поле {index}", "short_text", {}) for index in range(fields)
     ]
     template_id, _revision, bricks = _seed_personal_template(

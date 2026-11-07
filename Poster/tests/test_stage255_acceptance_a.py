@@ -51,6 +51,7 @@ try:
         scenario_test,
     )
     from tests.test_stage27b_announcement_ui import (
+        TemplateSpec,
         _choose_personal,
         _latest_draft,
         _seed_personal_template,
@@ -72,7 +73,6 @@ try:
         LONG_NO_PHOTO,
         OLD_DESCRIPTION,
         _error_keyboard,
-        _message_id,
         _open_description,
         _value_rows,
     )
@@ -829,7 +829,7 @@ class EmptyCatalogScreenRequirementTests(unittest.TestCase):
         """Экран вопроса с пустыми optional/missing: ни дыры, ни потери блоков."""
         await h.text("/start")
         place_id, _alias = _seed_place(h)
-        specs = [("q1", "Название", "short_text", {})]
+        specs: list[TemplateSpec] = [("q1", "Название", "short_text", {})]
         template_id, _revision, _bricks = _seed_personal_template(
             h, name="Шаблон вопроса", specs=specs, content="[q1]"
         )
@@ -853,7 +853,7 @@ class EmptyCatalogScreenRequirementTests(unittest.TestCase):
     async def test_12_composite_screen_keeps_header_description_value(self, h) -> None:
         await h.text("/start")
         place_id, _alias = _seed_place(h)
-        specs = [
+        specs: list[TemplateSpec] = [
             ("d1", "Название", "short_text", {}),
             ("d2", "Формат", "short_text", {}),
         ]
