@@ -173,7 +173,7 @@ class MigrationFifteenAndSixteenTests(_MigrationTestCase):
     """Миграции 15–17 на заполненной временной БД версии 13."""
 
     def test_migration_keeps_rows_links_checks_and_passes_integrity(self) -> None:
-        self.assertEqual(LATEST_VERSION, 29)
+        self.assertEqual(LATEST_VERSION, 30)
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
 
         connection = sqlite3.connect(self.path)
@@ -604,12 +604,15 @@ class PersonalOneOffPlaceTests(AnnouncementDatabaseTestCase):
 
         # Стандарт без `[адрес]`: H2 меняет весь текст, поэтому кирпичика
         # нет в снимке, и адрес карточки не появляется в значениях рендера.
+        # §1.2: снимок берёт привязки ОБОИХ текстов стандарта, поэтому адрес
+        # убирается из обоих — простого и расширенного.
         update_template_content(
             self.session,
             actor_telegram_user_id=OWNER_TG,
             template_id=self.standard.template_id,
             expected_revision=self.standard.revision,
             content="Только [название]",
+            extended_content="Только [название]",
         )
         self.session.expire_all()
         without = self.start_at_questions()
@@ -639,7 +642,7 @@ class InitialPersonalTemplateTests(AnnouncementDatabaseTestCase):
         version = templates[0].current_version
         self.assertEqual(version.content, BUILTIN_TEMPLATE.content)
         self.assertEqual(version.extended_content, BUILTIN_TEMPLATE.extended_content)
-        self.assertEqual(BUILTIN_TEMPLATE_VERSION, 4)
+        self.assertEqual(BUILTIN_TEMPLATE_VERSION, 5)
         # Чужой пользователь получает свою копию, а не шаблон владельца.
         other = ensure_initial_personal_template(
             self.session, actor_telegram_user_id=OTHER_TG
@@ -918,8 +921,16 @@ class AddressBrickAndDescriptionTests(AnnouncementDatabaseTestCase):
     def test_address_brick_is_system_and_renders_from_place_card(self) -> None:
         codes = [brick.code for brick in list_system_bricks(self.session)]
         # Poster 2.4 P1: адресный кирпичик ОДИН — легаси `адрес_места`
-        # устранён миграцией 25, поэтому системных определения 10, а не 11.
-        self.assertEqual(len(codes), 10)
+        # устранён миграцией 25. A1 (миграция 30): добавлены
+        # `[условие_входа]`/`[куратор]`/`[подвал]` — системных определений 13
+        # (id 1–14, номер 6 не существует).
+        self.assertEqual(len(codes), 13)
+        self.assertEqual(
+            sorted(brick.id for brick in list_system_bricks(self.session)),
+            [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14],
+        )
+        for added in ("условие_входа", "куратор", "подвал"):
+            self.assertIn(added, codes)
         self.assertIn("адрес", codes)
         self.assertIn("город", codes)
         self.assertNotIn("адрес_места", codes)

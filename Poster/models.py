@@ -1028,6 +1028,18 @@ class Template(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
+    # Этап A1 (миграция 30): активен ли расширенный вариант текста. Флаг есть
+    # у ОБОИХ видов шаблона, но смысл имеет у стандарта площадки: там он
+    # выбирает, каким текстом создаётся новый анонс. Личные шаблоны, как и
+    # прежде, выбирают вариант по наличию доп. кирпичиков. Выключение флага
+    # не удаляет ни текст, ни условные части.
+    #
+    # Колонка объявлена последней: `ALTER TABLE ADD COLUMN` миграции 30
+    # дописывает её в конец, и порядок колонок совпадает со свежим
+    # `create_all`.
+    extended_active: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
 
     __table_args__ = (
         CheckConstraint(
@@ -1042,6 +1054,10 @@ class Template(Base):
             name="ck_templates_shape",
         ),
         CheckConstraint("revision >= 1", name="ck_templates_revision"),
+        CheckConstraint(
+            "extended_active IN (0, 1)",
+            name="ck_templates_extended_active",
+        ),
         Index(
             "ux_templates_one_standard_place",
             "place_id",
@@ -1206,6 +1222,13 @@ class TemplateSnapshot(Base):
     conditional_rules_frozen: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
+    # Этап A1 (миграция 30): значение флага расширенного варианта на момент
+    # создания снимка. Стандартный шаблон рендерит анонс по этому значению, а
+    # не по текущему флагу шаблона: переключение посреди создания не меняет
+    # начатый черновик (§3.1). Личные шаблоны флаг не используют.
+    extended_active: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
 
     __table_args__ = (
         ForeignKeyConstraint(
@@ -1241,6 +1264,10 @@ class TemplateSnapshot(Base):
         CheckConstraint(
             "conditional_rules_frozen IN (0, 1)",
             name="ck_template_snapshots_conditional_rules_frozen",
+        ),
+        CheckConstraint(
+            "extended_active IN (0, 1)",
+            name="ck_template_snapshots_extended_active",
         ),
         Index(
             "ux_template_snapshots_idempotency",

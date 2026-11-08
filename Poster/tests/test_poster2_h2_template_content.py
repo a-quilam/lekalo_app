@@ -63,17 +63,50 @@ from template_types import (
 from tests.stage19a_helpers import make_engine, temp_db_path
 from tests.stage27_helpers import OWNER_TG, AnnouncementDatabaseTestCase
 
-# --- Эталон v4 (литералы, без импорта констант продукта) --------------------
+# --- Эталон v5 (литералы, без импорта констант продукта) --------------------
+#
+# §1.1: между датой и временем — запятая и пробел; контакт — с подписью
+# «Мероприятие ведёт:».
 
 REFERENCE_HEADER = (
+    "**[название]**\n"
+    "\n"
+    "**[дата], [время_начала]**\n"
+    "**[место]([ссылка_места])**\n"
+    "[адрес]"
+)
+REFERENCE_BODY = "\n[описание]"
+REFERENCE_FOOTER = "\nМероприятие ведёт: [контакт]"
+
+# §1.2: расширенный текст того же стандарта. Хранится рядом с простым.
+REFERENCE_EXTENDED_CONTENT = (
+    "**[название]**\n"
+    "[условие_входа]\n"
+    "\n"
+    "**[дата], [время_начала]–[время_окончания]**\n"
+    "**[место]([ссылка_места])**\n"
+    "[город], [адрес]\n"
+    "\n"
+    "[описание]\n"
+    "\n"
+    "Мероприятие ведёт: [контакт]\n"
+    "Куратор от площадки: [куратор]\n"
+    "\n"
+    "[подвал]"
+)
+
+# Эталон v4 — исторические тексты секций (до миграции 24). Нужен как данные
+# фикстур миграции и как проверка, что миграция 30 не переписывает уже
+# сохранённые шаблоны.
+V4_REFERENCE_HEADER = (
     "**[название]**\n"
     "\n"
     "**[дата] // [время_начала]**\n"
     "**[место]([ссылка_места])**\n"
     "[адрес]"
 )
-REFERENCE_BODY = "\n[описание]"
-REFERENCE_FOOTER = "\n[контакт]"
+V4_REFERENCE_BODY = "\n[описание]"
+V4_REFERENCE_FOOTER = "\n[контакт]"
 
 
 # Формула backfill миграции 24: разделитель только между непустыми (по
@@ -97,30 +130,31 @@ def _join(header: str, body: str, footer: str) -> str:
 GOLDEN_ALL_FILLED = (
     "<b>Летний концерт</b>\n"
     "\n"
-    "<b>12.07 (пн) // 19:00</b>\n"
+    "<b>12.07 (пн), 19:00</b>\n"
     '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
     "ул. Ленина, 1\n"
     "\n"
     "Большой зал, вход свободный.\n"
     "\n"
-    "@contact"
+    "Мероприятие ведёт: @contact"
 )
 # Пустое описание: его строка скрывается вместе с соседней пустой, поэтому
 # между адресом и контактом остаётся ровно один пустой разделитель шаблона.
 GOLDEN_EMPTY_DESCRIPTION = (
     "<b>Летний концерт</b>\n"
     "\n"
-    "<b>12.07 (пн) // 19:00</b>\n"
+    "<b>12.07 (пн), 19:00</b>\n"
     '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
     "ул. Ленина, 1\n"
     "\n"
-    "@contact"
+    "Мероприятие ведёт: @contact"
 )
-# Пустой контакт: скрыта его строка, текст заканчивается описанием.
+# Пустой контакт: скрыта вся строка «Мероприятие ведёт: …» (§2.1), текст
+# заканчивается описанием.
 GOLDEN_EMPTY_CONTACT = (
     "<b>Летний концерт</b>\n"
     "\n"
-    "<b>12.07 (пн) // 19:00</b>\n"
+    "<b>12.07 (пн), 19:00</b>\n"
     '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
     "ул. Ленина, 1\n"
     "\n"
@@ -129,7 +163,7 @@ GOLDEN_EMPTY_CONTACT = (
 GOLDEN_EMPTY_BOTH = (
     "<b>Летний концерт</b>\n"
     "\n"
-    "<b>12.07 (пн) // 19:00</b>\n"
+    "<b>12.07 (пн), 19:00</b>\n"
     '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
     "ул. Ленина, 1"
 )
@@ -143,11 +177,34 @@ FILLED_VALUES = {
     "адрес": "ул. Ленина, 1",
     "описание": "Большой зал, вход свободный.",
     "контакт": "@contact",
+    # §1.2: поля расширенного текста. Простой текст их не содержит, поэтому
+    # на golden простого варианта они не влияют.
+    "время_окончания": "21:00",
+    "город": "Москва",
+    "условие_входа": "Вход свободный",
+    "куратор": "@curator",
+    "подвал": "До встречи!",
 }
+
+# Golden расширенного текста при всех заполненных значениях (§1.2, §2.2).
+GOLDEN_EXTENDED_ALL_FILLED = (
+    "<b>Летний концерт</b>\n"
+    "Вход свободный\n"
+    "\n"
+    "<b>12.07 (пн), 19:00–21:00</b>\n"
+    '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
+    "Москва, ул. Ленина, 1\n"
+    "\n"
+    "Большой зал, вход свободный.\n"
+    "\n"
+    "Мероприятие ведёт: @contact\n"
+    "Куратор от площадки: @curator\n"
+    "\n"
+    "До встречи!"
+)
 
 SYSTEM_BY_CODE = {item.code: item for item in SYSTEM_BRICKS}
 BINDINGS = {code: SYSTEM_BY_CODE[code].id for code in FILLED_VALUES}
-
 
 def _definitions() -> dict[int, Any]:
     """Определения системных кирпичиков: ID → описание для компилятора."""
@@ -216,7 +273,7 @@ def _values(**overrides: str) -> dict[int, Any]:
 class TemplateContentGoldenTests(unittest.TestCase):
     """Склейка прежних секций и рендер единого `content` — байт-в-байт."""
 
-    def test_v4_sections_join_equals_builtin_content(self) -> None:
+    def test_sections_join_equals_builtin_content(self) -> None:
         joined = _join(REFERENCE_HEADER, REFERENCE_BODY, REFERENCE_FOOTER)
         self.assertEqual(joined, BUILTIN_TEMPLATE_CONTENT)
         # Прежний рендер склеивал непустые секции через "\n" — результат
@@ -226,14 +283,33 @@ class TemplateContentGoldenTests(unittest.TestCase):
             "\n".join((REFERENCE_HEADER, REFERENCE_BODY, REFERENCE_FOOTER)),
         )
 
-    def test_extended_content_is_absent_in_builtin(self) -> None:
-        self.assertIsNone(BUILTIN_TEMPLATE_EXTENDED_CONTENT)
+    def test_extended_content_present_in_builtin(self) -> None:
+        # §1: у стандарта ДВА сохранённых текста; расширенный создаётся сразу.
+        self.assertEqual(
+            BUILTIN_TEMPLATE_EXTENDED_CONTENT, REFERENCE_EXTENDED_CONTENT
+        )
 
     def _render(self, text: str, values: dict[int, Any]) -> str:
         return render_template(
             {TEMPLATE_CONTENT: _bound_tokens(text)},
             values,
             _definitions(),
+        )
+
+    def _render_extended(self, values: dict[int, Any]) -> str:
+        """Рендер сохранённого расширенного текста стандарта (§1.2)."""
+        from template_types import TEMPLATE_EXTENDED_CONTENT
+
+        return render_template(
+            {
+                TEMPLATE_CONTENT: _bound_tokens(BUILTIN_TEMPLATE_CONTENT),
+                TEMPLATE_EXTENDED_CONTENT: _bound_tokens(
+                    REFERENCE_EXTENDED_CONTENT
+                ),
+            },
+            values,
+            _definitions(),
+            use_extended=True,
         )
 
     def test_golden_matrix_matches_joined_content_byte_for_byte(self) -> None:
@@ -259,6 +335,42 @@ class TemplateContentGoldenTests(unittest.TestCase):
                 from_literal = self._render(BUILTIN_TEMPLATE_CONTENT, values)
                 self.assertEqual(from_join, from_literal, "склейка = литерал")
                 self.assertEqual(from_join, golden, "golden байт-в-байт")
+
+    def test_extended_golden_all_filled(self) -> None:
+        """
+        §1.2/§2.2: рендер сохранённого расширенного текста байт-в-байт.
+
+        `use_extended=True` берёт `extended_content` шаблона: диапазон времени
+        через U+2013, «город, адрес» одной строкой, куратор и подвал.
+        """
+        self.assertEqual(
+            self._render_extended(_values()),
+            GOLDEN_EXTENDED_ALL_FILLED,
+            "расширенный golden байт-в-байт",
+        )
+
+    def test_extended_optional_lines_hidden_when_empty(self) -> None:
+        # §2.2: условные строки расширенного текста скрываются вместе с
+        # разделителями: пустые «условие_входа», «куратор» и «подвал» не
+        # оставляют висячих переводов строк.
+        values = _values(условие_входа="", куратор="", подвал="")
+        rendered = self._render_extended(values)
+        self.assertNotIn("Вход свободный", rendered)
+        self.assertNotIn("Куратор", rendered)
+        self.assertNotIn("До встречи!", rendered)
+        self.assertNotIn("\n\n\n", rendered, "нет двойных разделителей")
+        self.assertFalse(rendered.endswith("\n"), "нет хвостового перевода строки")
+        self.assertIn("Мероприятие ведёт: @contact", rendered)
+        self.assertIn("Москва, ул. Ленина, 1", rendered)
+
+    def test_extended_flag_falls_back_to_simple_text(self) -> None:
+        # Флаг без сохранённого extended_content деградирует к простому тексту,
+        # а не к пустому сообщению (контракт render_template).
+        tokens = {TEMPLATE_CONTENT: _bound_tokens(BUILTIN_TEMPLATE_CONTENT)}
+        self.assertEqual(
+            render_template(tokens, _values(), _definitions(), use_extended=True),
+            GOLDEN_ALL_FILLED,
+        )
 
     def test_empty_builtin_render_is_empty_and_gets_placeholder(self) -> None:
         tokens = {TEMPLATE_CONTENT: _bound_tokens(BUILTIN_TEMPLATE_CONTENT)}
@@ -381,7 +493,7 @@ class TemplateContentMigrationTests(unittest.TestCase):
                 "\n[контакт]",
                 3,
             ),
-            (2, 2, REFERENCE_HEADER, REFERENCE_BODY, REFERENCE_FOOTER, 4),
+            (2, 2, V4_REFERENCE_HEADER, V4_REFERENCE_BODY, V4_REFERENCE_FOOTER, 4),
             (3, 3, "только шапка", "", "", None),
             (4, 4, "", "только тело", "", None),
             # Все секции из пробелов: прежний CHECK разрешал такую строку.
@@ -476,7 +588,7 @@ class TemplateContentMigrationTests(unittest.TestCase):
                 "**[место]([ссылка_места])**\n[адрес]\n\n[описание]",
                 "\n[контакт]",
             ),
-            2: _join(REFERENCE_HEADER, REFERENCE_BODY, REFERENCE_FOOTER),
+            2: _join(V4_REFERENCE_HEADER, V4_REFERENCE_BODY, V4_REFERENCE_FOOTER),
             3: "только шапка",
             4: "только тело",
             5: " ",
@@ -490,8 +602,12 @@ class TemplateContentMigrationTests(unittest.TestCase):
             [(row[2], row[5]) for row in rows],
             [(1, 3), (2, 4), (3, None), (4, None), (5, None)],
         )
-        # Заполненный эталон v4 не изменился ни на символ.
-        self.assertEqual(rows[1][3], BUILTIN_TEMPLATE_CONTENT)
+        # Заполненный эталон v4 не изменился ни на символ (миграция 30 его не
+        # переписывает): сравниваем с историческими литералами v4, а не с
+        # актуальным BUILTIN (эталон v5).
+        self.assertEqual(
+            rows[1][3], _join(V4_REFERENCE_HEADER, V4_REFERENCE_BODY, V4_REFERENCE_FOOTER)
+        )
 
     def test_snapshot_contents_are_backfilled(self) -> None:
         self._migrate()
@@ -585,7 +701,7 @@ class TemplateContentMigrationTests(unittest.TestCase):
                 "SELECT version, name FROM schema_migrations ORDER BY version "
                 "DESC LIMIT 1",
             ),
-            [(29, "user_event_log_reports")],
+            [(30, "standard_template_extended")],
         )
 
     def test_post_migration_schema_equals_fresh_create_all(self) -> None:

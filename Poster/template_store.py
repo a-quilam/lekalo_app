@@ -30,7 +30,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
 from sqlalchemy import update as sqlalchemy_update
@@ -58,6 +58,7 @@ from models import (
 from permissions import can_manage_place
 from template_types import (
     BUILTIN_TEMPLATE,
+    BUILTIN_TEMPLATE_CONDITIONAL_RULES,
     BUILTIN_TEMPLATE_VERSION,
     INITIAL_PERSONAL_TEMPLATE_NAME,
     STANDARD_TEMPLATE_DISPLAY_NAME,
@@ -155,6 +156,9 @@ class TemplateDetails:
     created_at: datetime
     updated_at: datetime
     current_version: TemplateVersionDetails
+    # Этап A1: активен ли расширенный вариант. Смысл имеет только у
+    # стандарта площадки; личный шаблон выбирает вариант по доп. кирпичикам.
+    extended_active: bool = False
 
     @property
     def is_standard(self) -> bool:
@@ -184,6 +188,9 @@ class TemplateSnapshotDetails:
     builtin_version: int | None
     created_at: datetime
     bindings: tuple[TemplateBrickBinding, ...] = field(default_factory=tuple)
+    # Этап A1: значение флага на момент создания снимка. Начатый черновик
+    # продолжает создаваться по этому варианту (§3.1).
+    extended_active: bool = False
 
     @property
     def brick_ids(self) -> tuple[int, ...]:
@@ -401,6 +408,7 @@ def _template_details(session: Session, row: Template) -> TemplateDetails:
         created_at=row.created_at,
         updated_at=row.updated_at,
         current_version=_version_details(session, _version_row(session, row)),
+        extended_active=bool(row.extended_active),
     )
 
 
@@ -428,6 +436,7 @@ def _snapshot_details(
         builtin_version=row.builtin_version,
         created_at=row.created_at,
         bindings=_binding_views_for_snapshot(session, row.id),
+        extended_active=bool(row.extended_active),
     )
 
 
@@ -585,6 +594,159 @@ def _freeze_snapshot_conditional_parts(
         )
 
 
+def _builtin_conditional_rows(
+    *,
+    template_id: int,
+    version_id: int,
+    bindings: Sequence[tuple[str, int]],
+    now: datetime,
+) -> list[dict[str, object]]:
+    """
+    Строки автоматических условных частей стандарта для вставки в БД.
+
+    Правило, чей кирпичик или фрагмент не найден в тексте секции, не
+    попадает в список: молчаливое правило, которое никогда не сработает,
+    хуже отсутствующего (и скрыло бы рассинхронизацию эталона с каталогом).
+    """
+    brick_ids = dict(bindings)
+    texts = {
+        TEMPLATE_CONTENT: BUILTIN_TEMPLATE.content,
+        TEMPLATE_EXTENDED_CONTENT: BUILTIN_TEMPLATE.extended_content,
+    }
+    rows: list[dict[str, object]] = []
+    for rule in BUILTIN_TEMPLATE_CONDITIONAL_RULES:
+        brick_id = brick_ids.get(rule.code)
+        text = texts.get(rule.section)
+        if brick_id is None or not isinstance(text, str):
+            continue
+        if rule.fragment not in text:
+            continue
+        rows.append(
+            {
+                "template_id": template_id,
+                "version_id": version_id,
+                "section": rule.section,
+                "brick_id": brick_id,
+                "fragment": rule.fragment,
+                "occurrence": rule.occurrence,
+                "status": "active",
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+    return rows
+
+
+def _builtin_conditional_bindings(
+    session: Session,
+    *,
+    template_id: int,
+    version_id: int,
+    bindings: Sequence[tuple[str, int]],
+    now: datetime,
+) -> None:
+    """
+    Записывает автоматические условные части стандарта (этап A1, §2).
+
+    Правила заданы данными (`BUILTIN_TEMPLATE_CONDITIONAL_RULES`) и попадают
+    в ту же таблицу `template_conditional_parts`, что и авторские: отдельного
+    рендерера нет. Пары «код → brick_id» берутся из уже сохранённых привязок
+    версии, поэтому правило всегда ссылается на реальный brick_id.
+    """
+    from conditional_parts import template_conditional_parts  # ленивый импорт
+
+    rows = _builtin_conditional_rows(
+        template_id=template_id,
+        version_id=version_id,
+        bindings=bindings,
+        now=now,
+    )
+    if rows:
+        session.execute(template_conditional_parts.insert(), rows)
+
+
+def _ensure_builtin_conditional_bindings(
+    session: Session,
+    *,
+    template_id: int,
+    version_id: int,
+    bindings: Sequence[tuple[str, int]],
+    now: datetime,
+) -> int:
+    """
+    Возвращает стандартные правила, которых нет у версии (сброс к эталону).
+
+    Идемпотентно: уже существующее правило той же секции и кирпичика не
+    дублируется. Авторские правила не трогаются — их судьбу решает
+    `refresh_conditional_parts`.
+    """
+    from conditional_parts import template_conditional_parts  # ленивый импорт
+
+    rows = _builtin_conditional_rows(
+        template_id=template_id,
+        version_id=version_id,
+        bindings=bindings,
+        now=now,
+    )
+    if not rows:
+        return 0
+    existing = {
+        (str(row.section), int(row.brick_id), str(row.fragment))
+        for row in session.execute(
+            select(
+                template_conditional_parts.c.section,
+                template_conditional_parts.c.brick_id,
+                template_conditional_parts.c.fragment,
+            ).where(template_conditional_parts.c.version_id == version_id)
+        ).all()
+    }
+    missing = [
+        row
+        for row in rows
+        if (
+            str(row["section"]),
+            cast(int, row["brick_id"]),
+            str(row["fragment"]),
+        )
+        not in existing
+    ]
+    if missing:
+        session.execute(template_conditional_parts.insert(), missing)
+    return len(missing)
+
+
+def _restore_standard_builtin_state(session: Session, *, row: Template) -> None:
+    """
+    Сброс стандарта к эталону: флаг выключен, автоматические правила на месте.
+
+    §3 задания: выключение расширенного варианта не удаляет ни текст, ни
+    условные части. Поэтому здесь только флаг и недостающие правила эталона;
+    авторские правила, пережившие перенос в новую версию, не переписываются.
+    """
+    now = utcnow()
+    if int(getattr(row, "extended_active", 0) or 0) != 0:
+        session.execute(
+            sqlalchemy_update(Template)
+            .where(Template.id == row.id)
+            .values(extended_active=0, updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        row.extended_active = 0
+    version = _version_row(session, row)
+    bindings = tuple(
+        (binding.code, binding.brick_id)
+        for binding in _binding_views_for_version(session, version.id)
+    )
+    _ensure_builtin_conditional_bindings(
+        session,
+        template_id=row.id,
+        version_id=version.id,
+        bindings=bindings,
+        now=now,
+    )
+    session.commit()
+
+
 # --- Встроенный стандарт ----------------------------------------------------
 
 
@@ -653,6 +815,10 @@ def _insert_standard_template(
         created_by_user_id=created_by_user_id,
         created_at=now,
         updated_at=now,
+        # §3: у новой площадки расширенный вариант выключен. Оба текста и
+        # правила обеих секций при этом создаются сразу и не удаляются при
+        # выключении флага.
+        extended_active=0,
     )
     session.add(template)
     session.flush()
@@ -671,6 +837,13 @@ def _insert_standard_template(
         session,
         template_version_id=version.id,
         bindings=binding_pairs,
+    )
+    _builtin_conditional_bindings(
+        session,
+        template_id=template.id,
+        version_id=version.id,
+        bindings=binding_pairs,
+        now=now,
     )
     session.flush()
     return template
@@ -1058,7 +1231,7 @@ def list_template_brick_ids(
 def _mutation(
     status: str,
     template: TemplateDetails | None,
-    message: str,
+    message: str | None,
 ) -> TemplateMutationResult:
     return TemplateMutationResult(status=status, template=template, message=message)
 
@@ -1085,10 +1258,10 @@ def _refresh_conditional_parts_after_edit(
     §3: приводит условные части к тексту новой версии.
 
     Правила живут отдельно от текста, поэтому сама новая версия их не
-    переносит: здесь правила либо переносятся в новую версию, либо
-    удаляются, если кирпичика больше нет в расширенном тексте (правила
-    секции content удаляются как унаследованные). `commit=False` — работа в
-    транзакции вызывающего: сохранение текста и правил атомарны (2.5.3 §3).
+    переносит: здесь правила обеих секций (`content` и `extended_content`)
+    либо переносятся в новую версию, либо удаляются, если кирпичика больше
+    нет в тексте этой секции. `commit=False` — работа в транзакции
+    вызывающего: сохранение текста и правил атомарны (2.5.3 §3).
     """
     # Ленивый импорт: `conditional_parts` сам импортирует этот модуль.
     from conditional_parts import refresh_conditional_parts
@@ -1428,11 +1601,23 @@ def _reset_to_builtin(
         and tuple(sorted((b.code, b.brick_id) for b in current.bindings))
         == binding_pairs
     )
-    if unchanged:
+    reset_standard = expected_kind == TEMPLATE_KIND_STANDARD
+    deactivate_extended = reset_standard and bool(row.extended_active)
+    if unchanged and not deactivate_extended:
         return _mutation(
             "unchanged",
             _template_details(session, row),
             "Шаблон уже совпадает со встроенным стандартом.",
+        )
+    if unchanged:
+        # Текст и привязки уже эталонные; сброс меняет только флаг.
+        _restore_standard_builtin_state(session, row=row)
+        saved = _load_template_row(session, row.id, refresh=True)
+        assert saved is not None  # шаблон только что обновлён в этой транзакции
+        return _mutation(
+            "updated",
+            _template_details(session, saved),
+            "Расширенный вариант стандарта выключен.",
         )
 
     result = _commit_new_version(
@@ -1446,6 +1631,17 @@ def _reset_to_builtin(
         builtin_version=BUILTIN_TEMPLATE_VERSION,
         refresh_rules=True,
     )
+    if result.ok and reset_standard:
+        refreshed = _load_template_row(session, row.id, refresh=True)
+        if refreshed is not None:
+            _restore_standard_builtin_state(session, row=refreshed)
+            saved = _load_template_row(session, row.id, refresh=True)
+            assert saved is not None  # шаблон только что обновлён в этой транзакции
+            result = _mutation(
+                result.status,
+                _template_details(session, saved),
+                result.message,
+            )
     return result
 
 
@@ -1637,6 +1833,7 @@ def create_template_snapshot(
         # Признак ставится при вставке: `template_snapshots` защищена
         # триггером `no_update`, снимок нельзя переписать после создания.
         conditional_rules_frozen=1,
+        extended_active=int(getattr(template, "extended_active", 0) or 0),
         created_at=now,
     )
     session.add(snapshot)

@@ -74,7 +74,24 @@ except Exception as exc:  # noqa: BLE001
 
 # --- Эталоны владельца, записанные буквально ---------------------------------
 
+# Эталон владельца в редакции этапа A1 (§1.1): запятая между датой и
+# временем, контакт с подписью «Мероприятие ведёт:».
 OWNER_REFERENCE = (
+    "<b>Летний концерт</b>\n"
+    "\n"
+    "<b>12.07 (пн), 19:00</b>\n"
+    '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
+    "ул. Ленина, 1\n"
+    "\n"
+    "Большой зал, вход свободный.\n"
+    "\n"
+    "Мероприятие ведёт: @contact"
+)
+
+# Эталон v4 (текст шаблонов, созданных до этапа A1): миграция 30 не
+# переписывает историю — существующие шаблоны остаются с прежним текстом
+# (перед публичным выпуском база очищается штатно, §0 задания).
+V4_OWNER_REFERENCE = (
     "<b>Летний концерт</b>\n"
     "\n"
     "<b>12.07 (пн) // 19:00</b>\n"
@@ -132,6 +149,35 @@ def _join(header: str, body: str, footer: str) -> str:
 
 
 V4_CONTENT = _join(V4_HEADER, V4_BODY, V4_FOOTER)
+
+# Эталон v5 (этап A1): простой и расширенный тексты стандарта. Записаны
+# литералами — продукт сверяется с ними побайтово.
+V5_CONTENT = (
+    "**[название]**\n"
+    "\n"
+    "**[дата], [время_начала]**\n"
+    "**[место]([ссылка_места])**\n"
+    "[адрес]\n"
+    "\n"
+    "[описание]\n"
+    "\n"
+    "Мероприятие ведёт: [контакт]"
+)
+V5_EXTENDED_CONTENT = (
+    "**[название]**\n"
+    "[условие_входа]\n"
+    "\n"
+    "**[дата], [время_начала]–[время_окончания]**\n"
+    "**[место]([ссылка_места])**\n"
+    "[город], [адрес]\n"
+    "\n"
+    "[описание]\n"
+    "\n"
+    "Мероприятие ведёт: [контакт]\n"
+    "Куратор от площадки: [куратор]\n"
+    "\n"
+    "[подвал]"
+)
 
 OLD_INITIAL_NAME = "Мой шаблон"
 NEW_INITIAL_NAME = "Дефолтный шаблон"
@@ -371,7 +417,7 @@ class MigrationEighteenOwnerTests(unittest.TestCase):
     """Требование 2: обновляются только доказуемо нетронутые копии v2."""
 
     def setUp(self) -> None:
-        self.assertEqual(LATEST_VERSION, 29)
+        self.assertEqual(LATEST_VERSION, 30)
         self.path = temp_db_path("poster-r2-owner-m18-")
         self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
         self.engine = make_engine(self.path)
@@ -557,6 +603,15 @@ class MigrationEighteenOwnerTests(unittest.TestCase):
         )
 
     def test_migrated_copy_renders_owner_reference(self) -> None:
+        """
+        Скопированный миграцией 18 шаблон рендерится эталоном v4.
+
+        Этап A1 осознанно НЕ переписывает тексты уже существующих шаблонов
+        (миграция 30 только добавляет флаг и кирпичики): перед публичным
+        выпуском тестовые данные очищаются штатно, поэтому конвертация
+        истории не нужна. Новые площадки получают v5 — это проверяется
+        в `test_created_place_gets_v5_standard_without_announcement`.
+        """
         run_migrations(self.engine)
         from brick_store import list_system_bricks
 
@@ -579,7 +634,7 @@ class MigrationEighteenOwnerTests(unittest.TestCase):
             template_id=1,
             values_by_id=values,
         )
-        self.assertEqual(rendered, OWNER_REFERENCE)
+        self.assertEqual(rendered, V4_OWNER_REFERENCE)
 
 
 # ============================================================================
@@ -593,7 +648,7 @@ class MigrationEighteenOwnerTests(unittest.TestCase):
 )
 class NewUserDefaultsTests(unittest.TestCase):
     @scenario_test
-    async def test_start_creates_default_template_with_v4_content(self, h):
+    async def test_start_creates_default_template_with_v5_content(self, h):
         await h.text("/start")
         with h.session_factory() as session:
             rows = list_personal_templates(session, DEFAULT_USER_ID)
@@ -601,8 +656,9 @@ class NewUserDefaultsTests(unittest.TestCase):
             template = rows[0]
             self.assertEqual(template.name, NEW_INITIAL_NAME)
             version = template.current_version
-            self.assertEqual(version.content, V4_CONTENT)
-            self.assertIsNone(version.extended_content)
+            # Этап A1: стартовая копия получает оба текста эталона v5.
+            self.assertEqual(version.content, V5_CONTENT)
+            self.assertEqual(version.extended_content, V5_EXTENDED_CONTENT)
             rendered = render_template_version(
                 session,
                 actor_telegram_user_id=DEFAULT_USER_ID,
@@ -949,7 +1005,7 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
         self.assertEqual(_drafts(h), 0)
 
     @scenario_test
-    async def test_created_place_gets_v4_standard_without_announcement(self, h):
+    async def test_created_place_gets_v5_standard_without_announcement(self, h):
         await h.text("/start")
         await h.callback("manage_places")
         await h.callback("plm_add")
@@ -975,8 +1031,11 @@ class PlaceHandbookOwnerTests(unittest.TestCase):
             self.assertIsNotNone(standard)
             assert standard is not None
             version = standard.current_version
-            self.assertEqual(version.content, V4_CONTENT)
-            self.assertIsNone(version.extended_content)
+            # Этап A1: одна площадка — один шаблон с двумя текстами; флаг
+            # расширенного варианта у новой площадки выключен (§3).
+            self.assertEqual(version.content, V5_CONTENT)
+            self.assertEqual(version.extended_content, V5_EXTENDED_CONTENT)
+            self.assertFalse(standard.extended_active)
             rendered = render_template_version(
                 session,
                 actor_telegram_user_id=DEFAULT_USER_ID,

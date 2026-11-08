@@ -49,6 +49,7 @@ from tests.stage19a_helpers import make_engine, temp_db_path
 
 MIGRATION_28_NAME = "template_snapshot_conditional_parts"
 MIGRATION_29_NAME = "user_event_log_reports"
+MIGRATION_30_NAME = "standard_template_extended"
 
 USER_TG = 77_500_001
 OTHER_TG = 77_500_002
@@ -146,14 +147,16 @@ class Migration29Tests(unittest.TestCase):
         finally:
             engine.dispose()
 
-    def test_latest_version_is_twenty_nine(self) -> None:
-        self.assertEqual(LATEST_VERSION, 29)
+    def test_latest_version_is_thirty(self) -> None:
+        self.assertEqual(LATEST_VERSION, 30)
         self.assertEqual(self.migrate(), LATEST_VERSION)
+        # Этап A1 добавил миграцию 30: журнал заканчивается парой 29/30,
+        # сама запись 29 остаётся на своём месте.
         self.assertEqual(
             _journal(self.path)[-2:],
             [
-                (28, MIGRATION_28_NAME),
                 (29, MIGRATION_29_NAME),
+                (30, MIGRATION_30_NAME),
             ],
         )
 
@@ -253,7 +256,8 @@ class Migration29Tests(unittest.TestCase):
             },
             "миграция только добавочная",
         )
-        self.assertEqual(_journal(self.path)[-1], (29, MIGRATION_29_NAME))
+        # Этап A1 добавил 30: запись 29 теперь предпоследняя.
+        self.assertEqual(_journal(self.path)[-2], (29, MIGRATION_29_NAME))
         # Повторный запуск ничего не меняет.
         self.assertEqual(self.migrate(), LATEST_VERSION)
         self.assertEqual(

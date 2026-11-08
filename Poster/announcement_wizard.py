@@ -135,6 +135,11 @@ class AnnouncementTemplateSnapshot:
     texts: Mapping[str, str]
     bindings: tuple[SnapshotBinding, ...] = field(default_factory=tuple)
     source_name: str | None = None
+    # Этап A1: значение флага расширенного варианта, замороженное в снимке.
+    # Стандартный шаблон рендерит анонс по этому значению, а не по текущему
+    # флагу шаблона (§3.1): переключение посреди создания не меняет начатый
+    # черновик. Личные шаблоны флаг не используют.
+    extended_active: bool = False
 
     @property
     def brick_ids(self) -> tuple[int, ...]:

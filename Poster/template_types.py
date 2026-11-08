@@ -66,20 +66,51 @@ INITIAL_PERSONAL_TEMPLATE_NAME = "Дефолтный шаблон"
 # `BUILTIN_TEMPLATE_CONTENT` побайтово совпадает с прежней склейкой секций
 # `header + "\n" + body + "\n" + footer`, поэтому миграция 24 и рендер
 # заполненного анонса не меняют ни одного символа эталона.
-BUILTIN_TEMPLATE_VERSION = 4
+#
+# Версия 5 (этап A1, финальное задание владельца §1–2): у стандартного
+# шаблона площадки теперь ДВА рабочих варианта одного текста.
+#
+# Простой вариант (§1.1): дата и время начала разделены запятой и пробелом
+# (без `//`), контакт — строкой с подписью «Мероприятие ведёт:».
+#
+# Расширенный вариант (§1.2): условие входа отдельной строкой под заголовком,
+# время окончания через символ `–` (U+2013) без пробелов, `[город], [адрес]`,
+# куратор с подписью и блок `[подвал]`.
+#
+# Оба варианта создаются сразу с автоматическими условными частями
+# (`BUILTIN_TEMPLATE_CONDITIONAL_RULES`): это не настройка администратора,
+# а часть стандарта (§2). Флаг активности расширенного варианта живёт в
+# строке шаблона (`templates.extended_active`, миграция 30) и по умолчанию
+# выключен.
+BUILTIN_TEMPLATE_VERSION = 5
 
 BUILTIN_TEMPLATE_CONTENT = (
     "**[название]**\n"
     "\n"
-    "**[дата] // [время_начала]**\n"
+    "**[дата], [время_начала]**\n"
     "**[место]([ссылка_места])**\n"
     "[адрес]\n"
     "\n"
     "[описание]\n"
     "\n"
-    "[контакт]"
+    "Мероприятие ведёт: [контакт]"
 )
-BUILTIN_TEMPLATE_EXTENDED_CONTENT: str | None = None
+
+BUILTIN_TEMPLATE_EXTENDED_CONTENT: str | None = (
+    "**[название]**\n"
+    "[условие_входа]\n"
+    "\n"
+    "**[дата], [время_начала]–[время_окончания]**\n"
+    "**[место]([ссылка_места])**\n"
+    "[город], [адрес]\n"
+    "\n"
+    "[описание]\n"
+    "\n"
+    "Мероприятие ведёт: [контакт]\n"
+    "Куратор от площадки: [куратор]\n"
+    "\n"
+    "[подвал]"
+)
 
 
 @dataclass(frozen=True)
@@ -91,16 +122,22 @@ class BuiltinBrickBinding:
 
 
 # Явные пары «ID → код», а не результат поиска по имени во время выполнения.
-# Это те же стабильные определения, которые вставлены миграциями 6 и 15.
+# Это те же стабильные определения, которые вставлены миграциями 6, 15, 21
+# и 30. Порядок повторяет первое появление кода в текстах стандарта.
 BUILTIN_TEMPLATE_BINDINGS: tuple[BuiltinBrickBinding, ...] = (
     BuiltinBrickBinding(1, "название"),
+    BuiltinBrickBinding(12, "условие_входа"),
     BuiltinBrickBinding(2, "дата"),
     BuiltinBrickBinding(3, "время_начала"),
+    BuiltinBrickBinding(4, "время_окончания"),
     BuiltinBrickBinding(5, "место"),
     BuiltinBrickBinding(7, "ссылка_места"),
+    BuiltinBrickBinding(11, "город"),
     BuiltinBrickBinding(10, "адрес"),
     BuiltinBrickBinding(8, "описание"),
     BuiltinBrickBinding(9, "контакт"),
+    BuiltinBrickBinding(13, "куратор"),
+    BuiltinBrickBinding(14, "подвал"),
 )
 BUILTIN_TEMPLATE_BRICK_IDS: tuple[int, ...] = tuple(
     binding.brick_id for binding in BUILTIN_TEMPLATE_BINDINGS
@@ -137,6 +174,65 @@ BUILTIN_TEMPLATE = BuiltinTemplateDefinition(
     version=BUILTIN_TEMPLATE_VERSION,
     content=BUILTIN_TEMPLATE_CONTENT,
     extended_content=BUILTIN_TEMPLATE_EXTENDED_CONTENT,
+)
+
+
+# --- Автоматические условные части стандарта (этап A1, §2) ------------------
+#
+# Правила заданы ДАННЫМИ, а не отдельным рендерером: та же таблица
+# `template_conditional_parts`, тот же движок `apply_conditional_parts`.
+# Поэтому они переживают перезапуск, правку текста и переключение флага,
+# как и любые авторские правила.
+#
+# Фрагменты выбраны так, чтобы скрытие не оставляло висящей пунктуации:
+#
+# - простой текст: строка контакта и строка адреса скрываются целиком
+#   (у адреса — вместе с переводом строки перед ним, чтобы абзац описания
+#   остался отдельным); абзац описания исчезает без пустой строки;
+# - расширенный текст: условие входа скрывается с переводом строки перед
+#   ним (заголовок и дата остаются разделены пустой строкой), тире уходит
+#   вместе с временем окончания, город и адрес — каждый со своей запятой.
+#   Правила города и адреса пересекаются только разделителем `, `: когда
+#   пусты оба, движок объединяет их и скрывает строку целиком.
+#
+# `[ссылка_места]` правила не требует: пустая ссылка — это просто жирная
+# подпись без `<a>` (поведение компилятора Stage 24).
+@dataclass(frozen=True)
+class BuiltinConditionalRule:
+    """Одно правило автоматической условной части стандартного шаблона."""
+
+    section: str
+    code: str
+    fragment: str
+    occurrence: int = 1
+
+    @property
+    def key(self) -> tuple[str, str]:
+        return self.section, self.code
+
+
+BUILTIN_TEMPLATE_CONDITIONAL_RULES: tuple[BuiltinConditionalRule, ...] = (
+    BuiltinConditionalRule(
+        TEMPLATE_CONTENT, "контакт", "Мероприятие ведёт: [контакт]"
+    ),
+    BuiltinConditionalRule(TEMPLATE_CONTENT, "адрес", "\n[адрес]"),
+    BuiltinConditionalRule(TEMPLATE_CONTENT, "описание", "[описание]"),
+    BuiltinConditionalRule(
+        TEMPLATE_EXTENDED_CONTENT, "условие_входа", "\n[условие_входа]"
+    ),
+    BuiltinConditionalRule(
+        TEMPLATE_EXTENDED_CONTENT, "время_окончания", "–[время_окончания]"
+    ),
+    BuiltinConditionalRule(TEMPLATE_EXTENDED_CONTENT, "город", "[город], "),
+    BuiltinConditionalRule(TEMPLATE_EXTENDED_CONTENT, "адрес", ", [адрес]"),
+    BuiltinConditionalRule(TEMPLATE_EXTENDED_CONTENT, "описание", "[описание]"),
+    BuiltinConditionalRule(
+        TEMPLATE_EXTENDED_CONTENT, "контакт", "Мероприятие ведёт: [контакт]"
+    ),
+    BuiltinConditionalRule(
+        TEMPLATE_EXTENDED_CONTENT, "куратор", "Куратор от площадки: [куратор]"
+    ),
+    BuiltinConditionalRule(TEMPLATE_EXTENDED_CONTENT, "подвал", "[подвал]"),
 )
 
 

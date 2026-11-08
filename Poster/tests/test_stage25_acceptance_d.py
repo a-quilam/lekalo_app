@@ -80,6 +80,7 @@ try:
     )
     from tests.stage23_helpers import OTHER_TG, SUPERADMIN_TG
     from tests.test_stage25_conditional_ui import (
+        _authored_parts,
         _open_card,
         _parts,
         _template_with_system_time_bricks,
@@ -776,8 +777,15 @@ class RuleEditTests(unittest.TestCase):
         )
 
     @scenario_test
-    async def test_reset_deletes_rules_of_removed_extension(self, h) -> None:
-        """2.5.3 §3: сброс убирает расширение — условия кирпичиков удаляются."""
+    async def test_reset_keeps_rule_that_transfers_to_standard(self, h) -> None:
+        """
+        Этап A1, §2.3/§3: сброс переносит авторское правило, пока кирпичик есть.
+
+        Сброс возвращает встроенный стандарт v5, у которого есть расширенный
+        текст с `[время_окончания]`, поэтому правило `–[время_окончания]`
+        переезжает в новую версию активным. Удалять правило и скрывать раздел
+        условий больше нельзя: текст расширения никуда не исчез.
+        """
         template_id, _revision = _template_with_system_time_bricks(h)
         await h.text("/templates")
         await h.callback(f"tp_open:{template_id}")
@@ -794,17 +802,18 @@ class RuleEditTests(unittest.TestCase):
         await h.callback(f"tp_reset:{template_id}")
         await h.callback(f"tp_reset_yes:{template_id}")
         self.assertNotIn("требуют перенастройки", h.screen_text(), "плашки нет")
-        self.assertEqual(
-            _parts(h, template_id),
-            [],
-            "кирпичиков расширения больше нет — условия удалены",
-        )
-        # Сброс вернул встроенный стандарт без расширенной версии: раздела
-        # условий снова нет.
-        self.assertNotIn(
+        parts = _parts(h, template_id)
+        self.assertEqual(len(parts), 1, "правило не потеряно при сбросе")
+        rule = parts[0]
+        self.assertEqual(rule.fragment, "–[время_окончания]")
+        self.assertEqual(rule.status, STATUS_ACTIVE, "кирпичик есть — правило активно")
+        self.assertEqual(rule.version, 2, "правило живёт в новой версии")
+        # Раздел условий остаётся доступным: у стандарта v5 есть расширенный
+        # текст, правила которого видны автору.
+        self.assertIn(
             f"tp_cond:{template_id}",
             _callbacks(h, f"tp_cond:{template_id}"),
-            "без расширенной версии раздела нет",
+            "расширенный текст стандарта есть — раздел условий доступен",
         )
 
 
@@ -840,7 +849,37 @@ class AccessTests(unittest.TestCase):
 
     @scenario_test
     async def test_standard_template_admin_and_non_admin(self, h) -> None:
+        """
+        §44: админ места проходит маршрут, пользователь без прав — нет.
+
+        Этап A1, §2: стандарт создаётся с 11 встроенными правилами, поэтому
+        «ничего не изменилось» проверяется по авторским правилам и точному
+        составу встроенных. `_place_with_admin` заменяет расширенный текст на
+        простой (`extended_content=content`); после этого правила расширенной
+        секции, чьих кирпичиков в новом тексте нет, удаляются, а правило
+        `', [адрес]'` (кирпичик есть, но фрагмент неоднозначен в двух местах)
+        становится `stale`.
+        """
         place_id, standard_id = _place_with_admin(h, OTHER_TG)
+        rules_before = _parts(h, standard_id, OTHER_TG)
+        self.assertEqual(len(rules_before), 6, "состав встроенных правил после правки")
+        self.assertEqual(
+            sorted((part.section, part.code, part.status) for part in rules_before),
+            sorted(
+                [
+                    ("content", "адрес", STATUS_ACTIVE),
+                    ("content", "описание", STATUS_ACTIVE),
+                    ("content", "контакт", STATUS_ACTIVE),
+                    ("extended_content", "описание", STATUS_ACTIVE),
+                    ("extended_content", "контакт", STATUS_ACTIVE),
+                    ("extended_content", "адрес", STATUS_STALE),
+                ]
+            ),
+            "3 простых правила + 2 перенесённых расширенных + stale адрес",
+        )
+        self.assertEqual(
+            _authored_parts(h, standard_id, OTHER_TG), [], "авторских правил нет"
+        )
 
         # Действующий админ места проходит маршрут (регресс MINOR-1).
         await h.callback(f"tp_std:{place_id}", user_id=OTHER_TG)
@@ -867,7 +906,12 @@ class AccessTests(unittest.TestCase):
         answers_before = len(h.answer_texts())
         await h.callback(f"tp_cond:{standard_id}")
         self.assertGreater(len(h.answer_texts()), answers_before, "нужен отказ")
-        self.assertEqual(_parts(h, standard_id), [], "правил не создано")
+        self.assertEqual(
+            _parts(h, standard_id, OTHER_TG), rules_before, "правила не изменились"
+        )
+        self.assertEqual(
+            _authored_parts(h, standard_id, OTHER_TG), [], "авторских правил нет"
+        )
 
     @scenario_test
     async def test_superadmin_can_open_standard_rules(self, h) -> None:

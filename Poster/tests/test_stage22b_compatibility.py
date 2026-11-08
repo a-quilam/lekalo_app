@@ -214,7 +214,7 @@ class Stage22BCompatibilityTests(unittest.TestCase):
         self.assertIn((18, "builtin_templates_v3"), journal(self.path))
         self.assertEqual(
             journal(self.path)[-1],
-            (LATEST_VERSION, "user_event_log_reports"),
+            (LATEST_VERSION, "standard_template_extended"),
         )
         # Миграция 17 переименовала легаси-таблицу: строка прежнего черновика
         # читается из архива без потерь.

@@ -24,9 +24,11 @@ from announcement_store import (
 )
 from announcement_wizard import (
     evaluate_announcement_readiness,
+    iter_snapshot_bricks,
     visible_announcement_text,
 )
 from template_store import create_personal_template
+from template_types import TEMPLATE_CONTENT
 from tests.stage27_helpers import OWNER_TG, AnnouncementDatabaseTestCase
 
 TODAY = date(2026, 5, 1)
@@ -55,7 +57,21 @@ class FieldStateTests(AnnouncementDatabaseTestCase):
 
         brick_ids = [field.brick_id for field in fields]
         self.assertEqual(len(brick_ids), len(set(brick_ids)))
-        self.assertEqual(set(brick_ids), set(snapshot.brick_ids))
+        # Этап A1, §1–2: снимок стандарта содержит оба текста. Поля строятся
+        # по `content` (как и вопросы, Poster 2.3.1, E1) плюс кирпичики,
+        # у которых уже есть значение/справочные данные места; кирпичик
+        # только расширенного текста появляется после выбора в доп. поля.
+        snapshot_brick_ids = {node.brick_id for node in iter_snapshot_bricks(snapshot)}
+        content_brick_ids = {
+            node.brick_id
+            for node in iter_snapshot_bricks(snapshot, text_name=TEMPLATE_CONTENT)
+        }
+        self.assertLessEqual(set(brick_ids), snapshot_brick_ids)
+        self.assertLessEqual(content_brick_ids, set(brick_ids))
+        # Условие входа есть только в расширенном тексте и не выбрано —
+        # поля нет.
+        self.assertNotIn(12, brick_ids)
+        # Вопросы по-прежнему задаются только по `content`.
         self.assertEqual(
             [question.brick_id for question in questions],
             [

@@ -630,6 +630,7 @@ def _snapshot_view(details: TemplateSnapshotDetails) -> AnnouncementTemplateSnap
             for binding in details.bindings
         ),
         source_name=details.source_name,
+        extended_active=details.extended_active,
     )
 
 
@@ -3017,11 +3018,19 @@ def build_announcement_render_payload(
     prepared: dict[str, tuple[Any, ...]] = {
         text_name: tuple(tokens) for text_name, tokens in tokens_by_text.items()
     }
+    # Этап A1 (§1–3): у стандартного шаблона вариант выбирает флаг, снятый в
+    # снимке: включение/выключение расширенного текста не должно переключать
+    # уже начатый черновик (§3.1). Личный шаблон прежний: расширенный текст
+    # рендерится, когда в анонс добавлены дополнительные кирпичики.
+    if snapshot.source_kind == TEMPLATE_KIND_STANDARD:
+        use_extended = snapshot.extended_active
+    else:
+        use_extended = bool(extra_nodes)
     return AnnouncementRenderPayload(
         tokens_by_text=prepared,
         values_by_id=values_by_id,
         definitions_by_id=definitions,
-        use_extended=bool(extra_nodes),
+        use_extended=use_extended,
     )
 
 

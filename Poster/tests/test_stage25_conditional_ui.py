@@ -48,6 +48,11 @@ from template_store import (
     create_personal_template,
     update_template_content,
 )
+from template_types import (
+    BUILTIN_TEMPLATE_CONDITIONAL_RULES,
+    TEMPLATE_CONTENT,
+    TEMPLATE_EXTENDED_CONTENT,
+)
 from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     HARNESS_IMPORT_ERROR,
@@ -122,11 +127,36 @@ def _template_with_system_time_bricks(
         return template.template_id, template.revision
 
 
-def _parts(h, template_id: int) -> list:
+def _parts(h, template_id: int, actor_tg: int | None = None) -> list:
+    """Правила шаблона глазами автора (по умолчанию — пользователь харнесса)."""
     with h.session_factory() as session:
         return list(
-            list_conditional_parts(session, h.user_id, template_id, include_stale=True)
+            list_conditional_parts(
+                session,
+                h.user_id if actor_tg is None else actor_tg,
+                template_id,
+                include_stale=True,
+            )
         )
+
+
+# Этап A1, §2: у стандартного шаблона v5 и у любого шаблона, сброшенного к
+# встроенному стандарту, автоматически появляются 11 правил (3 простых + 8
+# расширенных). Поэтому проверка «правил не создано/не осталось» должна
+# смотреть на АВТОРСКИЕ правила, а не на пустой список.
+BUILTIN_RULE_KEYS = {
+    (rule.section, rule.code, rule.fragment)
+    for rule in BUILTIN_TEMPLATE_CONDITIONAL_RULES
+}
+
+
+def _authored_parts(h, template_id: int, actor_tg: int | None = None) -> list:
+    """Правила, которых нет среди встроенных правил стандарта."""
+    return [
+        part
+        for part in _parts(h, template_id, actor_tg)
+        if (part.section, part.code, part.fragment) not in BUILTIN_RULE_KEYS
+    ]
 
 
 async def _open_card(h, template_id: int) -> None:
@@ -531,8 +561,27 @@ class ConditionalUiRouteTests(unittest.TestCase):
 
     @scenario_test
     async def test_admin_of_place_edits_standard_template_rules(self, h) -> None:
-        """Админ места проходит маршрут в стандартном шаблоне (§3: один движок)."""
+        """
+        Админ места проходит маршрут в стандартном шаблоне (§3: один движок).
+
+        Этап A1, §2: стандарт создаётся сразу с 11 встроенными правилами
+        (3 простых + 8 расширенных) и без авторских. Правка текста и новое
+        авторское правило не должны их ни дублировать, ни терять.
+        """
         place_id, template_id = _place_with_admin(h, h.user_id)
+        builtin = _parts(h, template_id)
+        self.assertEqual(len(builtin), 11, "11 встроенных правил стандарта")
+        self.assertEqual(
+            sum(1 for part in builtin if part.section == TEMPLATE_CONTENT),
+            3,
+            "3 встроенных правила простого варианта",
+        )
+        self.assertEqual(
+            sum(1 for part in builtin if part.section == TEMPLATE_EXTENDED_CONTENT),
+            8,
+            "8 встроенных правил расширенного варианта",
+        )
+        self.assertEqual(_authored_parts(h, template_id), [], "авторских правил нет")
         # Стандарт получает расширенную версию: без неё раздела условий нет.
         with h.session_factory() as session:
             from template_store import get_standard_template
@@ -561,9 +610,11 @@ class ConditionalUiRouteTests(unittest.TestCase):
         )
         await h.callback(f"tp_condf:{template_id}:custom")
         await h.text("[адрес]")
-        parts = _parts(h, template_id)
-        self.assertEqual(len(parts), 1)
-        self.assertEqual(parts[0].fragment, "[адрес]")
+        authored = _authored_parts(h, template_id)
+        self.assertEqual(len(authored), 1, "ровно одно авторское правило")
+        self.assertEqual(authored[0].fragment, "[адрес]")
+        self.assertEqual(authored[0].section, TEMPLATE_EXTENDED_CONTENT)
+        self.assertEqual(authored[0].status, STATUS_ACTIVE)
 
 
 @unittest.skipIf(
@@ -752,8 +803,15 @@ class ConditionalRefreshAndAccessTests(unittest.TestCase):
         self.assertNotIn(f"tp_cond:{template_id}", _callbacks(h, "tp_cond:"))
 
     @scenario_test
-    async def test_reset_removes_extension_and_rules(self, h) -> None:
-        """Сброс убирает расширение — условия кирпичиков удаляются."""
+    async def test_reset_keeps_rule_that_transfers_to_standard(self, h) -> None:
+        """
+        Сброс к эталону переносит авторское правило, пока кирпичик есть.
+
+        Этап A1, §2.3 и §3: сброс меняет текст на встроенный стандарт, но не
+        удаляет условия. Кирпичик `[время_окончания]` есть в расширенном
+        тексте стандарта, поэтому правило `–[время_окончания]` переезжает в
+        новую версию активным, а не исчезает и не становится `stale`.
+        """
         template_id, _revision = _template_with_system_time_bricks(h)
         await _open_rules(h, template_id)
         with h.session_factory() as session:
@@ -767,7 +825,20 @@ class ConditionalRefreshAndAccessTests(unittest.TestCase):
         await h.callback(f"tp_reset:{template_id}")
         await h.callback(f"tp_reset_yes:{template_id}")
         self.assertNotIn("требуют перенастройки", h.screen_text())
-        self.assertEqual(_parts(h, template_id), [])
+        parts = _parts(h, template_id)
+        self.assertEqual(len(parts), 1, "правило не потеряно при сбросе")
+        rule = parts[0]
+        self.assertEqual(rule.fragment, "–[время_окончания]")
+        self.assertEqual(rule.section, TEMPLATE_EXTENDED_CONTENT)
+        self.assertEqual(rule.status, STATUS_ACTIVE, "кирпичик есть — правило активно")
+        self.assertEqual(rule.version, 2, "правило живёт в новой версии")
+        # Эталонного правила в базе не появилось: у личного шаблона сброс не
+        # добавляет встроенные правила, а фрагмент совпадает с эталонным.
+        self.assertEqual(
+            [part for part in parts if part.code == "время_окончания"],
+            [rule],
+            "правило одно: эталонное не дублируется",
+        )
 
     @scenario_test
     async def test_foreign_personal_template_is_refused(self, h) -> None:

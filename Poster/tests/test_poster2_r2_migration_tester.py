@@ -293,22 +293,23 @@ class MigrationEighteenContentTests(_Base):
         # (`template_content_and_extras_without_sections`), Poster 2.4 P1 —
         # 25 (`single_address_brick`), Poster 2.5 C1 — 26
         # (`announcement_instances`), D1 — 27 (`template_conditional_parts`),
-        # этап B — 29 (`user_event_log_reports`); записи 18 остаются на своём
-        # месте.
-        self.assertEqual(LATEST_VERSION, 29)
+        # этап B — 29 (`user_event_log_reports`), «Лекало» 2.6 A1 — 30
+        # (`standard_template_extended`); записи 18 остаются на своём месте.
+        self.assertEqual(LATEST_VERSION, 30)
         versions = _sql(
             self.path,
             "SELECT version, name FROM schema_migrations ORDER BY version",
         )
         self.assertIn((18, "builtin_templates_v3"), versions)
         self.assertEqual(
-            versions[-6], (24, "template_content_and_extras_without_sections")
+            versions[-7], (24, "template_content_and_extras_without_sections")
         )
-        self.assertEqual(versions[-5], (25, "single_address_brick"))
-        self.assertEqual(versions[-4], (26, "announcement_instances"))
-        self.assertEqual(versions[-3], (27, "template_conditional_parts"))
-        self.assertEqual(versions[-2], (28, "template_snapshot_conditional_parts"))
-        self.assertEqual(versions[-1], (29, "user_event_log_reports"))
+        self.assertEqual(versions[-6], (25, "single_address_brick"))
+        self.assertEqual(versions[-5], (26, "announcement_instances"))
+        self.assertEqual(versions[-4], (27, "template_conditional_parts"))
+        self.assertEqual(versions[-3], (28, "template_snapshot_conditional_parts"))
+        self.assertEqual(versions[-2], (29, "user_event_log_reports"))
+        self.assertEqual(versions[-1], (30, "standard_template_extended"))
 
     def test_untouched_initial_copy_gets_v4_and_new_name(self) -> None:
         rows = self.versions(1)

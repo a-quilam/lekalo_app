@@ -47,7 +47,11 @@ from template_store import (
     get_accessible_template,
     update_template_content,
 )
-from template_types import TEMPLATE_CONTENT, TEMPLATE_EXTENDED_CONTENT
+from template_types import (
+    BUILTIN_TEMPLATE_CONDITIONAL_RULES,
+    TEMPLATE_CONTENT,
+    TEMPLATE_EXTENDED_CONTENT,
+)
 from tests.stage23_helpers import OWNER_TG
 from tests.stage27_helpers import (
     OTHER_TG,
@@ -80,6 +84,22 @@ def extend_standard_template(case: AnnouncementDatabaseTestCase, *codes: str) ->
         content=template.current_version.content,
         extended_content=extended,
     )
+    _activate_extended(case)
+
+
+def _activate_extended(case: AnnouncementDatabaseTestCase) -> None:
+    """Включает расширенный вариант стандарта (этап A1, §1–3).
+
+    Контракт v5: у стандартного шаблона вариант рендера определяет флаг
+    `templates.extended_active`, а не наличие доп. кирпичиков в анонсе.
+    Снимок копирует флаг в момент выбора шаблона, поэтому тесты включают
+    его до создания черновика.
+    """
+    case.session.execute(
+        text("UPDATE templates SET extended_active=1 WHERE id=:template_id"),
+        {"template_id": case.standard.template_id},
+    )
+    case.session.commit()
     case.session.expire_all()
 
 
@@ -694,13 +714,18 @@ class ExtraTests(AnnouncementDatabaseTestCase):
         self.personal_extra = self.make_personal_brick(self.owner, "доп_личный")
         self.other_personal = self.make_personal_brick(self.other, "чужой_доп")
 
-    def _add_standard_extended(self, extended: str) -> None:
+    def _add_standard_extended(self, extended: str, *, activate: bool = True) -> None:
         """
         Расширяет стандартный шаблон места (Poster 2.3.1, E1).
 
         Доп. кирпичик можно добавить только туда, где он уже стоит в
         `extended_content`; канонический `content` остаётся прежним, поэтому
         `extended` собирается из него плюс строки с кандидатами.
+
+        Контракт v5 (этап A1): вариант рендера стандарта определяет флаг
+        `templates.extended_active`. Тесты, которым нужен расширенный
+        вариант, включают флаг до создания черновика; `activate=False`
+        оставляет вариант простым.
         """
         standard = get_accessible_template(
             self.session, OWNER_TG, self.standard.template_id
@@ -715,6 +740,8 @@ class ExtraTests(AnnouncementDatabaseTestCase):
             extended_content=extended,
         )
         self.session.expire_all()
+        if activate:
+            _activate_extended(self)
 
     def test_add_extras_render_only_this_draft(self) -> None:
         self._add_standard_extended(
@@ -780,11 +807,28 @@ class ExtraTests(AnnouncementDatabaseTestCase):
         self.assertEqual(
             [node.code for node in extended_nodes[-2:]], ["доп_места", "доп_места_2"]
         )
-        # Токены расширенного текста — ровно снимок шаблона.
+        # Токены расширенного текста — ровно снимок шаблона за вычетом
+        # пустых условных частей стандарта (этап A1, §2): ничего не
+        # дописывается и не переставляется.
         snapshot_extended = brick_nodes(
             snapshot_tokens_by_text(snapshot_before)[TEMPLATE_EXTENDED_CONTENT]
         )
-        self.assertEqual(extended_nodes, snapshot_extended)
+        conditional_codes = {
+            rule.code
+            for rule in BUILTIN_TEMPLATE_CONDITIONAL_RULES
+            if rule.section == TEMPLATE_EXTENDED_CONTENT
+        }
+        expected_nodes = [
+            node
+            for node in snapshot_extended
+            if node.brick_id in payload.values_by_id
+            or node.code not in conditional_codes
+        ]
+        self.assertEqual(extended_nodes, expected_nodes)
+        self.assertTrue(
+            conditional_codes - {node.code for node in extended_nodes},
+            "пустые условные части расширенного текста должны скрываться",
+        )
         self.assertEqual(payload.values_by_id[self.place_extra], "Первый")
         self.assertEqual(payload.values_by_id[self.second_place_extra], "Второй")
 
@@ -796,7 +840,7 @@ class ExtraTests(AnnouncementDatabaseTestCase):
         other_nodes = brick_nodes(
             other_payload.tokens_by_text[TEMPLATE_EXTENDED_CONTENT]
         )
-        self.assertEqual(other_nodes, snapshot_extended)
+        self.assertEqual(other_nodes, extended_nodes)
         self.assertNotIn(self.second_place_extra, other_payload.values_by_id)
         self.assertEqual(other_payload.values_by_id[self.place_extra], "Чужой анонс")
 
@@ -846,11 +890,48 @@ class ExtraTests(AnnouncementDatabaseTestCase):
                 expected_revision=added.revision,
             )
 
+    def test_extended_flag_off_keeps_extras(self) -> None:
+        """§3.1: вариант стандарта выбирает флаг снимка, а не доп. узлы."""
+        self._add_standard_extended(
+            "\n".join((self.standard.current_version.content, "[доп_места]")),
+            activate=False,
+        )
+        draft = self.start_at_questions()
+        assert draft.template_snapshot is not None
+        self.assertFalse(draft.template_snapshot.extended_active)
+        added = add_announcement_extra(
+            self.session,
+            actor_telegram_user_id=OWNER_TG,
+            draft_id=draft.draft_id,
+            brick_id=self.place_extra,
+            value="Значение",
+            expected_revision=draft.revision,
+        )
+        self.assertEqual([extra.code for extra in added.extras], ["доп_места"])
+        added_value = added.value_for(self.place_extra)
+        self.assertIsNotNone(added_value)
+        assert added_value is not None
+        self.assertEqual(added_value.payload, {"text": "Значение"})
+
+        payload = build_announcement_render_payload(
+            self.session,
+            actor_telegram_user_id=OWNER_TG,
+            draft_id=draft.draft_id,
+        )
+        # Доп. кирпичик добавлен, но флаг выключен — рендерится `content`.
+        self.assertFalse(payload.use_extended)
+        # Текст расширения при этом не потерян: он остаётся в снимке.
+        extended_nodes = brick_nodes(payload.tokens_by_text[TEMPLATE_EXTENDED_CONTENT])
+        self.assertEqual(extended_nodes[-1].code, "доп_места")
+        self.assertEqual(payload.values_by_id[self.place_extra], "Значение")
+
     def test_remove_extra_keeps_value_semantics(self) -> None:
         self._add_standard_extended(
             "\n".join((self.standard.current_version.content, "[доп_места]"))
         )
         draft = self.start_at_questions()
+        assert draft.template_snapshot is not None
+        self.assertTrue(draft.template_snapshot.extended_active)
         added = add_announcement_extra(
             self.session,
             actor_telegram_user_id=OWNER_TG,
@@ -889,9 +970,11 @@ class ExtraTests(AnnouncementDatabaseTestCase):
             actor_telegram_user_id=OWNER_TG,
             draft_id=draft.draft_id,
         )
-        # Расширенный текст снимка остаётся доступным, но не выбирается:
-        # рендерится канонический `content`.
-        self.assertFalse(payload.use_extended)
+        # §3: удаление доп. кирпичика не выключает расширенный вариант —
+        # флаг снимка не менялся, удаляется только значение.
+        self.assertTrue(payload.use_extended)
+        extended_nodes = brick_nodes(payload.tokens_by_text[TEMPLATE_EXTENDED_CONTENT])
+        self.assertEqual(extended_nodes[-1].code, "доп_места")
         self.assertNotIn(self.place_extra, payload.values_by_id)
 
     def test_archived_extra_is_rejected(self) -> None:

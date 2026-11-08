@@ -103,24 +103,25 @@ class Migration25JournalTests(_Migration25TestCase):
         # (`template_conditional_parts`), 2.5.1 — 28
         # (`template_snapshot_conditional_parts`), этап B — 29
         # (`user_event_log_reports`); миграция 25 остаётся на своём месте.
-        self.assertEqual(LATEST_VERSION, 29)
+        self.assertEqual(LATEST_VERSION, 30)
         self.assertEqual(
             [(migration.version, migration.name) for migration in DEFAULT_MIGRATIONS],
             [
                 *[
                     (migration.version, migration.name)
-                    for migration in DEFAULT_MIGRATIONS[:-5]
+                    for migration in DEFAULT_MIGRATIONS[:-6]
                 ],
                 (25, MIGRATION_25_NAME),
                 (26, "announcement_instances"),
                 (27, "template_conditional_parts"),
                 (28, "template_snapshot_conditional_parts"),
                 (29, "user_event_log_reports"),
+                (30, "standard_template_extended"),
             ],
         )
         self.assertEqual(
             [migration.version for migration in DEFAULT_MIGRATIONS],
-            list(range(1, 30)),
+            list(range(1, 31)),
             "версии идут без пропусков и в порядке возрастания",
         )
 
@@ -135,14 +136,15 @@ class Migration25JournalTests(_Migration25TestCase):
         finally:
             connection.close()
         self.assertEqual(
-            versions[-6], (24, "template_content_and_extras_without_sections")
+            versions[-7], (24, "template_content_and_extras_without_sections")
         )
-        self.assertEqual(versions[-5], (25, MIGRATION_25_NAME))
-        self.assertEqual(versions[-4], (26, "announcement_instances"))
-        self.assertEqual(versions[-3], (27, "template_conditional_parts"))
-        self.assertEqual(versions[-2], (28, "template_snapshot_conditional_parts"))
-        self.assertEqual(versions[-1], (29, "user_event_log_reports"))
-        self.assertEqual(len(versions), 29)
+        self.assertEqual(versions[-6], (25, MIGRATION_25_NAME))
+        self.assertEqual(versions[-5], (26, "announcement_instances"))
+        self.assertEqual(versions[-4], (27, "template_conditional_parts"))
+        self.assertEqual(versions[-3], (28, "template_snapshot_conditional_parts"))
+        self.assertEqual(versions[-2], (29, "user_event_log_reports"))
+        self.assertEqual(versions[-1], (30, "standard_template_extended"))
+        self.assertEqual(len(versions), 30)
 
     def test_repeated_run_is_idempotent(self) -> None:
         self.migrate_to_24()
@@ -186,7 +188,10 @@ class Migration25FreshInstallTests(_Migration25TestCase):
             cast(int, row[0])
             for row in self._query("SELECT id FROM bricks WHERE scope='system'")
         )
-        self.assertEqual(system_ids, [1, 2, 3, 4, 5, 7, 8, 9, 10, 11])
+        # Этап A1 (миграция 30): + `условие_входа`, `куратор`, `подвал`.
+        self.assertEqual(
+            system_ids, [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14]
+        )
 
     def _query(self, sql: str) -> list[tuple[object, ...]]:
         connection = sqlite3.connect(self.path)

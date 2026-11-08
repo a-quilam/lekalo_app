@@ -68,20 +68,20 @@ OTHER_TG = 9_845_002
 
 # --- Эталон требования 2 (литералы, не импорт из продукта) -------------------
 #
-# Владелец: «заголовок жирный, пустая строка, "дата // время" жирные,
-# "место(ссылка)" жирная БЕЗ пустой строки между датой и местом, адрес
-# обычный, пустая строка, описание, пустая строка, контакт».
-# Тот же эталон зафиксирован во внутренней спецификации Poster 2.0 §6.1.1.
+# Владелец (редакция v5, «Лекало» 2.6 §1.1): «заголовок жирный, пустая строка,
+# "дата, время" жирные (запятая), "место(ссылка)" жирная БЕЗ пустой строки
+# между датой и местом, адрес обычный, пустая строка, описание, пустая строка,
+# "Мероприятие ведёт: контакт"».
 REQ_VISIBLE_LINES = (
     "<b>Летний концерт</b>",
     "",
-    "<b>12.07 (пн) // 19:00</b>",
+    "<b>12.07 (пн), 19:00</b>",
     '<b><a href="https://example.com/place">Дом культуры</a></b>',
     "ул. Ленина, 1",
     "",
     "Большой зал, вход свободный.",
     "",
-    "@contact",
+    "Мероприятие ведёт: @contact",
 )
 REQ_RENDERED = "\n".join(REQ_VISIBLE_LINES)
 
@@ -194,7 +194,7 @@ class TemplateV4RequirementTests(TemplateDatabaseTestCase):
             f"неверные пустые строки: {lines!r}",
         )
         self.assertEqual(lines[0], "<b>Летний концерт</b>")
-        self.assertEqual(lines[2], "<b>12.07 (пн) // 19:00</b>")
+        self.assertEqual(lines[2], "<b>12.07 (пн), 19:00</b>")
         self.assertTrue(lines[3].startswith("<b>"), lines[3])
         self.assertEqual(lines[4], "ул. Ленина, 1")
 
@@ -544,6 +544,19 @@ class UserTemplateNotOverwrittenTests(unittest.TestCase):
     V3_HEADER = "**[название]**"
     V3_BODY = "\n**[дата] // [время_начала]**\n\n**[место]([ссылка_места])**\n[адрес]\n\n[описание]"
     V3_FOOTER = "\n[контакт]"
+    # Литерал миграции 22 (эталон v4). Актуальный BUILTIN — уже v5, но
+    # миграция 30 существующие шаблоны не переписывает.
+    V4_CONTENT = (
+        "**[название]**\n"
+        "\n"
+        "**[дата] // [время_начала]**\n"
+        "**[место]([ссылка_места])**\n"
+        "[адрес]\n"
+        "\n"
+        "[описание]\n"
+        "\n"
+        "[контакт]"
+    )
 
     @classmethod
     def _joined(cls, header: str, body: str, footer: str) -> str:
@@ -637,7 +650,7 @@ class UserTemplateNotOverwrittenTests(unittest.TestCase):
             (untouched_id,),
         )
         self.assertEqual(rows[-1][1], 4)
-        self.assertEqual(rows[-1][2], BUILTIN_TEMPLATE_CONTENT)
+        self.assertEqual(rows[-1][2], self.V4_CONTENT)
 
     def test_snapshot_of_edited_copy_is_not_rewritten(self) -> None:
         self._seed_personal(

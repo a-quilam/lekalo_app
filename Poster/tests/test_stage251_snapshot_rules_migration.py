@@ -105,11 +105,12 @@ class Migration28SnapshotRulesTests(unittest.TestCase):
 
     def test_fresh_install_has_snapshot_rules_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 29)
-        # Этап B добавил 29 (`user_event_log_reports`), поэтому позиция 28
-        # проверяется со сдвигом на одну запись.
+        self.assertEqual(LATEST_VERSION, 30)
+        # Этап B добавил 29 (`user_event_log_reports`), этап A1 — 30
+        # (`standard_template_extended`), поэтому позиция 28 проверяется
+        # со сдвигом на две записи.
         self.assertEqual(
-            _journal(self.path)[-3:-1],
+            _journal(self.path)[-4:-2],
             [
                 (27, MIGRATION_27_NAME),
                 (28, MIGRATION_28_NAME),

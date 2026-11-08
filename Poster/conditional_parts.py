@@ -980,18 +980,19 @@ def refresh_conditional_parts(
     commit: bool = True,
 ) -> ConditionalRefreshResult:
     """
-    Приводит правила к текущей версии расширенного текста (Poster 2.5.3 §3).
+    Приводит правила к текущей версии текстов шаблона (Poster 2.5.3 §3).
 
-    Условные части принадлежат ТОЛЬКО `extended_content`, поэтому:
+    Этап A1: автоматические условные части есть у ОБОИХ вариантов стандарта
+    (§2 задания), поэтому обе секции равноправны:
 
-    - правила секции `content` (унаследованные) удаляются: простой текст
-      условий не имеет и менять их не может;
-    - правило расширенной секции, кирпичика которого больше нет в новом
-      тексте, УДАЛЯЕТСЯ (это не `stale`); кирпичик встречается хотя бы раз —
+    - правило секции, кирпичика которого больше нет в тексте этой секции,
+      УДАЛЯЕТСЯ (это не `stale`); кирпичик встречается хотя бы раз —
       правило переносится в новую версию;
     - неоднозначный фрагмент (встречается больше одного раза) по-прежнему
       становится `stale` и не применяется к случайному похожему месту, а не
-      удаляется: автор увидит проблему и сможет её перенастроить.
+      удаляется: автор увидит проблему и сможет её перенастроить;
+    - секция без текста (у личного шаблона нет `extended_content`) —
+      правила этой секции удаляются: привязывать их не к чему.
 
     Перенос выполняется в одной транзакции с сохранением версии текста:
     неудачная проверка не оставляет шаблон без правила. `revision` шаблона
@@ -1034,6 +1035,10 @@ def refresh_conditional_parts(
     ).all()
 
     extended_text = current.extended_content or ""
+    section_texts = {
+        SECTION_CONTENT: current.content or "",
+        SECTION_EXTENDED_CONTENT: extended_text,
+    }
     transferred = 0
     marked_stale = 0
     deleted = 0
@@ -1044,9 +1049,10 @@ def refresh_conditional_parts(
             part_version = int(getattr(row, "version_id"))
             brick_id = int(getattr(row, "brick_id"))
             fragment = str(getattr(row, "fragment"))
-            if part_section != SECTION_EXTENDED_CONTENT:
-                # Наследственное правило простого текста: в 2.5.3 §3 условий
-                # у простого шаблона нет, поэтому строка удаляется.
+            section_text = section_texts.get(part_section)
+            if section_text is None or not section_text.strip():
+                # Секции нет в этой версии (у личного шаблона может не быть
+                # `extended_content`) — привязывать правило не к чему.
                 session.execute(
                     sqlalchemy_delete(template_conditional_parts).where(
                         template_conditional_parts.c.id == part_id
@@ -1056,8 +1062,8 @@ def refresh_conditional_parts(
                 continue
             code = _binding_code(session, current.id, brick_id)
             token = f"[{code}]" if code else ""
-            if not token or token not in extended_text:
-                # Кирпичика больше нет в расширенном тексте — правило
+            if not token or token not in section_text:
+                # Кирпичика больше нет в тексте этой секции — правило
                 # кирпичика удаляется (2.5.3 §3), а не остаётся `stale`.
                 session.execute(
                     sqlalchemy_delete(template_conditional_parts).where(
@@ -1074,8 +1080,8 @@ def refresh_conditional_parts(
                 # не трогаем: вторые автор исправит сам.
                 continue
             unambiguous = (
-                _fragment_span(extended_text, fragment, 1) is not None
-                and extended_text.count(fragment) == 1
+                _fragment_span(section_text, fragment, 1) is not None
+                and section_text.count(fragment) == 1
             )
             if unambiguous:
                 session.execute(

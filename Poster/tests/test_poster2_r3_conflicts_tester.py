@@ -1482,7 +1482,7 @@ class R3MigrationTests(unittest.TestCase):
         return None if row is None else str(row[0])
 
     def test_latest_version_is_twenty_five(self) -> None:
-        self.assertEqual(LATEST_VERSION, 29)
+        self.assertEqual(LATEST_VERSION, 30)
 
     def test_fresh_database_has_conflict_tables_and_integrity(self) -> None:
         from migrations import run_migrations
@@ -1579,6 +1579,9 @@ class R3MigrationTests(unittest.TestCase):
         # (миграция 21). Для них проверяется «прежние колонки дословно плюс
         # ровно одна новая».
         extended_tables = {"brick_proposals", "places"}
+        # Этап A1 (миграция 30) дописывает в конец `templates` ровно одну
+        # колонку `extended_active INTEGER NOT NULL DEFAULT 0` с CHECK 0/1.
+        added_tables = {"templates"}
         # H2 (миграция 24) осознанно пересоздаёт таблицы шаблонных текстов и
         # их привязок: секции header/body/footer заменяются на content +
         # extended_content. Колонки-«соседи» сохраняются дословно.
@@ -1595,26 +1598,48 @@ class R3MigrationTests(unittest.TestCase):
                 {
                     name: self._schema(connection, name)
                     for name in old_tables
-                    if name not in extended_tables | rebuilt_tables
+                    if name not in extended_tables | added_tables | rebuilt_tables
                 },
                 {
                     name: schema_before[name]
                     for name in old_tables
-                    if name not in extended_tables | rebuilt_tables
+                    if name not in extended_tables | added_tables | rebuilt_tables
                 },
             )
             self.assertEqual(
                 {
                     name: self._rows(connection, f"PRAGMA table_info({name})")
                     for name in old_tables
-                    if name not in extended_tables | rebuilt_tables
+                    if name not in extended_tables | added_tables | rebuilt_tables
                 },
                 {
                     name: columns_before[name]
                     for name in old_tables
-                    if name not in extended_tables | rebuilt_tables
+                    if name not in extended_tables | added_tables | rebuilt_tables
                 },
             )
+            # Этап A1: у `templates` прежние колонки дословно и ровно одна
+            # новая — флаг расширенного варианта, дописанный в конец.
+            templates_columns = self._rows(connection, "PRAGMA table_info(templates)")
+            self.assertEqual(
+                [(row[1], row[2], row[3], row[4]) for row in templates_columns][
+                    : len(columns_before["templates"])
+                ],
+                [
+                    (row[1], row[2], row[3], row[4])
+                    for row in columns_before["templates"]
+                ],
+                "прежние колонки templates не переставлены",
+            )
+            self.assertEqual(
+                [row[1] for row in templates_columns][len(columns_before["templates"]) :],
+                ["extended_active"],
+                "миграция 30 добавляет ровно одну колонку флага",
+            )
+            flag_column = templates_columns[-1]
+            self.assertEqual(flag_column[2], "INTEGER")
+            self.assertEqual(flag_column[3], 1, "флаг обязателен")
+            self.assertEqual(flag_column[4], "0", "по умолчанию выключен")
             # Миграция 24: у обеих таблиц текстов ровно content +
             # extended_content вместо трёх секций; привязки не изменились.
             for table in ("template_versions", "template_snapshots"):
@@ -1705,7 +1730,22 @@ class R3MigrationTests(unittest.TestCase):
                     "SELECT id, code, title, type, scope, status FROM bricks "
                     "WHERE id > 500 ORDER BY id",
                 ),
-                [(501, "город", "Город", "short_text", "system", "active")],
+                [
+                    (501, "город", "Город", "short_text", "system", "active"),
+                    # Этап A1 (миграция 30): три необязательных системных
+                    # кирпичика стандарта, вставленные идемпотентно после
+                    # существующих строк.
+                    (
+                        502,
+                        "условие_входа",
+                        "Условие входа",
+                        "short_text",
+                        "system",
+                        "active",
+                    ),
+                    (503, "куратор", "Куратор", "short_text", "system", "active"),
+                    (504, "подвал", "Подвал", "short_text", "system", "active"),
+                ],
             )
             self.assertEqual(
                 self._rows(

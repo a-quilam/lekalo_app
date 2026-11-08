@@ -101,7 +101,7 @@ class Migration26Tests(unittest.TestCase):
 
     def test_fresh_install_has_instances_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 29)
+        self.assertEqual(LATEST_VERSION, 30)
         # 2.5.1 добавила 28 (`template_snapshot_conditional_parts`), этап B —
         # 29 (`user_event_log_reports`): проверяется позиция 25–27.
         self.assertEqual(

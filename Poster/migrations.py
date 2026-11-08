@@ -4165,6 +4165,164 @@ MIGRATION_29_USER_EVENT_LOG_REPORTS = Migration(
 )
 
 
+# --- Версия 30: два варианта стандарта и три системных кирпичика (этап A1) --
+#
+# Финальное задание владельца (2026-11-08) §1–4:
+#
+# - у площадки ОДИН шаблон с двумя сохранёнными текстами; активность
+#   расширенного варианта — флаг строки шаблона (`templates.extended_active`,
+#   по умолчанию выключен). Выключение флага не удаляет ни текст, ни
+#   условные части: это только выбор варианта для НОВЫХ анонсов;
+# - снимок копирует значение флага (`template_snapshots.extended_active`),
+#   поэтому переключение посреди создания не меняет начатый черновик (§3.1);
+# - три необязательных системных кирпичика: `условие_входа`, `куратор`,
+#   `подвал`. Подсказки — §16 задания, они же `description` строки
+#   `bricks` (экран вопроса показывает описание системного кирпичика).
+#
+# Обе колонки добавляются с DEFAULT 0: у существующих шаблонов расширенный
+# вариант ещё не включали, а снимки без флага рендерятся простым текстом.
+#
+# Кирпичики вставляются идемпотентно (`WHERE NOT EXISTS` по коду) и с
+# `MAX(id)+1`, как в миграциях 15 и 21: в существующей базе пользовательские
+# и местные кирпичики могли занять номера 12–14, а каталожный ID — логический
+# (чтение сверяет определение по коду, а не по номеру). Повторная
+# инициализация не создаёт дублей и не переписывает уже существующую строку.
+#
+# Триггеры резервирования кодов снимаются на время вставки и
+# восстанавливаются дословно в редакции миграции 25 (Poster 2.4 P1): правило
+# безусловно, исключение Stage 26/R3 больше не действует.
+
+_M30_CONDITION_ENTRY_DESCRIPTION = (
+    "Напишите условия входа. Например: «Вход бесплатный, без регистрации», "
+    "«Вход — 100 ₽» или «Вход по записи»."
+)
+_M30_CURATOR_DESCRIPTION = (
+    "Выберите куратора или пришлите его контакт: @ник, ссылку или текст "
+    "с гиперссылкой."
+)
+_M30_FOOTER_DESCRIPTION = (
+    "Выберите напоминание, которое появится внизу анонса."
+)
+
+
+def _m30_system_brick_insert(
+    *,
+    code: str,
+    title: str,
+    description: str,
+) -> str:
+    """Идемпотентная вставка одного системного кирпичика (`MAX(id)+1`)."""
+    return f"""
+        INSERT INTO bricks
+            (id, code, title, type, scope, source, rules_json, status,
+             created_by_user_id, created_at, updated_at, description)
+        SELECT
+            COALESCE(MAX(id), 0) + 1,
+            {_migration_18_literal(code)},
+            {_migration_18_literal(title)},
+            'short_text',
+            'system',
+            'ask',
+            NULL,
+            'active',
+            NULL,
+            CURRENT_TIMESTAMP,
+            NULL,
+            {_migration_18_literal(description)}
+        FROM bricks
+        WHERE NOT EXISTS (
+            SELECT 1 FROM bricks WHERE code = {_migration_18_literal(code)}
+        )
+        """
+
+
+MIGRATION_30_STANDARD_TEMPLATE_EXTENDED = Migration(
+    version=30,
+    name="standard_template_extended",
+    statements=(
+        # Флаг расширенного варианта. CHECK в той же операции: значение —
+        # строго 0/1, как у `conditional_rules_frozen`.
+        """
+        ALTER TABLE templates
+            ADD COLUMN extended_active INTEGER NOT NULL DEFAULT 0
+            CONSTRAINT ck_templates_extended_active
+            CHECK (extended_active IN (0, 1))
+        """,
+        # Копия флага в снимке: начатый черновик продолжает создаваться по
+        # тому варианту, с которым пользователь начал работу (§3.1).
+        """
+        ALTER TABLE template_snapshots
+            ADD COLUMN extended_active INTEGER NOT NULL DEFAULT 0
+            CONSTRAINT ck_template_snapshots_extended_active
+            CHECK (extended_active IN (0, 1))
+        """,
+        "DROP TRIGGER IF EXISTS trg_bricks_reserve_codes_insert",
+        "DROP TRIGGER IF EXISTS trg_bricks_reserve_codes_update",
+        _m30_system_brick_insert(
+            code="условие_входа",
+            title="Условие входа",
+            description=_M30_CONDITION_ENTRY_DESCRIPTION,
+        ),
+        _m30_system_brick_insert(
+            code="куратор",
+            title="Куратор",
+            description=_M30_CURATOR_DESCRIPTION,
+        ),
+        _m30_system_brick_insert(
+            code="подвал",
+            title="Подвал",
+            description=_M30_FOOTER_DESCRIPTION,
+        ),
+        # Триггеры возвращаются дословно в редакции миграции 25.
+        """
+        CREATE TRIGGER trg_bricks_reserve_codes_insert
+        BEFORE INSERT ON bricks
+        FOR EACH ROW
+        WHEN EXISTS (
+            SELECT 1 FROM bricks b
+            WHERE b.code = NEW.code
+              AND (
+                  (NEW.scope = 'system' AND b.scope <> 'system')
+                  OR (NEW.scope <> 'system' AND b.scope = 'system')
+              )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'system brick code is reserved');
+        END
+        """,
+        """
+        CREATE TRIGGER trg_bricks_reserve_codes_update
+        BEFORE UPDATE OF code, scope ON bricks
+        FOR EACH ROW
+        WHEN EXISTS (
+            SELECT 1 FROM bricks b
+            WHERE b.id <> OLD.id
+              AND b.code = NEW.code
+              AND (
+                  (NEW.scope = 'system' AND b.scope <> 'system')
+                  OR (NEW.scope <> 'system' AND b.scope = 'system')
+              )
+        )
+        AND NOT (
+            NEW.code = OLD.code
+            AND (
+                NEW.scope = OLD.scope
+                OR (OLD.scope = 'personal' AND NEW.scope = 'system')
+            )
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'system brick code is reserved');
+        END
+        """,
+    ),
+    requires_tables=(
+        "bricks",
+        "templates",
+        "template_snapshots",
+    ),
+)
+
+
 DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_1_USERS_PLACES,
     MIGRATION_2_PLACE_CONTACTS_UI,
@@ -4195,6 +4353,7 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_27_CONDITIONAL_PARTS,
     MIGRATION_28_SNAPSHOT_CONDITIONAL_PARTS,
     MIGRATION_29_USER_EVENT_LOG_REPORTS,
+    MIGRATION_30_STANDARD_TEMPLATE_EXTENDED,
 )
 
 LATEST_VERSION = DEFAULT_MIGRATIONS[-1].version if DEFAULT_MIGRATIONS else 0

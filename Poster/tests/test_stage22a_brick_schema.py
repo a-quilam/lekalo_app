@@ -75,7 +75,7 @@ class BrickSchemaTests(BrickDatabaseTestCase):
                 },
             )
 
-    def test_migrations_seed_exactly_ten_stable_system_bricks(self) -> None:
+    def test_migrations_seed_exactly_thirteen_stable_system_bricks(self) -> None:
         self.assertEqual(
             self.journal(),
             [
@@ -108,16 +108,19 @@ class BrickSchemaTests(BrickDatabaseTestCase):
                 (27, "template_conditional_parts"),
                 (28, "template_snapshot_conditional_parts"),
                 (29, "user_event_log_reports"),
+                (30, "standard_template_extended"),
             ],
         )
         # 9 кирпичиков миграции 6 + системный `[адрес]` миграции 15
         # (Poster 2.0 S1) + `[город]` миграции 21 (Poster 2.0 U1a) −
-        # `адрес_места`, устранённый миграцией 25 (Poster 2.4 P1).
+        # `адрес_места`, устранённый миграцией 25 (Poster 2.4 P1), +
+        # `условие_входа`/`куратор`/`подвал` миграции 30 (этап A1).
         # Каталог и БД обязаны совпадать по коду и порядку.
         definitions = list_system_bricks(self.session)
-        self.assertEqual(len(definitions), 10)
+        self.assertEqual(len(definitions), 13)
         self.assertEqual(
-            [item.id for item in definitions], [1, 2, 3, 4, 5, 7, 8, 9, 10, 11]
+            [item.id for item in definitions],
+            [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14],
         )
         self.assertEqual(
             [item.code for item in definitions],
@@ -156,7 +159,7 @@ class BrickSchemaTests(BrickDatabaseTestCase):
                     text("SELECT count(*) FROM bricks WHERE scope='system'")
                 ).scalar_one()
             )
-        self.assertEqual(count, 10)
+        self.assertEqual(count, 13)
         self.assertEqual(len(self.journal()), LATEST_VERSION)
 
     def test_restart_does_not_overwrite_a_controlled_system_definition(self) -> None:
