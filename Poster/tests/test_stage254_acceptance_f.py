@@ -535,8 +535,16 @@ class StandardTemplateLifecycleTests(unittest.TestCase):
         await h.callback("tp_save")
 
         self.assertEqual(_version_content(h, template_id, 2), f"`{LINE}`")
-        # В буквальном span кирпичиков нет — привязок у версии тоже нет.
-        self.assertEqual(_version_bricks(h, template_id, 2), {})
+        # Standard v5 (§A1): расширенный текст остаётся в версии, поэтому
+        # привязки — все 13 системных кирпичиков стандарта, а не пустой набор.
+        bindings = _version_bricks(h, template_id, 2)
+        self.assertEqual(len(bindings), 13)
+        with h.session_factory() as session:
+            place_brick = get_system_brick(session, "место")
+            url_brick = get_system_brick(session, "ссылка_места")
+        assert place_brick is not None and url_brick is not None
+        self.assertEqual(bindings.get("место"), place_brick.id)
+        self.assertEqual(bindings.get("ссылка_места"), url_brick.id)
         rendered = _render_version(h, template_id, {})
         self.assertEqual(rendered, f"<code>{LINE}</code>")
         self.assertNotIn("<a ", rendered)

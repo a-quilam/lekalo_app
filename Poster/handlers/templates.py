@@ -86,6 +86,7 @@ from template_store import (
     list_personal_templates,
     reset_personal_template,
     reset_standard_template,
+    set_standard_extended_active,
     update_template_content,
 )
 from template_types import (
@@ -731,7 +732,38 @@ def _card_content(
             callback_data=f"tp_edit:{template.template_id}",
         )
     ]
-    if has_extended:
+    # Этап A2 (§3): у стандарта места расширенный вариант включается и
+    # выключается одной кнопкой. Пока флаг выключен, доступ к расширенному
+    # редактору скрыт, но сам текст и правила остаются в базе.
+    standard_toggle: InlineKeyboardButton | None = None
+    if template.kind == TEMPLATE_KIND_STANDARD:
+        if template.extended_active:
+            if has_extended:
+                edit_row.append(
+                    InlineKeyboardButton(
+                        tr("buttons.templates.rasshirennaya_versiya"),
+                        callback_data=f"tp_edit_ext:{template.template_id}",
+                    )
+                )
+            else:
+                # Стандарт, созданный до этапа A1, ещё без расширенного
+                # текста: «Расширенная версия» открывает его создание.
+                edit_row.append(
+                    InlineKeyboardButton(
+                        tr("buttons.templates.rasshirennaya_versiya"),
+                        callback_data=f"tp_mkext:{template.template_id}",
+                    )
+                )
+            standard_toggle = InlineKeyboardButton(
+                tr("buttons.templates.vyklyuchit_dopolnitelnyy_shablon"),
+                callback_data=f"tp_ext_off:{template.template_id}",
+            )
+        else:
+            standard_toggle = InlineKeyboardButton(
+                tr("buttons.templates.vklyuchit_dopolnitelnyy_shablon"),
+                callback_data=f"tp_ext_on:{template.template_id}",
+            )
+    elif has_extended:
         edit_row.append(
             InlineKeyboardButton(
                 tr("buttons.templates.rasshirennyy"),
@@ -750,6 +782,7 @@ def _card_content(
     keyboard = InlineKeyboardMarkup(
         [
             edit_row,
+            *([[standard_toggle]] if standard_toggle is not None else []),
             # Текст шаблона показан на этой же карточке, поэтому отдельный
             # экран предпросмотра не нужен: остаётся список кодов кирпичиков.
             [
@@ -3246,6 +3279,100 @@ async def handle_template_text(
 # --- Стандартный шаблон из кабинета места -----------------------------------
 
 
+async def handle_standard_extended_toggle(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    Включает/выключает расширенный вариант стандарта места (§3 задания).
+
+    Одно нажатие сразу меняет флаг в БД и перерисовывает текущую карточку
+    тем же сообщением (`editMessageText`): отдельного сообщения об успехе и
+    подтверждения нет. Расширенный текст, условные части и справочники не
+    удаляются, поэтому после любого числа переключений содержимое цело.
+    """
+    query = ctx.query(update)
+    state = load_template_session(ctx.user(update).id)
+    if not _valid_state(state) or state.get("phase") != PHASE_CARD:
+        await query.answer(STALE_TEXT, show_alert=True)
+        return
+    data = query.data or ""
+    prefix, _, raw_id = data.partition(":")
+    if prefix not in {"tp_ext_on", "tp_ext_off"}:
+        await query.answer(STALE_TEXT, show_alert=True)
+        return
+    try:
+        template_id = int(raw_id)
+    except (TypeError, ValueError):
+        await query.answer(STALE_TEXT, show_alert=True)
+        return
+    if template_id != state.get("template_id"):
+        await query.answer(STALE_TEXT, show_alert=True)
+        return
+    active = prefix == "tp_ext_on"
+    telegram_user_id = ctx.user(update).id
+    session = SessionLocal()
+    new_state: dict | None = None
+    text = ""
+    keyboard: InlineKeyboardMarkup | None = None
+    notice: str | None = None
+    alert: str | None = None
+    try:
+        # Права проверяются при каждом callback: роль могли отозвать после
+        # открытия карточки. `_load_editable` требует действующего админа
+        # места (или суперадмина) для стандарта.
+        template = _load_editable(session, telegram_user_id, template_id)
+        if template is None:
+            alert = DENIED_TEXT
+        elif template.kind != TEMPLATE_KIND_STANDARD or state.get("origin") != "admin":
+            alert = (
+                DENIED_TEXT if template.kind == TEMPLATE_KIND_STANDARD else STALE_TEXT
+            )
+        else:
+            result = set_standard_extended_active(
+                session,
+                actor_telegram_user_id=telegram_user_id,
+                template_id=template_id,
+                active=active,
+                expected_revision=state.get("revision"),
+            )
+            if result.status in {"updated", "unchanged"} and result.template:
+                current = result.template
+            elif result.status == "stale" and result.template is not None:
+                # Карточка устарела после чужой правки текста: флаг не меняем,
+                # показываем актуальную версию с пояснением.
+                current = result.template
+                notice = tr("templates.render_phase.shablon_izmenilsya_drugom_okne")
+            else:
+                current = None
+                alert = (
+                    DENIED_TEXT
+                    if result.status == "forbidden"
+                    else tr("alerts.templates.shablon_nayden")
+                )
+            if current is not None:
+                new_state = _card_state(
+                    current,
+                    origin=_template_origin(current),
+                    page=_page_value(state.get("page")),
+                )
+                text, keyboard = _card_content(
+                    current,
+                    place_name=_place_name(session, current.place_id),
+                    session=session,
+                    telegram_user_id=telegram_user_id,
+                )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Не удалось переключить расширенный вариант: %s", exc)
+        alert = tr("alerts.templates.ne_udalos_otkryt_standartnyy")
+    finally:
+        session.close()
+    if alert is not None or new_state is None or keyboard is None:
+        await query.answer(alert or STALE_TEXT, show_alert=True)
+        return
+    await query.answer()
+    await _show(update, context, new_state, text, keyboard, notice=notice)
+
+
 async def open_standard_template(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -3368,6 +3495,11 @@ def templates_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(handle_pick_page, pattern=r"^tp_pickpage:\d+$"),
         # Стандартный шаблон в кабинете места и возврат в карточку места.
         CallbackQueryHandler(open_standard_template, pattern=r"^tp_std:\d+$"),
+        # Этап A2 §3: переключатель расширенного варианта стандарта — одно
+        # нажатие, без подтверждения; регистрируется до общего fallback.
+        CallbackQueryHandler(
+            handle_standard_extended_toggle, pattern=r"^tp_ext_(on|off):\d+$"
+        ),
         CallbackQueryHandler(handle_back_to_place, pattern=r"^tp_back_place:\d+$"),
         # Личный кабинет.
         CallbackQueryHandler(handle_page, pattern=r"^tp_page:\d+$"),

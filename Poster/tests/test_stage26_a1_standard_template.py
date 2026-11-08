@@ -254,7 +254,7 @@ class _StandardTemplateCase(unittest.TestCase):
         return get_standard_template(self.session, OWNER_TG, place_id)
 
     def set_flag(self, template_id: int, value: bool) -> None:
-        """Единственный способ включить вариант: публичного сеттера нет."""
+        """Прямая установка флага в обход UI (этап A2 добавил сеттер с правами)."""
         self.session.execute(
             sql_text("UPDATE templates SET extended_active = :flag WHERE id = :id"),
             {"flag": int(value), "id": template_id},

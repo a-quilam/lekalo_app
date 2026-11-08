@@ -158,6 +158,9 @@ def _all_button_texts(h) -> list[str]:
 
 def _is_extend_button(data: str | None, label: str) -> bool:
     """Кнопка создания расширенной версии шаблона (E2)."""
+    if data and data.startswith(("tp_ext_on:", "tp_ext_off:")):
+        # Этап A2 §3: это переключатель флага, а не вход в редактор.
+        return False
     if data and "ext" in data.lower():
         return True
     return "расширен" in label.lower()
@@ -169,8 +172,21 @@ async def _assert_can_create_extended(h) -> None:
 
     Кнопка должна реально открывать редактор расширенного текста, а не
     отвечать «в этом шаблоне нет расширенного текста» (E2: путь создания).
+
+    Этап A2 (§3): у стандарта площадки расширенный вариант сначала
+    включается переключателем «Включить дополнительный шаблон»; только после
+    этого появляется доступ к расширенному редактору. Поэтому переключатель
+    нажимается, а проверка продолжается на обновлённой карточке.
     """
     buttons = h.screen_buttons()
+    toggles = [
+        data
+        for _label, data in buttons
+        if data and data.startswith(("tp_ext_on:", "tp_ext_off:"))
+    ]
+    if toggles and toggles[0].startswith("tp_ext_on:"):
+        await h.callback(toggles[0])
+        buttons = h.screen_buttons()
     extend = [
         (label, data) for label, data in buttons if _is_extend_button(data, label)
     ]

@@ -751,6 +751,9 @@ class EndToEndRouteTests(unittest.TestCase):
             [
                 f"anp_data:{active.id}",
                 f"anp_photos:{active.id}",
+                # A1: в снимке стандарта есть расширенный текст, поэтому у
+                # анонса доступна и панель дополнительных полей.
+                f"anp_extras:{active.id}",
                 f"anp_menu:{active.id}",
             ],
             "управление должно жить на самом анонсе",

@@ -1014,6 +1014,111 @@ def get_standard_template(
     return _template_details(session, row)
 
 
+def set_standard_extended_active(
+    session: Session,
+    *,
+    actor_telegram_user_id: int | None,
+    template_id: int,
+    active: bool,
+    expected_revision: int | None = None,
+) -> TemplateMutationResult:
+    """
+    Включает/выключает расширенный вариант стандарта места (§3 задания).
+
+    Меняется ТОЛЬКО флаг строки шаблона: тексты обеих секций, условные части и
+    справочники остаются как есть, новых версий нет — поэтому `revision` не
+    растёт. Существующие снимки не инвалидируются: начатый черновик
+    продолжает создаваться по своему снимку (§3.1), а флаг действует только
+    для новых сценариев.
+
+    Права: только действующий администратор места или суперадмин. Параметр
+    `expected_revision` — оптимистичная проверка прочитанной версии: если
+    текст шаблона успел измениться, возвращается `stale` без записи.
+    """
+    if not isinstance(active, bool):
+        raise TemplateError("active должен быть булевым значением.")
+    actor = _require_actor_user(session, actor_telegram_user_id)
+    if not _valid_positive_id(template_id):
+        return _mutation("not_found", None, "Стандартный шаблон не найден.")
+    row = _load_template_row(session, template_id)
+    if row is None or row.kind != TEMPLATE_KIND_STANDARD:
+        return _mutation("not_found", None, "Стандартный шаблон не найден.")
+    if not _can_edit_template(session, actor, row):
+        return _mutation(
+            "forbidden",
+            _template_details(session, row),
+            (
+                "Включать и выключать расширенный вариант может только "
+                "администратор места или суперадминистратор."
+            ),
+        )
+    if expected_revision is not None:
+        if not _valid_positive_id(expected_revision):
+            raise TemplateError("expected_revision должен быть положительным числом.")
+        if row.revision != expected_revision:
+            return _mutation(
+                "stale",
+                _template_details(session, row),
+                "Шаблон уже изменился в другом окне. Откройте его заново.",
+            )
+    if bool(row.extended_active) == active:
+        return _mutation(
+            "unchanged",
+            _template_details(session, row),
+            "Расширенный вариант уже в этом состоянии.",
+        )
+
+    now = utcnow()
+    try:
+        result = session.execute(
+            sqlalchemy_update(Template)
+            .where(
+                Template.id == row.id,
+                Template.extended_active != int(active),
+            )
+            .values(extended_active=int(active), updated_at=now)
+            .execution_options(synchronize_session=False)
+        )
+        if getattr(result, "rowcount", 0) != 1:
+            session.rollback()
+            current = _load_template_row(session, row.id, refresh=True)
+            return _mutation(
+                "unchanged",
+                _template_details(session, current) if current is not None else None,
+                "Расширенный вариант уже в этом состоянии.",
+            )
+        # Повторная проверка прав после получения блокировки записи: роль
+        # могли отозвать между чтением и записью.
+        if not _still_authorized(session, actor.id, actor.telegram_user_id, row):
+            session.rollback()
+            current = _load_template_row(session, row.id, refresh=True)
+            status = "not_found" if current is None else "forbidden"
+            return _mutation(
+                status,
+                _template_details(session, current) if current is not None else None,
+                "Права на изменение шаблона больше не действуют.",
+            )
+        session.commit()
+    except (IntegrityError, OperationalError) as exc:
+        session.rollback()
+        raise TemplateConflictError(
+            "Не удалось переключить расширенный вариант из-за одновременной "
+            "записи. Повторите попытку."
+        ) from exc
+    except Exception:
+        session.rollback()
+        raise
+
+    saved = _load_template_row(session, row.id, refresh=True)
+    if saved is None:
+        raise TemplateError("Шаблон исчез после переключения флага.")
+    return _mutation(
+        "updated",
+        _template_details(session, saved),
+        ("Расширенный вариант включён." if active else "Расширенный вариант выключен."),
+    )
+
+
 # --- Личные шаблоны ---------------------------------------------------------
 
 

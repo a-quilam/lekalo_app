@@ -303,9 +303,10 @@ class TemplateManagementTests(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertGreaterEqual(rows[0].revision, 2)
         current = rows[0].current_version
-        # H2: у версии один канонический текст, без секций.
+        # A1: у стандарта канонический текст и расширенный вариант; сброс
+        # возвращает оба эталона, а не удаляет расширение.
         self.assertEqual(current.content, BUILTIN_TEMPLATE.content)
-        self.assertIsNone(current.extended_content)
+        self.assertEqual(current.extended_content, BUILTIN_TEMPLATE.extended_content)
         # Пользователь остался в карточке того же шаблона.
         self.assertIn("Свой шаблон", h.screen_text())
 
