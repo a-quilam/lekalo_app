@@ -23,6 +23,7 @@ from handlers.announcement_panel import (
 )
 from handlers.announcement_wizard import announcement_wizard_handlers
 from handlers.bricks import bricks_handlers
+from handlers.catalogs import catalog_handlers
 from handlers.main_menu import main_menu_handlers
 from handlers.noop import noop_handlers
 from handlers.places import places_handlers
@@ -320,6 +321,12 @@ def build_application() -> Application:
 
     # Редактор шаблонов: после кирпичиков, но до главного меню. Префикс tp_.
     for handler in templates_handlers():
+        application.add_handler(handler)
+
+    # Справочники кураторов и подвалов («Лекало» 2.6 B2): префикс `cat_` и
+    # приём текста только в своей фазе. После шаблонов (кнопки входа живут на
+    # их экранах), но до главного меню.
+    for handler in catalog_handlers():
         application.add_handler(handler)
 
     # Обработчики главного меню

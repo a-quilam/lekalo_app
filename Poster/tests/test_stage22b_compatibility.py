@@ -103,6 +103,8 @@ class Stage22BCompatibilityTests(unittest.TestCase):
         }
         # U4b: ссылки-приглашения создаёт миграция 23, а не create_all.
         stage23_tables.add("place_invite_links")
+        # «Лекало» 2.6 B1: справочники создаёт миграция 31, а не create_all.
+        stage23_tables |= {"curator_entries", "footer_entries"}
         legacy_tables = [
             table
             for name, table in Base.metadata.tables.items()
@@ -214,7 +216,7 @@ class Stage22BCompatibilityTests(unittest.TestCase):
         self.assertIn((18, "builtin_templates_v3"), journal(self.path))
         self.assertEqual(
             journal(self.path)[-1],
-            (LATEST_VERSION, "standard_template_extended"),
+            (LATEST_VERSION, "curator_footer_catalogs"),
         )
         # Миграция 17 переименовала легаси-таблицу: строка прежнего черновика
         # читается из архива без потерь.

@@ -109,6 +109,7 @@ class BrickSchemaTests(BrickDatabaseTestCase):
                 (28, "template_snapshot_conditional_parts"),
                 (29, "user_event_log_reports"),
                 (30, "standard_template_extended"),
+                (31, "curator_footer_catalogs"),
             ],
         )
         # 9 кирпичиков миграции 6 + системный `[адрес]` миграции 15

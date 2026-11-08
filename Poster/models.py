@@ -1622,3 +1622,171 @@ class AnnouncementExtra(Base):
             f"<AnnouncementExtra(id={self.id}, draft_id={self.draft_id}, "
             f"brick_id={self.brick_id})>"
         )
+
+
+# --- Справочники кураторов и подвалов (Poster 2.6 B1) ----------------------
+#
+# Общая форма области владения повторяет кирпичики: запись принадлежит ЛИБО
+# площадке (`place_id`), ЛИБО пользователю (`owner_user_id`), ровно одной.
+# XOR проверяет CHECK. Форматирование хранится как у значений анонса:
+# `*_plain` — исходный текст (источник истины), `*_html` — безопасный HTML
+# (NULL — форматирования нет), поэтому пользовательские `<`/`&` не попадают в
+# Telegram-разметку второй раз.
+
+
+class CuratorEntry(Base):
+    """
+    Запись справочника кураторов площадки или личного справочника.
+
+    `value_plain`/`value_html` — контакт как его прислал пользователь:
+    `@username`, ссылка, текст с гиперссылкой или форматированием. Подпись
+    кнопки строится из `value_plain` (без Markdown-маркеров), а карточка и
+    подстановка в анонс — из `value_html`.
+
+    Физического удаления нет: `status='archived'` скрывает запись из активного
+    списка, но сохраняет её ID и содержимое.
+    """
+
+    __tablename__ = "curator_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    place_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("places.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    owner_user_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    value_plain: Mapped[str] = mapped_column(Text, nullable=False)
+    value_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="active", server_default=text("'active'")
+    )
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(place_id IS NOT NULL AND owner_user_id IS NULL) "
+            "OR (place_id IS NULL AND owner_user_id IS NOT NULL)",
+            name="ck_curator_entries_scope",
+        ),
+        CheckConstraint(
+            "length(trim(value_plain)) > 0",
+            name="ck_curator_entries_value_not_empty",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'archived')",
+            name="ck_curator_entries_status",
+        ),
+        Index("ix_curator_entries_place_status", "place_id", "status"),
+        Index("ix_curator_entries_owner_status", "owner_user_id", "status"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CuratorEntry(id={self.id}, place_id={self.place_id}, "
+            f"owner_user_id={self.owner_user_id}, status={self.status!r})>"
+        )
+
+
+class FooterEntry(Base):
+    """
+    Запись справочника подвалов: название для списка + текст подстановки.
+
+    В анонс подставляется `text_plain`/`text_html` (а не название): подвал —
+    постоянное напоминание гостям. Название служит подписью кнопки и
+    уникально внутри области владения без учёта регистра (`name_search` —
+    NFKC + casefold, как у `place_names`); архивные записи участвуют в
+    уникальности, чтобы восстановление не создавало двусмысленности.
+    """
+
+    __tablename__ = "footer_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    place_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("places.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    owner_user_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    name_search: Mapped[str] = mapped_column(Text, nullable=False)
+    text_plain: Mapped[str] = mapped_column(Text, nullable=False)
+    text_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="active", server_default=text("'active'")
+    )
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "(place_id IS NOT NULL AND owner_user_id IS NULL) "
+            "OR (place_id IS NULL AND owner_user_id IS NOT NULL)",
+            name="ck_footer_entries_scope",
+        ),
+        CheckConstraint(
+            "length(trim(name)) > 0",
+            name="ck_footer_entries_name_not_empty",
+        ),
+        CheckConstraint(
+            "length(trim(name_search)) > 0",
+            name="ck_footer_entries_search_not_empty",
+        ),
+        CheckConstraint(
+            "length(trim(text_plain)) > 0",
+            name="ck_footer_entries_text_not_empty",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'archived')",
+            name="ck_footer_entries_status",
+        ),
+        Index(
+            "ux_footer_entries_place_name",
+            "place_id",
+            "name_search",
+            unique=True,
+            sqlite_where=text("place_id IS NOT NULL"),
+        ),
+        Index(
+            "ux_footer_entries_owner_name",
+            "owner_user_id",
+            "name_search",
+            unique=True,
+            sqlite_where=text("owner_user_id IS NOT NULL"),
+        ),
+        Index("ix_footer_entries_place_status", "place_id", "status"),
+        Index("ix_footer_entries_owner_status", "owner_user_id", "status"),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<FooterEntry(id={self.id}, place_id={self.place_id}, "
+            f"owner_user_id={self.owner_user_id}, name={self.name!r})>"
+        )

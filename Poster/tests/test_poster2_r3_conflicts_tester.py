@@ -1482,7 +1482,7 @@ class R3MigrationTests(unittest.TestCase):
         return None if row is None else str(row[0])
 
     def test_latest_version_is_twenty_five(self) -> None:
-        self.assertEqual(LATEST_VERSION, 30)
+        self.assertEqual(LATEST_VERSION, 31)
 
     def test_fresh_database_has_conflict_tables_and_integrity(self) -> None:
         from migrations import run_migrations
@@ -1632,7 +1632,9 @@ class R3MigrationTests(unittest.TestCase):
                 "прежние колонки templates не переставлены",
             )
             self.assertEqual(
-                [row[1] for row in templates_columns][len(columns_before["templates"]) :],
+                [row[1] for row in templates_columns][
+                    len(columns_before["templates"]) :
+                ],
                 ["extended_active"],
                 "миграция 30 добавляет ровно одну колонку флага",
             )

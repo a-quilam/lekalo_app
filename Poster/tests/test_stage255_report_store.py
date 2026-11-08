@@ -50,6 +50,7 @@ from tests.stage19a_helpers import make_engine, temp_db_path
 MIGRATION_28_NAME = "template_snapshot_conditional_parts"
 MIGRATION_29_NAME = "user_event_log_reports"
 MIGRATION_30_NAME = "standard_template_extended"
+MIGRATION_31_NAME = "curator_footer_catalogs"
 
 USER_TG = 77_500_001
 OTHER_TG = 77_500_002
@@ -147,16 +148,17 @@ class Migration29Tests(unittest.TestCase):
         finally:
             engine.dispose()
 
-    def test_latest_version_is_thirty(self) -> None:
-        self.assertEqual(LATEST_VERSION, 30)
+    def test_latest_version_is_thirty_one(self) -> None:
+        self.assertEqual(LATEST_VERSION, 31)
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        # Этап A1 добавил миграцию 30: журнал заканчивается парой 29/30,
-        # сама запись 29 остаётся на своём месте.
+        # Этап A1 добавил миграцию 30, B1 — 31: журнал заканчивается парой
+        # 30/31, а сама запись 29 остаётся на своём месте.
         self.assertEqual(
-            _journal(self.path)[-2:],
+            _journal(self.path)[-3:],
             [
                 (29, MIGRATION_29_NAME),
                 (30, MIGRATION_30_NAME),
+                (31, MIGRATION_31_NAME),
             ],
         )
 
@@ -241,7 +243,9 @@ class Migration29Tests(unittest.TestCase):
         }
         self.assertNotIn("user_event_log", before)
         self.assertNotIn("reports", before)
-        self.assertEqual(self.migrate(), LATEST_VERSION)
+        # Вклад ИМЕННО 29: до 30 база доводится отдельным шагом, иначе в
+        # добавочный набор попали бы объекты следующих миграций.
+        self.assertEqual(self.migrate(DEFAULT_MIGRATIONS[:29]), 29)
         after = {
             str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
         }
@@ -256,13 +260,25 @@ class Migration29Tests(unittest.TestCase):
             },
             "миграция только добавочная",
         )
-        # Этап A1 добавил 30: запись 29 теперь предпоследняя.
-        self.assertEqual(_journal(self.path)[-2], (29, MIGRATION_29_NAME))
-        # Повторный запуск ничего не меняет.
+        self.assertEqual(_journal(self.path)[-1], (29, MIGRATION_29_NAME))
+        # Дальнейшие миграции (30 — колонки, 31 — справочники) добавляются
+        # поверх; повторный запуск уже ничего не меняет.
         self.assertEqual(self.migrate(), LATEST_VERSION)
         self.assertEqual(
             {str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")},
-            after,
+            after
+            | {
+                "curator_entries",
+                "ix_curator_entries_place_status",
+                "ix_curator_entries_owner_status",
+                "trg_curator_entries_id_immutable",
+                "footer_entries",
+                "ux_footer_entries_place_name",
+                "ux_footer_entries_owner_name",
+                "ix_footer_entries_place_status",
+                "ix_footer_entries_owner_status",
+                "trg_footer_entries_id_immutable",
+            },
         )
 
     def test_reports_status_check_and_default(self) -> None:

@@ -36,6 +36,11 @@ try:
     )
     from brick_store import create_personal_brick, create_place_brick
     from models import PlaceAdmin, User
+    from template_store import (
+        ensure_standard_template,
+        get_standard_template,
+        set_standard_extended_active,
+    )
     from tests.integration_harness import HARNESS_IMPORT_ERROR, scenario_test
     from tests.test_stage20_admin_flow import ensure_user, insert_place
     from user_store import get_or_create_user
@@ -298,6 +303,37 @@ class PlaceKeyboardLayoutTests(unittest.TestCase):
         self.assertIn(f"adm_transfer:{place_id}", callbacks)
         self.assertNotIn(f"adm_replace:{place_id}", callbacks)
         self.assertNotIn(f"adm_revoke:{place_id}", callbacks)
+
+    @scenario_test
+    async def test_catalogs_row_appears_only_with_bricks(self, h) -> None:
+        """«Лекало» 2.6 §6: строка «Кураторы | Подвалы» после «Кирпичиков»."""
+        place_id = insert_place(h, "Место со справочниками")
+        ensure_user(h, PLACE_ADMIN_TG, full_name="Местный Админ")
+        add_place_admin(h, place_id, PLACE_ADMIN_TG)
+        with h.session_factory() as session:
+            ensure_standard_template(session, PLACE_ADMIN_TG, place_id)
+            template = get_standard_template(session, PLACE_ADMIN_TG, place_id)
+            set_standard_extended_active(
+                session,
+                actor_telegram_user_id=PLACE_ADMIN_TG,
+                template_id=template.template_id,
+                active=True,
+                expected_revision=template.revision,
+            )
+            session.commit()
+
+        await h.text("/admin", user_id=PLACE_ADMIN_TG)
+        await h.callback(f"adm_place:{place_id}", user_id=PLACE_ADMIN_TG)
+
+        rows = _rows(h)
+        self.assertEqual([data for _label, data in rows[1]], [f"adm_bricks:{place_id}"])
+        # Обе кнопки справочников — одной строкой сразу после «Кирпичиков».
+        self.assertEqual(
+            [data for _label, data in rows[2]],
+            [f"cat_open:curator:p{place_id}", f"cat_open:footer:p{place_id}"],
+        )
+        self.assertEqual(len(rows[2]), 2)
+        self.assertLessEqual(max(len(row) for row in rows), 2)
 
     @scenario_test
     async def test_dynamic_row_one_proposal(self, h) -> None:

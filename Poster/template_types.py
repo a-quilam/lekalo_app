@@ -212,9 +212,7 @@ class BuiltinConditionalRule:
 
 
 BUILTIN_TEMPLATE_CONDITIONAL_RULES: tuple[BuiltinConditionalRule, ...] = (
-    BuiltinConditionalRule(
-        TEMPLATE_CONTENT, "контакт", "Мероприятие ведёт: [контакт]"
-    ),
+    BuiltinConditionalRule(TEMPLATE_CONTENT, "контакт", "Мероприятие ведёт: [контакт]"),
     BuiltinConditionalRule(TEMPLATE_CONTENT, "адрес", "\n[адрес]"),
     BuiltinConditionalRule(TEMPLATE_CONTENT, "описание", "[описание]"),
     BuiltinConditionalRule(

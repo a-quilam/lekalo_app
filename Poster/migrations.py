@@ -4200,9 +4200,7 @@ _M30_CURATOR_DESCRIPTION = (
     "Выберите куратора или пришлите его контакт: @ник, ссылку или текст "
     "с гиперссылкой."
 )
-_M30_FOOTER_DESCRIPTION = (
-    "Выберите напоминание, которое появится внизу анонса."
-)
+_M30_FOOTER_DESCRIPTION = "Выберите напоминание, которое появится внизу анонса."
 
 
 def _m30_system_brick_insert(
@@ -4323,6 +4321,145 @@ MIGRATION_30_STANDARD_TEMPLATE_EXTENDED = Migration(
 )
 
 
+MIGRATION_31_CURATOR_FOOTER_CATALOGS = Migration(
+    version=31,
+    name="curator_footer_catalogs",
+    statements=(
+        # Справочник кураторов («Лекало» 2.6, этап B1). Запись принадлежит
+        # ЛИБО площадке (`place_id`), ЛИБО пользователю (`owner_user_id`):
+        # ровно одна область, что и проверяет XOR-CHECK. `owner_user_id` —
+        # внутренний `users.id`, поэтому рестарт/смена username не меняют
+        # владельца.
+        #
+        # Форматирование хранится по модели кирпичиков/анонсов: `value_plain` —
+        # plain-текст (источник истины для длины и подписи кнопки),
+        # `value_html` — безопасный HTML (`entities_to_html`/`sanitize_html`).
+        # Пустой `value_html` не пишется: NULL означает «форматирования нет».
+        """
+        CREATE TABLE curator_entries (
+            id INTEGER NOT NULL PRIMARY KEY,
+            place_id INTEGER,
+            owner_user_id INTEGER,
+            value_plain TEXT NOT NULL,
+            value_html TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_by_user_id INTEGER,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            CONSTRAINT ck_curator_entries_scope
+                CHECK (
+                    (place_id IS NOT NULL AND owner_user_id IS NULL)
+                    OR (place_id IS NULL AND owner_user_id IS NOT NULL)
+                ),
+            CONSTRAINT ck_curator_entries_value_not_empty
+                CHECK (length(trim(value_plain)) > 0),
+            CONSTRAINT ck_curator_entries_status
+                CHECK (status IN ('active', 'archived')),
+            CONSTRAINT fk_curator_entries_place_id
+                FOREIGN KEY (place_id) REFERENCES places (id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_curator_entries_owner_user_id
+                FOREIGN KEY (owner_user_id) REFERENCES users (id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_curator_entries_created_by_user_id
+                FOREIGN KEY (created_by_user_id) REFERENCES users (id)
+                ON DELETE SET NULL
+        )
+        """,
+        # Список активных/архивных записей в области: владелец + статус.
+        """
+        CREATE INDEX ix_curator_entries_place_status
+            ON curator_entries (place_id, status)
+        """,
+        """
+        CREATE INDEX ix_curator_entries_owner_status
+            ON curator_entries (owner_user_id, status)
+        """,
+        # Справочник подвалов: название для списка/кнопок + текст подстановки.
+        # Название уникально внутри области владения без учёта регистра
+        # (`name_search` — NFKC + casefold, как у `place_names`), архивные
+        # записи участвуют: восстановление не создаёт неоднозначности.
+        """
+        CREATE TABLE footer_entries (
+            id INTEGER NOT NULL PRIMARY KEY,
+            place_id INTEGER,
+            owner_user_id INTEGER,
+            name TEXT NOT NULL,
+            name_search TEXT NOT NULL,
+            text_plain TEXT NOT NULL,
+            text_html TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_by_user_id INTEGER,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            CONSTRAINT ck_footer_entries_scope
+                CHECK (
+                    (place_id IS NOT NULL AND owner_user_id IS NULL)
+                    OR (place_id IS NULL AND owner_user_id IS NOT NULL)
+                ),
+            CONSTRAINT ck_footer_entries_name_not_empty
+                CHECK (length(trim(name)) > 0),
+            CONSTRAINT ck_footer_entries_search_not_empty
+                CHECK (length(trim(name_search)) > 0),
+            CONSTRAINT ck_footer_entries_text_not_empty
+                CHECK (length(trim(text_plain)) > 0),
+            CONSTRAINT ck_footer_entries_status
+                CHECK (status IN ('active', 'archived')),
+            CONSTRAINT fk_footer_entries_place_id
+                FOREIGN KEY (place_id) REFERENCES places (id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_footer_entries_owner_user_id
+                FOREIGN KEY (owner_user_id) REFERENCES users (id)
+                ON DELETE CASCADE,
+            CONSTRAINT fk_footer_entries_created_by_user_id
+                FOREIGN KEY (created_by_user_id) REFERENCES users (id)
+                ON DELETE SET NULL
+        )
+        """,
+        """
+        CREATE UNIQUE INDEX ux_footer_entries_place_name
+            ON footer_entries (place_id, name_search) WHERE place_id IS NOT NULL
+        """,
+        """
+        CREATE UNIQUE INDEX ux_footer_entries_owner_name
+            ON footer_entries (owner_user_id, name_search)
+            WHERE owner_user_id IS NOT NULL
+        """,
+        """
+        CREATE INDEX ix_footer_entries_place_status
+            ON footer_entries (place_id, status)
+        """,
+        """
+        CREATE INDEX ix_footer_entries_owner_status
+            ON footer_entries (owner_user_id, status)
+        """,
+        # Стабильный ID нельзя переписать UPDATE-ом (как у кирпичиков).
+        """
+        CREATE TRIGGER trg_curator_entries_id_immutable
+        BEFORE UPDATE OF id ON curator_entries
+        FOR EACH ROW
+        WHEN NEW.id <> OLD.id
+        BEGIN
+            SELECT RAISE(ABORT, 'curator_entries.id is immutable');
+        END
+        """,
+        """
+        CREATE TRIGGER trg_footer_entries_id_immutable
+        BEFORE UPDATE OF id ON footer_entries
+        FOR EACH ROW
+        WHEN NEW.id <> OLD.id
+        BEGIN
+            SELECT RAISE(ABORT, 'footer_entries.id is immutable');
+        END
+        """,
+    ),
+    requires_tables=(
+        "users",
+        "places",
+    ),
+)
+
+
 DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_1_USERS_PLACES,
     MIGRATION_2_PLACE_CONTACTS_UI,
@@ -4354,6 +4491,7 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_28_SNAPSHOT_CONDITIONAL_PARTS,
     MIGRATION_29_USER_EVENT_LOG_REPORTS,
     MIGRATION_30_STANDARD_TEMPLATE_EXTENDED,
+    MIGRATION_31_CURATOR_FOOTER_CATALOGS,
 )
 
 LATEST_VERSION = DEFAULT_MIGRATIONS[-1].version if DEFAULT_MIGRATIONS else 0

@@ -105,12 +105,12 @@ class Migration28SnapshotRulesTests(unittest.TestCase):
 
     def test_fresh_install_has_snapshot_rules_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 30)
+        self.assertEqual(LATEST_VERSION, 31)
         # Этап B добавил 29 (`user_event_log_reports`), этап A1 — 30
-        # (`standard_template_extended`), поэтому позиция 28 проверяется
-        # со сдвигом на две записи.
+        # (`standard_template_extended`), B1 — 31 (`curator_footer_catalogs`),
+        # поэтому позиция 28 проверяется со сдвигом на три записи.
         self.assertEqual(
-            _journal(self.path)[-4:-2],
+            _journal(self.path)[-5:-3],
             [
                 (27, MIGRATION_27_NAME),
                 (28, MIGRATION_28_NAME),
@@ -184,6 +184,16 @@ class Migration28SnapshotRulesTests(unittest.TestCase):
                 "ix_user_event_log_user_created",
                 "ix_user_event_log_created",
                 "ix_reports_status_created",
+                "curator_entries",
+                "ix_curator_entries_place_status",
+                "ix_curator_entries_owner_status",
+                "trg_curator_entries_id_immutable",
+                "footer_entries",
+                "ux_footer_entries_place_name",
+                "ux_footer_entries_owner_name",
+                "ix_footer_entries_place_status",
+                "ix_footer_entries_owner_status",
+                "trg_footer_entries_id_immutable",
             },
             "повторный запуск ничего не меняет",
         )

@@ -314,6 +314,12 @@ class PlaceCardLayoutAcceptance(unittest.TestCase):
             f"нет строки «Кирпичики» сразу после первой: {grid}",
         )
         self.assertEqual([label for label, _d in grid[1]], ["🧩 Кирпичики"])
+        # «Лекало» 2.6 §6: расширенный вариант выключен, стандарт не содержит
+        # [куратор]/[подвал] — кнопок справочников нет вовсе.
+        self.assertFalse(
+            [data for data in callbacks(h) if (data or "").startswith("cat_open:")],
+            f"лишняя строка справочников: {grid}",
+        )
         # Управляющий местом (он же админ) видит «Управлять администратором».
         self.assertEqual(
             [data for _label, data in grid[-3]], [f"adm_place_admins:{place_id}"]

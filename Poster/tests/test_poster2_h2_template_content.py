@@ -206,6 +206,7 @@ GOLDEN_EXTENDED_ALL_FILLED = (
 SYSTEM_BY_CODE = {item.code: item for item in SYSTEM_BRICKS}
 BINDINGS = {code: SYSTEM_BY_CODE[code].id for code in FILLED_VALUES}
 
+
 def _definitions() -> dict[int, Any]:
     """Определения системных кирпичиков: ID → описание для компилятора."""
     return {definition.id: definition for definition in SYSTEM_BRICKS}
@@ -285,9 +286,7 @@ class TemplateContentGoldenTests(unittest.TestCase):
 
     def test_extended_content_present_in_builtin(self) -> None:
         # §1: у стандарта ДВА сохранённых текста; расширенный создаётся сразу.
-        self.assertEqual(
-            BUILTIN_TEMPLATE_EXTENDED_CONTENT, REFERENCE_EXTENDED_CONTENT
-        )
+        self.assertEqual(BUILTIN_TEMPLATE_EXTENDED_CONTENT, REFERENCE_EXTENDED_CONTENT)
 
     def _render(self, text: str, values: dict[int, Any]) -> str:
         return render_template(
@@ -303,9 +302,7 @@ class TemplateContentGoldenTests(unittest.TestCase):
         return render_template(
             {
                 TEMPLATE_CONTENT: _bound_tokens(BUILTIN_TEMPLATE_CONTENT),
-                TEMPLATE_EXTENDED_CONTENT: _bound_tokens(
-                    REFERENCE_EXTENDED_CONTENT
-                ),
+                TEMPLATE_EXTENDED_CONTENT: _bound_tokens(REFERENCE_EXTENDED_CONTENT),
             },
             values,
             _definitions(),
@@ -606,7 +603,8 @@ class TemplateContentMigrationTests(unittest.TestCase):
         # переписывает): сравниваем с историческими литералами v4, а не с
         # актуальным BUILTIN (эталон v5).
         self.assertEqual(
-            rows[1][3], _join(V4_REFERENCE_HEADER, V4_REFERENCE_BODY, V4_REFERENCE_FOOTER)
+            rows[1][3],
+            _join(V4_REFERENCE_HEADER, V4_REFERENCE_BODY, V4_REFERENCE_FOOTER),
         )
 
     def test_snapshot_contents_are_backfilled(self) -> None:
@@ -701,7 +699,7 @@ class TemplateContentMigrationTests(unittest.TestCase):
                 "SELECT version, name FROM schema_migrations ORDER BY version "
                 "DESC LIMIT 1",
             ),
-            [(30, "standard_template_extended")],
+            [(31, "curator_footer_catalogs")],
         )
 
     def test_post_migration_schema_equals_fresh_create_all(self) -> None:

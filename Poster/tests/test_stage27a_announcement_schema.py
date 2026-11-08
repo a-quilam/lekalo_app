@@ -35,7 +35,7 @@ class AnnouncementWizardMigrationTests(AnnouncementDatabaseTestCase):
     """Миграция 12 и ограничения новых таблиц."""
 
     def test_latest_migration_is_twenty_five(self) -> None:
-        self.assertEqual(LATEST_VERSION, 30)
+        self.assertEqual(LATEST_VERSION, 31)
         self.assertEqual(
             [(migration.version, migration.name) for migration in DEFAULT_MIGRATIONS],
             [
@@ -69,6 +69,7 @@ class AnnouncementWizardMigrationTests(AnnouncementDatabaseTestCase):
                 (28, "template_snapshot_conditional_parts"),
                 (29, "user_event_log_reports"),
                 (30, "standard_template_extended"),
+                (31, "curator_footer_catalogs"),
             ],
         )
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)

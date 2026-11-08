@@ -57,7 +57,6 @@ from template_types import (
     BUILTIN_TEMPLATE_EXTENDED_CONTENT,
     BUILTIN_TEMPLATE_VERSION,
     TEMPLATE_CONTENT,
-    TEMPLATE_EXTENDED_CONTENT,
 )
 from tests.stage19a_helpers import make_engine, temp_db_path
 from user_store import get_or_create_user
@@ -267,9 +266,7 @@ class _TemplateCase(unittest.TestCase):
         """
         place_id = place_id if place_id is not None else self.place.id
         standard = get_standard_template(self.session, OWNER_TG, place_id)
-        template_id = (
-            template_id if template_id is not None else standard.template_id
-        )
+        template_id = template_id if template_id is not None else standard.template_id
         self.session.execute(
             sql_text("UPDATE templates SET extended_active = :flag WHERE id = :id"),
             {"flag": int(extended), "id": template_id},
@@ -386,9 +383,7 @@ class BuiltinTemplateV5ConstantsTests(unittest.TestCase):
     def test_extended_content_matches_reference_byte_for_byte(self) -> None:
         # Этап A1 (§1): у стандарта ДВА сохранённых текста; расширенный
         # создаётся сразу вместе с простым и не удаляется при выключении.
-        self.assertEqual(
-            BUILTIN_TEMPLATE_EXTENDED_CONTENT, REFERENCE_EXTENDED_CONTENT
-        )
+        self.assertEqual(BUILTIN_TEMPLATE_EXTENDED_CONTENT, REFERENCE_EXTENDED_CONTENT)
 
 
 class TemplateV5RenderTests(_TemplateCase):

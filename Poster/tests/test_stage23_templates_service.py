@@ -99,17 +99,21 @@ class StandardTemplateServiceTests(TemplateDatabaseTestCase):
         assert result.template is not None
         self.assertEqual(result.template.revision, 2)
         # H2: текст шаблона один, поэтому правка заменяет его целиком.
+        # Poster 2.6 A1: `extended_content` не передан — расширение остаётся
+        # прежним (эталон v5 приходит с расширенным вариантом).
         self.assertEqual(result.template.current_version.content, "❗ [название]")
-        self.assertIsNone(result.template.current_version.extended_content)
+        self.assertEqual(
+            result.template.current_version.extended_content,
+            self.standard.current_version.extended_content,
+        )
         # В новом тексте остался только `[название]`; дата, время, место,
         # ссылка, адрес, описание и контакт ушли вместе с прежним текстом.
-        by_code = {
-            binding.code: binding.brick_id
-            for binding in self.standard.current_version.bindings
-        }
+        # Poster 2.6 A1: расширенный вариант не менялся и содержит все
+        # остальные кирпичики эталона, поэтому в новой версии остаются
+        # привязки обеих секций.
         self.assertEqual(
             result.template.current_version.brick_ids,
-            (by_code["название"],),
+            (1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14),
         )
 
     def test_superadmin_can_edit_standard(self) -> None:
@@ -281,7 +285,7 @@ class StandardTemplateServiceTests(TemplateDatabaseTestCase):
         self.assertEqual(row.revision, 1)
         self.assertEqual(
             list_template_brick_ids(self.session, OWNER_TG, self.template_id),
-            (1, 2, 3, 5, 7, 8, 9, 10),
+            (1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14),
         )
 
     def test_read_access_for_any_registered_user(self) -> None:

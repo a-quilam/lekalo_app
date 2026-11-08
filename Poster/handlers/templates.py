@@ -59,6 +59,12 @@ from brick_types import (
     brick_title_display,
 )
 from database import SessionLocal
+from handlers.catalogs import (
+    KIND_CURATOR,
+    KIND_FOOTER,
+    open_callback,
+    personal_catalog_visibility,
+)
 from models import AnnouncementDraft, Template, TemplateSnapshot, User
 from permissions import can_access_admin_panel, can_manage_place
 from place_state import clear_place_session, load_place_session
@@ -648,6 +654,26 @@ def _pick_content(
             )
         ]
     )
+    # «Лекало» 2.6 §5.2: личные справочники — на одной строке, каждая кнопка
+    # видна по факту использования кирпичика хотя бы в одном личном шаблоне.
+    curators_visible, footers_visible = personal_catalog_visibility(templates)
+    catalogs_row: list[InlineKeyboardButton] = []
+    if curators_visible:
+        catalogs_row.append(
+            InlineKeyboardButton(
+                tr("buttons.catalogs.open_curators"),
+                callback_data=open_callback(KIND_CURATOR, None),
+            )
+        )
+    if footers_visible:
+        catalogs_row.append(
+            InlineKeyboardButton(
+                tr("buttons.catalogs.open_footers"),
+                callback_data=open_callback(KIND_FOOTER, None),
+            )
+        )
+    if catalogs_row:
+        rows.append(catalogs_row)
     rows.append(
         [InlineKeyboardButton(tr("buttons.nav.back"), callback_data="tp_pick_back")]
     )

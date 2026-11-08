@@ -120,6 +120,12 @@ from brick_types import (
     brick_title_display,
 )
 from database import SessionLocal
+from handlers.catalogs import (
+    KIND_CURATOR,
+    KIND_FOOTER,
+    open_callback,
+    place_catalog_visibility,
+)
 from handlers.place_invite_screen import invite_content
 from models import Brick, User
 from permissions import (
@@ -1858,6 +1864,30 @@ def _place_keyboard(
                 )
             ]
         )
+        # «Лекало» 2.6 §6: справочники кураторов и подвалов — одна строка.
+        # Кнопка видна, если кирпичик есть в простом варианте ИЛИ (включён
+        # расширенный И кирпичик есть в расширенном); наличие определяет
+        # штатный разбор шаблона. Скрытие не удаляет записи.
+        curators_visible, footers_visible = place_catalog_visibility(
+            session, viewer_telegram_user_id, details.place_id
+        )
+        catalogs_row: list[InlineKeyboardButton] = []
+        if curators_visible:
+            catalogs_row.append(
+                InlineKeyboardButton(
+                    tr("buttons.catalogs.open_curators"),
+                    callback_data=open_callback(KIND_CURATOR, details.place_id),
+                )
+            )
+        if footers_visible:
+            catalogs_row.append(
+                InlineKeyboardButton(
+                    tr("buttons.catalogs.open_footers"),
+                    callback_data=open_callback(KIND_FOOTER, details.place_id),
+                )
+            )
+        if catalogs_row:
+            rows.append(catalogs_row)
     # Poster 2.5 A3: админ-действия карточки сведены к одной точке входа.
     # Суперадмин без администратора сразу назначает; замена, снятие и
     # передача прав живут в подразделе «Управление администратором».

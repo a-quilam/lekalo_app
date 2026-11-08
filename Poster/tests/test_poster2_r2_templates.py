@@ -293,7 +293,7 @@ class MigrationEighteenTests(_MigrationEighteenTestCase):
     """Миграция 18 обновляет только доказуемо нетронутые копии."""
 
     def test_untouched_personal_copy_is_updated_and_renamed(self) -> None:
-        self.assertEqual(LATEST_VERSION, 30)
+        self.assertEqual(LATEST_VERSION, 31)
         template = self.session.get(Template, 1)
         assert template is not None
         self.assertEqual(template.name, "Дефолтный шаблон")
@@ -556,9 +556,7 @@ class InitialPersonalTemplateV3Tests(unittest.TestCase):
         self.assertEqual(version.content, BUILTIN_TEMPLATE.content)
         # Этап A1: эталон v5 содержит и расширенный текст, поэтому стартовая
         # копия получает оба варианта (как и стандарт площадки §1).
-        self.assertEqual(
-            version.extended_content, BUILTIN_TEMPLATE.extended_content
-        )
+        self.assertEqual(version.extended_content, BUILTIN_TEMPLATE.extended_content)
         self.assertIsNotNone(version.extended_content)
         # Стартовая копия — не «сброс»: маркер построенной версии пуст.
         self.assertIsNone(version.builtin_version)
@@ -600,8 +598,8 @@ class BuiltinBindingCatalogTests(unittest.TestCase):
         # Этап A1: привязки стандарта покрывают ОБА текста — простой и
         # расширенный. Условие входа, время окончания, город, куратор и
         # подвал живут только в расширенном варианте.
-        combined = BUILTIN_TEMPLATE.content + "\n" + (
-            BUILTIN_TEMPLATE.extended_content or ""
+        combined = (
+            BUILTIN_TEMPLATE.content + "\n" + (BUILTIN_TEMPLATE.extended_content or "")
         )
         for binding in BUILTIN_TEMPLATE.bindings:
             with self.subTest(code=binding.code):

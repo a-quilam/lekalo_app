@@ -15,7 +15,7 @@
   время окончания убирает тире, пустые необязательные — свои строки;
 - (д) `extended_active` заморожен в снимке: переключение флага не меняет
   начатый черновик, новый черновик берёт текущий флаг;
-- (е) миграции 1–30 на чистой временной базе; повторный запуск миграций,
+- (е) миграции 1–31 на чистой временной базе; повторный запуск миграций,
   `backfill_standard_templates` и `ensure_standard_template` идемпотентны —
   ни кирпичики 12–14, ни правила, ни шаблоны не дублируются;
 - (ж) сброс стандарта сохраняет расширенный текст и 11 правил, выключает
@@ -199,7 +199,7 @@ EXTENDED_FULL_HTML = (
 
 
 class _StandardTemplateCase(unittest.TestCase):
-    """Временная база: миграции 1–30, чистая Session и место с админом."""
+    """Временная база: миграции 1–31, чистая Session и место с админом."""
 
     def setUp(self) -> None:
         self.path = temp_db_path("poster-a1-")
@@ -975,7 +975,7 @@ class FlagFreezeTests(_StandardTemplateCase):
 
 
 class MigrationIdempotencyTests(_StandardTemplateCase):
-    """§19.1 (е): миграции 1–30 и повторная инициализация стандарта."""
+    """§19.1 (е): миграции 1–31 и повторная инициализация стандарта."""
 
     def _journal(self) -> list[int]:
         rows = self.session.execute(
@@ -990,13 +990,13 @@ class MigrationIdempotencyTests(_StandardTemplateCase):
         )
 
     def test_clean_database_applies_migrations_1_to_30_once(self) -> None:
-        self.assertEqual(self.migrations_applied, 30)
-        self.assertEqual(LATEST_VERSION, 30, "последняя версия схемы — 30")
-        self.assertEqual(self._journal(), list(range(1, 31)))
+        self.assertEqual(self.migrations_applied, 31)
+        self.assertEqual(LATEST_VERSION, 31, "последняя версия схемы — 31")
+        self.assertEqual(self._journal(), list(range(1, 32)))
 
         # Повторный запуск на уже мигрированной базе ничего не добавляет.
-        self.assertEqual(run_migrations(self.engine), 30)
-        self.assertEqual(self._journal(), list(range(1, 31)))
+        self.assertEqual(run_migrations(self.engine), 31)
+        self.assertEqual(self._journal(), list(range(1, 32)))
 
     def _count(self, model: type) -> int:
         return int(self.session.scalar(select(func.count()).select_from(model)) or 0)
@@ -1014,7 +1014,7 @@ class MigrationIdempotencyTests(_StandardTemplateCase):
 
         # Повторная миграция на «живой» тестовой базе: ни шаблонов, ни
         # кирпичиков, ни правил не прибавилось.
-        self.assertEqual(run_migrations(self.engine), 30)
+        self.assertEqual(run_migrations(self.engine), 31)
         self.session.expire_all()
         self.assertEqual(self._count(Template), 1)
         self.assertEqual(

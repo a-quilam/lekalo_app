@@ -54,6 +54,7 @@ try:
     import handlers.announcement_panel as announcement_panel_module
     import handlers.announcement_wizard as announcement_wizard_module
     import handlers.bricks as bricks_module
+    import handlers.catalogs as catalogs_module
     import handlers.main_menu as main_menu_module
     import handlers.place_invite as place_invite_module
     import handlers.places as places_module
@@ -728,6 +729,7 @@ class Harness:
             wizard_live_module.SessionLocal,
             place_invite_module.SessionLocal,
             report_module.SessionLocal,
+            catalogs_module.SessionLocal,
         )
         screen_module.SessionLocal = self.session_factory
         places_module.SessionLocal = self.session_factory
@@ -745,6 +747,7 @@ class Harness:
         wizard_live_module.SessionLocal = self.session_factory
         place_invite_module.SessionLocal = self.session_factory
         report_module.SessionLocal = self.session_factory
+        catalogs_module.SessionLocal = self.session_factory
 
         # Уведомления об ошибках троттлятся по (chat_id, time.monotonic) —
         # без сброса тесты «повторно заметили бы» чужие уведомления
@@ -812,6 +815,7 @@ class Harness:
         wizard_live_module.SessionLocal = self._orig_session_local[13]
         place_invite_module.SessionLocal = self._orig_session_local[14]
         report_module.SessionLocal = self._orig_session_local[15]
+        catalogs_module.SessionLocal = self._orig_session_local[16]
         errors_module._last_error_notice.clear()
         errors_module._last_error_notice.update(self._orig_error_notice)
         self.engine.dispose()

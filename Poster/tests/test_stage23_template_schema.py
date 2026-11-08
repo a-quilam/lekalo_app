@@ -55,7 +55,7 @@ class TemplateSchemaTests(TemplateDatabaseTestCase):
 
     def test_template_migrations_apply_and_are_idempotent(self) -> None:
         self.assertEqual(self.migrations_applied, LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 30)
+        self.assertEqual(LATEST_VERSION, 31)
         self.assertIn((12, "announcement_wizard"), self.journal())
         self.assertIn((13, "announcement_photos_publication"), self.journal())
         self.assertIn((8, "templates_versions_snapshots"), self.journal())
@@ -124,10 +124,12 @@ class TemplateSchemaTests(TemplateDatabaseTestCase):
         ).one()
         # Poster 2.3 H2: один канонический текст вместо секций. Эталон v4
         # побайтово совпадает с прежней склейкой шапки/тела/подвала.
+        # Poster 2.6 A1: эталон v5 приходит с расширенным вариантом текста,
+        # поэтому `extended_content` больше не пустой.
         self.assertEqual(row[0], BUILTIN_TEMPLATE.content)
         self.assertIn("[дата]", str(row[0]))
         self.assertIn("[описание]", str(row[0]))
-        self.assertIsNone(row[1])
+        self.assertEqual(row[1], BUILTIN_TEMPLATE.extended_content)
         self.assertEqual(row[2], BUILTIN_TEMPLATE_VERSION)
 
         bricks = self.session.execute(
@@ -139,9 +141,14 @@ class TemplateSchemaTests(TemplateDatabaseTestCase):
             ),
             {"tid": template_id},
         ).fetchall()
-        # Эталон не содержит кирпичиков «время_окончания» (4) и
-        # «адрес_места» (6), зато содержит `[адрес]` (10).
-        self.assertEqual([int(item[0]) for item in bricks], [1, 2, 3, 5, 7, 8, 9, 10])
+        # Эталон v5 содержит обе секции, поэтому привязаны все кирпичики
+        # текста, кроме «адрес_места» (6): простой вариант даёт [1, 2, 3, 5,
+        # 7, 8, 9, 10], расширенный добавляет условие входа (12), город (11),
+        # время окончания (4), куратора (13) и подвал (14).
+        self.assertEqual(
+            [int(item[0]) for item in bricks],
+            [1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14],
+        )
 
     # --- ограничения формы шаблона ----------------------------------------
 
