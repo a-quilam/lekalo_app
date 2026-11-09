@@ -28,10 +28,31 @@ InputRichBlock):
 - `details` — `summary`, `blocks` и необязательный `is_open`: поле
   передаётся ТОЛЬКО при True, отсутствие означает «свёрнут».
 
-Поле `text` у `heading`/`paragraph` и `summary` у `details` по официальной
-схеме имеет тип `RichText`: строка простого текста, массив таких же
-значений либо типизированный объект. Poster использует два случая: строку
-и `RichTextUrl` (кликабельная подпись вместо «голого» адреса, §7 2.5.4).
+Bot API 10.4 добавил блоки §15.2 (проверено по официальной схеме):
+
+- `table` — `cells` (массив строк, каждая — массив ячеек) и необязательные
+  `is_bordered`/`is_striped`/`is_compact`/`caption`; ячейка
+  (`InputRichBlockTableCell`) — `text`, `is_header`, `colspan`, `rowspan` и
+  ОБЯЗАТЕЛЬНЫЕ `align`/`valign`;
+- `blockquote` — `blocks` и необязательный `credit` (НЕ `pullquote` и НЕ
+  `expandable_blockquote`: это разные сущности);
+- `slideshow` — `blocks` из фото-блоков (`photo`: `InputMediaPhoto`,
+  необязательная подпись `RichBlockCaption`) и необязательный `caption`.
+
+Поле `text` у `heading`/`paragraph`, `summary` у `details`, `credit` у
+цитаты и `caption` у таблицы по официальной схеме имеет тип `RichText`:
+строка простого текста, массив таких же значений либо типизированный
+объект. Poster использует два случая: строку и `RichTextUrl` (кликабельная
+подпись вместо «голого» адреса, §7 2.5.4).
+
+Загрузка файлов слайд-шоу. `InputFile` в `photo.media` нельзя оставить
+внутри `rich_message`: PTB `RequestParameter.from_input` разбирает только
+ключи ВЕРХНЕГО уровня `api_kwargs`, а вложенный словарь просто отдаёт
+`json.dumps`, который падает на `InputFile`. Поэтому `send_rich_message`
+«хоистит» файлы: находит их в сериализованном payload, поднимает на
+верхний уровень (`rich_media_0`, …) и заменяет `media` на
+`attach://rich_media_N` — ровно та форма, которую PTB превращает в
+multipart-загрузку.
 
 Rich Message используется только для служебных экранов «Помощь» и
 «О проекте» (§46): анонсы отправляются обычными сообщениями/альбомами.
@@ -42,9 +63,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, NoReturn
+from typing import Any, Literal, NoReturn
 
-from telegram import Message
+from telegram import InputFile, InputMediaPhoto, Message
 from telegram.error import (
     BadRequest,
     Conflict,
@@ -214,12 +235,180 @@ class InputRichBlockDetails:
         return payload
 
 
+# —— таблица (§15.2, Bot API 10.4) ————————————————————————————————————
+
+# Допустимые значения обязательных выравниваний ячейки (официальная схема).
+TABLE_ALIGNMENTS: tuple[str, ...] = ("left", "center", "right")
+TABLE_VALIGNMENTS: tuple[str, ...] = ("top", "middle", "bottom")
+
+TableAlign = Literal["left", "center", "right"]
+TableVAlign = Literal["top", "middle", "bottom"]
+
+
+@dataclass(frozen=True)
+class InputRichBlockTableCell:
+    """
+    Ячейка таблицы (`InputRichBlockTableCell`).
+
+    `align` и `valign` по официальной схеме ОБЯЗАТЕЛЬНЫ: сервер не выбирает
+    выравнивание за нас, а молчаливая подстановка «left/top» скрыла бы
+    ошибку вёрстки. `text` необязателен (пустая ячейка), остальные поля —
+    необязательные уточнения.
+    """
+
+    align: TableAlign
+    valign: TableVAlign
+    text: RichText | None = None
+    is_header: bool | None = None
+    colspan: int | None = None
+    rowspan: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "align": self.align,
+            "valign": self.valign,
+        }
+        if self.text is not None:
+            payload["text"] = rich_text_to_dict(self.text)
+        if self.is_header is not None:
+            payload["is_header"] = self.is_header
+        if self.colspan is not None:
+            payload["colspan"] = self.colspan
+        if self.rowspan is not None:
+            payload["rowspan"] = self.rowspan
+        return payload
+
+
+@dataclass(frozen=True)
+class InputRichBlockTable:
+    """
+    Таблица (`InputRichBlockTable`, `type: "table"`).
+
+    `cells` — строки таблицы, каждая строка — непустой массив ячеек.
+    Строки могут иметь разную длину (ячейки с `colspan`/`rowspan`), поэтому
+    выравнивать их «по ширине» здесь нельзя.
+    """
+
+    cells: Sequence[Sequence[InputRichBlockTableCell]]
+    is_bordered: bool | None = None
+    is_striped: bool | None = None
+    is_compact: bool | None = None
+    caption: RichText | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "type": "table",
+            "cells": [[cell.to_dict() for cell in row] for row in self.cells],
+        }
+        if self.is_bordered is not None:
+            payload["is_bordered"] = self.is_bordered
+        if self.is_striped is not None:
+            payload["is_striped"] = self.is_striped
+        if self.is_compact is not None:
+            payload["is_compact"] = self.is_compact
+        if self.caption is not None:
+            payload["caption"] = rich_text_to_dict(self.caption)
+        return payload
+
+
+# —— цитата (§15.2, Bot API 10.4) —————————————————————————————————————
+
+
+@dataclass(frozen=True)
+class InputRichBlockBlockQuotation:
+    """
+    Rich-цитата (`InputRichBlockBlockQuotation`, `type: "blockquote"`).
+
+    Это НЕ `expandable_blockquote` и не `pullquote`: у цитаты есть настоящее
+    содержимое (`blocks`, например абзацы и подпись автора) и необязательный
+    `credit`. Раскрываемость задаётся не здесь, а обёрткой `details`.
+    """
+
+    blocks: Sequence[RichBlock] = field(default_factory=tuple)
+    credit: RichText | None = None
+
+    def to_dict(self, *, depth: int = 0) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "type": "blockquote",
+            "blocks": [block_to_dict(block, depth=depth) for block in self.blocks],
+        }
+        if self.credit is not None:
+            payload["credit"] = rich_text_to_dict(self.credit)
+        return payload
+
+
+# —— слайд-шоу (§15.3, Bot API 10.4) ——————————————————————————————————
+
+
+@dataclass(frozen=True)
+class RichBlockCaption:
+    """Подпись медиа (`RichBlockCaption`): `text` и необязательный `credit`."""
+
+    text: RichText
+    credit: RichText | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"text": rich_text_to_dict(self.text)}
+        if self.credit is not None:
+            payload["credit"] = rich_text_to_dict(self.credit)
+        return payload
+
+
+@dataclass(frozen=True)
+class InputRichBlockPhoto:
+    """
+    Фото-блок слайд-шоу (`InputRichBlockPhoto`, `type: "photo"`).
+
+    `photo` — штатный `telegram.InputMediaPhoto`: он умеет и `file_id`, и
+    `InputFile` (путь/байты). Именно этот объект разбирает механизм загрузки
+    файлов в `send_rich_message`.
+    """
+
+    photo: InputMediaPhoto
+    caption: RichBlockCaption | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "type": "photo",
+            "photo": self.photo.to_dict(),
+        }
+        if self.caption is not None:
+            payload["caption"] = self.caption.to_dict()
+        return payload
+
+
+@dataclass(frozen=True)
+class InputRichBlockSlideshow:
+    """
+    Слайд-шоу (`InputRichBlockSlideshow`, `type: "slideshow"`).
+
+    `blocks` — ТОЛЬКО фото-блоки, порядок задаёт порядок кадров. Требование
+    §15.3: настоящий `<tg-slideshow>`, а не подделка кнопками.
+    """
+
+    blocks: Sequence[InputRichBlockPhoto] = field(default_factory=tuple)
+    caption: RichBlockCaption | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "type": "slideshow",
+            "blocks": [block.to_dict() for block in self.blocks],
+        }
+        if self.caption is not None:
+            payload["caption"] = self.caption.to_dict()
+        return payload
+
+
 RichBlock = (
     InputRichBlockSectionHeading
     | InputRichBlockParagraph
     | InputRichBlockList
     | InputRichBlockDivider
     | InputRichBlockDetails
+    | InputRichBlockTable
+    | InputRichBlockBlockQuotation
+    | InputRichBlockPhoto
+    | InputRichBlockSlideshow
 )
 
 # Все классы блоков — для проверки «это вообще известный блок».
@@ -229,6 +418,10 @@ BLOCK_TYPES: tuple[type, ...] = (
     InputRichBlockList,
     InputRichBlockDivider,
     InputRichBlockDetails,
+    InputRichBlockTable,
+    InputRichBlockBlockQuotation,
+    InputRichBlockPhoto,
+    InputRichBlockSlideshow,
 )
 
 
@@ -272,6 +465,10 @@ def block_to_dict(block: RichBlock, depth: int = 0) -> dict[str, Any]:
                 "Слишком глубокая вложенность раскрываемых блоков "
                 f"(максимум {MAX_DETAILS_DEPTH})."
             )
+        return block.to_dict(depth=depth)
+    if isinstance(block, InputRichBlockBlockQuotation):
+        # Цитата тоже контейнер: её содержимое может снова содержать
+        # `details`, поэтому глубину нельзя сбрасывать в ноль.
         return block.to_dict(depth=depth)
     return block.to_dict()
 
@@ -423,6 +620,139 @@ def _validate_block(block: Any, *, depth: int) -> None:
                 f"(максимум {MAX_DETAILS_DEPTH})."
             )
         _validate_blocks(block.blocks, depth=depth + 1)
+    elif isinstance(block, InputRichBlockTable):
+        _validate_table(block)
+    elif isinstance(block, InputRichBlockBlockQuotation):
+        _validate_blockquote(block, depth=depth)
+    elif isinstance(block, InputRichBlockPhoto):
+        _validate_photo(block)
+    elif isinstance(block, InputRichBlockSlideshow):
+        _validate_slideshow(block)
+
+
+def _require_optional_rich_text(value: Any, what: str) -> None:
+    """Необязательное `RichText`: `None` допустим, иначе — обычная проверка."""
+    if value is not None:
+        _require_rich_text(value, what)
+
+
+def _require_optional_bool(value: Any, what: str) -> None:
+    """Необязательный bool: `None` допустим; 0/1 и строки — нет."""
+    if value is not None and not isinstance(value, bool):
+        raise RichMessageError(f"{what}: ожидается true/false.")
+
+
+def _require_optional_span(value: Any, what: str) -> None:
+    """`colspan`/`rowspan`: необязательное целое ≥ 1 (bool не принимается)."""
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RichMessageError(f"{what}: ожидается целое число ≥ 1.")
+    if value < 1:
+        raise RichMessageError(f"{what}: должно быть ≥ 1 (получено {value}).")
+
+
+def _require_choice(value: Any, allowed: Sequence[str], what: str) -> None:
+    """Значение обязательного enum-поля: только из списка допустимых."""
+    if not isinstance(value, str) or value not in allowed:
+        raise RichMessageError(
+            f"{what}: ожидается одно из {', '.join(allowed)} " f"(получено {value!r})."
+        )
+
+
+def _validate_table(block: InputRichBlockTable) -> None:
+    """Таблица: непустые строки из непустых ячеек с обязательными align/valign."""
+    rows = block.cells
+    if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
+        raise RichMessageError("Table.cells: ожидается список строк таблицы.")
+    if not rows:
+        raise RichMessageError("Table.cells: таблица без строк.")
+    for row_index, row in enumerate(rows):
+        where = f"Table.cells[{row_index}]"
+        if isinstance(row, (str, bytes)) or not isinstance(row, Sequence):
+            raise RichMessageError(f"{where}: ожидается список ячеек.")
+        if not row:
+            raise RichMessageError(f"{where}: строка таблицы пуста.")
+        for cell_index, cell in enumerate(row):
+            _validate_table_cell(cell, f"{where}[{cell_index}]")
+    for name in ("is_bordered", "is_striped", "is_compact"):
+        _require_optional_bool(getattr(block, name), f"Table.{name}")
+    _require_optional_rich_text(block.caption, "Table.caption")
+
+
+def _validate_table_cell(cell: Any, where: str) -> None:
+    """Ячейка таблицы: обязательные enum-выравнивания и необязательные поля."""
+    if not isinstance(cell, InputRichBlockTableCell):
+        raise RichMessageError(
+            f"{where}: ожидается InputRichBlockTableCell, "
+            f"получено {type(cell).__name__}."
+        )
+    _require_choice(cell.align, TABLE_ALIGNMENTS, f"{where}.align")
+    _require_choice(cell.valign, TABLE_VALIGNMENTS, f"{where}.valign")
+    _require_optional_rich_text(cell.text, f"{where}.text")
+    _require_optional_bool(cell.is_header, f"{where}.is_header")
+    _require_optional_span(cell.colspan, f"{where}.colspan")
+    _require_optional_span(cell.rowspan, f"{where}.rowspan")
+
+
+def _validate_blockquote(block: InputRichBlockBlockQuotation, *, depth: int) -> None:
+    """Цитата: обязательное непустое содержимое и необязательный автор."""
+    _validate_blocks(block.blocks, depth=depth, where="BlockQuotation.blocks")
+    _require_optional_rich_text(block.credit, "BlockQuotation.credit")
+
+
+def _validate_photo(block: InputRichBlockPhoto) -> None:
+    """
+    Фото-блок: ровно `InputMediaPhoto` и непустой источник медиа.
+
+    Строка-`file_id`, `InputFile` и байты допустимы; пустая строка и
+    произвольный объект — нет (иначе ошибку вернёт сервер после загрузки).
+    """
+    photo = block.photo
+    if not isinstance(photo, InputMediaPhoto):
+        raise RichMessageError(
+            "Photo.photo: ожидается telegram.InputMediaPhoto, "
+            f"получено {type(photo).__name__}."
+        )
+    media = photo.media
+    if isinstance(media, str):
+        if not media.strip():
+            raise RichMessageError("Photo.photo.media: пустой file_id.")
+    elif not isinstance(media, (InputFile, bytes)):
+        raise RichMessageError(
+            "Photo.photo.media: ожидается file_id, InputFile или байты, "
+            f"получено {type(media).__name__}."
+        )
+    if block.caption is not None:
+        _validate_caption(block.caption, "Photo.caption")
+
+
+def _validate_caption(caption: Any, where: str) -> None:
+    """`RichBlockCaption`: обязательный текст, необязательный автор."""
+    if not isinstance(caption, RichBlockCaption):
+        raise RichMessageError(
+            f"{where}: ожидается RichBlockCaption, получено {type(caption).__name__}."
+        )
+    _require_rich_text(caption.text, f"{where}.text")
+    _require_optional_rich_text(caption.credit, f"{where}.credit")
+
+
+def _validate_slideshow(block: InputRichBlockSlideshow) -> None:
+    """Слайд-шоу: непустой список ТОЛЬКО фото-блоков и необязательная подпись."""
+    blocks = block.blocks
+    if isinstance(blocks, (str, bytes)) or not isinstance(blocks, Sequence):
+        raise RichMessageError("Slideshow.blocks: ожидается список фото-блоков.")
+    if not blocks:
+        raise RichMessageError("Slideshow.blocks: слайд-шоу без кадров.")
+    for index, child in enumerate(blocks):
+        if not isinstance(child, InputRichBlockPhoto):
+            raise RichMessageError(
+                "Slideshow.blocks: допустимы только InputRichBlockPhoto, "
+                f"получено {type(child).__name__} (позиция {index})."
+            )
+        _validate_photo(child)
+    if block.caption is not None:
+        _validate_caption(block.caption, "Slideshow.caption")
 
 
 def _validate_list_item(item: Any, *, depth: int) -> None:
@@ -507,6 +837,43 @@ def _message_from_result(bot: Any, result: Any) -> Message | int:
     raise TelegramError("Bot API вернул неожиданный ответ на sendRichMessage.")
 
 
+# Префикс имени файла на верхнем уровне `api_kwargs`. PTB ждёт InputFile
+# именно там, а `attach://`-ссылка остаётся внутри JSON `rich_message`.
+RICH_MEDIA_PREFIX = "rich_media_"
+
+
+def _hoist_input_files(value: Any, files: list[tuple[str, InputFile]]) -> Any:
+    """
+    Поднимает `InputFile` из вложенного payload на верхний уровень запроса.
+
+    PTB `RequestParameter.from_input` разбирает только ключи верхнего уровня
+    `api_kwargs`: `InputFile`, лежащий внутри обычного словаря, он отдаёт
+    `json.dumps`, и сериализация падает с `TypeError`. Поэтому каждый файл
+    получает своё имя (`rich_media_0`, …), ссылка `attach://<имя>` встаёт на
+    место медиа, а сам файл уходит отдельным параметром.
+
+    Возвращает новую структуру: исходный payload и `InputMediaPhoto` не
+    меняются. `media` внутри `photo` — это `InputFile` (или строка/байты),
+    `thumbnail` в фото-блоках не используется, но обрабатывается на случай
+    будущих блоков с ним.
+    """
+    if isinstance(value, Mapping):
+        hoisted: dict[str, Any] = {}
+        for key, item in value.items():
+            if isinstance(item, InputFile):
+                name = f"{RICH_MEDIA_PREFIX}{len(files)}"
+                files.append((name, item))
+                hoisted[key] = item.attach_uri or f"attach://{name}"
+            else:
+                hoisted[key] = _hoist_input_files(item, files)
+        return hoisted
+    if isinstance(value, (str, bytes, bytearray)):
+        return value
+    if isinstance(value, Sequence):
+        return [_hoist_input_files(item, files) for item in value]
+    return value
+
+
 async def send_rich_message(
     bot: Any,
     chat_id: int | str,
@@ -533,7 +900,15 @@ async def send_rich_message(
     # а не отказ Telegram.
     validate_rich_message(payload)
 
+    # Файлы слайд-шоу: PTB достаёт InputFile только с верхнего уровня
+    # api_kwargs, поэтому вложенное медиа поднимаем, а в JSON оставляем
+    # attach://-ссылку. Payload без файлов проходит путь байт-в-байт прежним.
+    media_files: list[tuple[str, InputFile]] = []
+    payload = _hoist_input_files(payload, media_files)
+
     api_kwargs: dict[str, Any] = {"chat_id": chat_id, "rich_message": payload}
+    for name, input_file in media_files:
+        api_kwargs[name] = input_file
     if reply_markup is not None:
         api_kwargs["reply_markup"] = reply_markup
 
