@@ -3455,13 +3455,10 @@ async def _save_question_value(
         if drop_input:
             # Ввод удаляется только после ПОДТВЕРЖДЁННОЙ доставки.
             await _drop_accepted_input(update, context, f"aw:{field.brick_id}")
-        await _answer(
-            update,
-            tr(
-                "alerts.wizard.znachenie_sohraneno",
-                title=_short(brick_title_display(field.title, field.code), 50),
-            ),
-        )
+        # §16 (финальное задание 2026-11-08): отдельной плашки «✓ …» после
+        # сохранения нет — результат виден в обновлённом анонсе. Ответ на
+        # callback остаётся, чтобы не висел спиннер.
+        await _answer(update)
         if field_edit_instance is not None:
             # §5 (2.5.3): выбор поля из списка «📝 Текстовые поля» даёт один
             # временный вопрос. Значение сохранено и применено — вопрос
@@ -3481,10 +3478,6 @@ async def _save_question_value(
         context,
         updated,
         index + 1,
-        notice=tr(
-            "alerts.wizard.znachenie_sohraneno",
-            title=_short(brick_title_display(field.title, field.code), 50),
-        ),
     )
 
 

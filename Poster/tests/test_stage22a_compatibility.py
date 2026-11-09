@@ -299,7 +299,7 @@ class Stage22ACompatibilityTests(unittest.TestCase):
         self.assertIn((18, "builtin_templates_v3"), journal(self.path))
         self.assertEqual(
             journal(self.path)[-1],
-            (LATEST_VERSION, "curator_footer_catalogs"),
+            (LATEST_VERSION, "system_brick_hints"),
         )
         # Миграция 17 переименовала легаси-таблицу: строки прежнего черновика
         # читаются из архива как есть, `drafts` в рабочей схеме нет.

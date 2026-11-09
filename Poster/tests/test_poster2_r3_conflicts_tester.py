@@ -1482,7 +1482,7 @@ class R3MigrationTests(unittest.TestCase):
         return None if row is None else str(row[0])
 
     def test_latest_version_is_twenty_five(self) -> None:
-        self.assertEqual(LATEST_VERSION, 31)
+        self.assertEqual(LATEST_VERSION, 32)
 
     def test_fresh_database_has_conflict_tables_and_integrity(self) -> None:
         from migrations import run_migrations
@@ -1706,9 +1706,12 @@ class R3MigrationTests(unittest.TestCase):
             # «город» отдельной строкой. Единственное исключение — легаси-
             # определение `адрес_места` (id 6): миграция 25 устраняет его,
             # оставляя один адресный кирпичик `[адрес]` (Poster 2.4 P1).
+            # Миграция 32 (этап D) проставляет `description` и `updated_at`
+            # пяти системным кирпичикам, поэтому эти две колонки снимаются
+            # из дословного сравнения и проверяются отдельно ниже.
             brick_columns = (
                 "id, code, title, type, scope, source, status, place_id, "
-                "created_by_user_id, created_at, updated_at, revision"
+                "created_by_user_id, created_at, revision"
             )
             self.assertEqual(
                 self._rows(
@@ -1716,7 +1719,39 @@ class R3MigrationTests(unittest.TestCase):
                     f"SELECT {brick_columns} FROM bricks "
                     "WHERE id < 501 AND code <> 'адрес_места' ORDER BY id",
                 ),
-                [row for row in bricks_before if row[1] != "адрес_места"],
+                [
+                    (
+                        row[0],
+                        row[1],
+                        row[2],
+                        row[3],
+                        row[4],
+                        row[5],
+                        row[6],
+                        row[7],
+                        row[8],
+                        row[9],
+                        row[11],
+                    )
+                    for row in bricks_before
+                    if row[1] != "адрес_места"
+                ],
+            )
+            self.assertEqual(
+                self._rows(
+                    connection,
+                    "SELECT code FROM bricks WHERE id < 501 "
+                    "AND description IS NOT NULL AND updated_at IS NOT NULL "
+                    "ORDER BY id",
+                ),
+                [
+                    ("название",),
+                    ("дата",),
+                    ("время_начала",),
+                    ("описание",),
+                    ("контакт",),
+                ],
+                "миграция 32 описывает ровно пять системных кирпичиков",
             )
             self.assertEqual(
                 self._rows(

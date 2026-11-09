@@ -45,9 +45,10 @@ from rich_message import (
     InputRichMessage,
     InputRichTextUrl,
     RichMessageError,
+    rich_text_plain,
     validate_rich_message,
 )
-from utils.ui_texts import tr
+from utils.rich_content import load_catalog
 
 # Точный набор ключей блоков официальной схемы. Лишний/недостающий ключ —
 # нарушение контракта, а не «мелкая деталь сериализации».
@@ -59,6 +60,8 @@ DIVIDER_KEYS = {"type"}
 DETAILS_KEYS = {"type", "summary", "blocks"}
 # RichTextUrl: подпись (RichText) и адрес ссылки.
 URL_KEYS = {"type", "text", "url"}
+# RichTextBold: жирная фраза внутри абзаца (§14.6).
+BOLD_KEYS = {"type", "text"}
 
 
 def _payload() -> dict[str, Any]:
@@ -113,6 +116,27 @@ def _all_urls(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return found
 
 
+def _help_page():
+    """Страница «Помощь» из каталога (единственный источник §15.1)."""
+    return load_catalog().help
+
+
+def _about_page():
+    """Страница «О проекте» из каталога."""
+    return load_catalog().about
+
+
+def _plain(value: Any) -> str:
+    """Плоский текст `RichText` из готового словаря Bot API."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_plain(item) for item in value)
+    if isinstance(value, dict):
+        return _plain(value.get("text", ""))
+    return ""
+
+
 # —— 1. Официальная схема готового запроса ————————————————————————————
 
 
@@ -131,7 +155,7 @@ class HelpRichOfficialSchemaTests(unittest.TestCase):
         heading = _blocks(self.payload)[0]
         self.assertEqual(set(heading), HEADING_KEYS)
         self.assertEqual(heading["type"], "heading")
-        self.assertEqual(heading["text"], tr("help.rich.title"))
+        self.assertEqual(heading["text"], _help_page().title)
         # size обязателен: 1 — самый крупный заголовок.
         self.assertEqual(heading["size"], 1)
         # Поля "heading" в схеме нет.
@@ -145,32 +169,48 @@ class HelpRichOfficialSchemaTests(unittest.TestCase):
 
     def test_details_omit_is_open_when_collapsed(self) -> None:
         details = [b for b in _blocks(self.payload) if b["type"] == "details"]
-        self.assertEqual(len(details), 10)
+        self.assertEqual(len(details), len(_help_page().sections))
         for block in details:
             self.assertEqual(set(block), DETAILS_KEYS, "лишние поля в details")
             self.assertNotIn("is_open", block, "свёрнутость = отсутствие поля")
             self.assertTrue(block["summary"], "пустой summary")
 
-    def test_list_items_are_list_item_objects(self) -> None:
-        lists = [b for b in _all_blocks(self.payload) if b["type"] == "list"]
-        self.assertTrue(lists, "в справке нет ни одного списка")
-        for block in lists:
-            self.assertEqual(set(block), LIST_KEYS)
-            self.assertIsInstance(block["items"], list, "items — массив")
-            self.assertTrue(block["items"], "пустой список действий")
-            for item in block["items"]:
-                # Элемент списка — объект (InputRichBlockListItem), не строка.
-                self.assertIsInstance(item, dict, "items содержит не объект")
-                self.assertEqual(set(item), LIST_ITEM_KEYS)
-                self.assertIsInstance(item["blocks"], list)
-                self.assertTrue(item["blocks"], "элемент списка без блоков")
+    def test_table_and_quotes_are_official_objects(self) -> None:
+        """
+        В справке таблица подстановки и две Rich-цитаты (§13.3, §13.7).
+
+        Раньше здесь проверялись элементы списка; утверждённый текст списков
+        не содержит, поэтому тот же смысл — «вложенные блоки являются
+        объектами официальной схемы, а не строками» — проверяется на
+        таблице и цитатах.
+        """
+        tables = [b for b in _all_blocks(self.payload) if b["type"] == "table"]
+        self.assertEqual(len(tables), 1, "в справке одна таблица")
+        table = tables[0]
+        self.assertEqual(set(table), {"type", "cells", "is_bordered", "is_compact"})
+        self.assertIsInstance(table["cells"], list)
+        for row in table["cells"]:
+            self.assertIsInstance(row, list)
+            self.assertTrue(row)
+            for cell in row:
+                self.assertIsInstance(cell, dict, "ячейка — объект, не строка")
+                self.assertIn("align", cell)
+                self.assertIn("valign", cell)
+
+        quotes = [b for b in _all_blocks(self.payload) if b["type"] == "blockquote"]
+        self.assertEqual(len(quotes), 2, "в сравнении две отдельные цитаты (§13.7)")
+        for quote in quotes:
+            self.assertEqual(set(quote), {"type", "blocks"})
+            self.assertTrue(quote["blocks"], "цитата без текста")
+            self.assertEqual(quote["blocks"][0]["type"], "paragraph")
 
     def test_paragraphs_use_text_field(self) -> None:
         paragraphs = [b for b in _all_blocks(self.payload) if b["type"] == "paragraph"]
         self.assertTrue(paragraphs)
         for block in paragraphs:
             self.assertEqual(set(block), PARAGRAPH_KEYS)
-            self.assertTrue(block["text"].strip(), "пустой текст абзаца")
+            # `text` — RichText: строка ИЛИ массив частей (жирный, ссылка).
+            self.assertTrue(_plain(block["text"]).strip(), "пустой текст абзаца")
 
     def test_no_legacy_type_or_field_names_anywhere(self) -> None:
         """Подстраховка от откатов: старых имён в запросе быть не должно."""
@@ -186,32 +226,27 @@ class HelpRichOfficialSchemaTests(unittest.TestCase):
     def test_help_specific_expectations_survive(self) -> None:
         """Семантика справки не потеряна при смене схемы (§51–52)."""
         blocks = _blocks(self.payload)
-        self.assertEqual(blocks[0]["text"], tr("help.rich.title"))
-        texts = [b["text"] for b in blocks if b["type"] == "paragraph"]
-        self.assertIn(tr("help.rich.intro"), texts)
-        self.assertIn(tr("help.rich.hint"), texts)
-        sections = [b["summary"] for b in blocks if b["type"] == "details"]
-        self.assertEqual(
-            sections,
-            [tr(f"help.rich.section{number}") for number in range(1, 11)],
-        )
-
-    def test_commands_section_keeps_readable_text(self) -> None:
-        """Элементы списка — блоки с абзацем: команды читаются как текст."""
-        commands = next(
-            b
-            for b in _blocks(self.payload)
-            if b["type"] == "details" and b["summary"] == tr("help.rich.section10")
-        )
-        list_block = next(b for b in commands["blocks"] if b["type"] == "list")
-        texts = [
-            child["text"]
-            for item in list_block["items"]
-            for child in item["blocks"]
-            if child["type"] == "paragraph"
+        page = _help_page()
+        self.assertEqual(blocks[0]["text"], page.title)
+        texts = [_plain(b["text"]) for b in blocks if b["type"] == "paragraph"]
+        self.assertIn(page.hint, texts)
+        sections = [
+            rich_text_plain(b["summary"]) for b in blocks if b["type"] == "details"
         ]
-        self.assertIn("/start — главное меню", texts)
-        self.assertIn("/help — эта справка", texts)
+        self.assertEqual(sections, [section.title for section in page.sections])
+        self.assertEqual(len(sections), 9, "§13: ровно девять разделов")
+
+    def test_sections_and_table_are_readable_text(self) -> None:
+        """§13.3: таблица подстановки читается как текст, а не как заглушка."""
+        table = next(b for b in _all_blocks(self.payload) if b["type"] == "table")
+        rows = [
+            [_plain(cell.get("text", "")) for cell in row] for row in table["cells"]
+        ]
+        self.assertEqual(rows[0], ["В шаблоне", "В анонсе"])
+        self.assertIn(["[дата]", "9 ноября"], rows)
+        details = [b for b in _blocks(self.payload) if b["type"] == "details"]
+        summary = [rich_text_plain(b["summary"]) for b in details]
+        self.assertIn("Шаблоны и кирпичики", summary)
 
 
 # —— 2. «О проекте» и RichTextUrl (Poster 2.5.4 §7) ——————————————————
@@ -263,7 +298,7 @@ class AboutRichOfficialSchemaTests(unittest.TestCase):
             self.assertTrue(item["text"].strip())
 
     def test_rich_text_array_is_a_list_of_strings_or_urls(self) -> None:
-        """Массив `RichText` (фраза со ссылкой) — плоский и непустой."""
+        """Массив `RichText` (фраза со ссылкой/жирным) — плоский и непустой."""
         for block in _all_blocks(self.payload):
             for field in ("text", "summary"):
                 value = block.get(field)
@@ -273,15 +308,18 @@ class AboutRichOfficialSchemaTests(unittest.TestCase):
                 for part in value:
                     self.assertIsInstance(part, (str, dict))
                     if isinstance(part, dict):
-                        self.assertEqual(set(part), URL_KEYS)
+                        # Жирная фраза (§14.6) — тоже допустимая часть RichText.
+                        self.assertIn(set(part), (URL_KEYS, BOLD_KEYS))
 
     def test_semantics_survive_serialization(self) -> None:
         blocks = _blocks(self.payload)
-        self.assertEqual(blocks[0]["text"], tr("about.rich.title"))
+        page = _about_page()
+        self.assertEqual(blocks[0]["text"], page.title)
         self.assertEqual(
-            [b["summary"] for b in blocks if b["type"] == "details"],
-            [tr(f"about.rich.section{number}") for number in range(1, 7)],
+            [rich_text_plain(b["summary"]) for b in blocks if b["type"] == "details"],
+            [section.title for section in page.sections],
         )
+        self.assertEqual(len(page.sections), 6, "§14: ровно шесть разделов")
 
 
 class RichTextUrlFixtureTests(unittest.TestCase):

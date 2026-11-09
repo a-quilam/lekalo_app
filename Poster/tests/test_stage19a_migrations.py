@@ -114,6 +114,7 @@ class MigrationMechanismTests(unittest.TestCase):
                 (29, "user_event_log_reports"),
                 (30, "standard_template_extended"),
                 (31, "curator_footer_catalogs"),
+                (32, "system_brick_hints"),
             ],
         )
 
@@ -229,6 +230,7 @@ class MigrationMechanismTests(unittest.TestCase):
                 (29, "user_event_log_reports"),
                 (30, "standard_template_extended"),
                 (31, "curator_footer_catalogs"),
+                (32, "system_brick_hints"),
             ],
         )
 

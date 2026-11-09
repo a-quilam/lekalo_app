@@ -38,6 +38,7 @@ try:
         scenario_test,
     )
     from utils import ui_texts
+    from utils.rich_content import load_catalog
 
     INTEGRATION_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
@@ -102,11 +103,10 @@ class OwnerScenarioTests(_Case):
             _full_catalog(
                 **{
                     "menu.main": "ПРИВЕТ-ПРИЁМКА\n\nВыберите действие:",
-                    # Poster 2.5: справка — Rich Message; правится её
-                    # заголовок из каталога (help.text_html заменён).
-                    "help.rich.title": "СПРАВКА-ПРИЁМКА",
+                    # Poster 2.6 §15.1: заголовок справки живёт в
+                    # `rich_content.yaml`; правки ui_texts его не меняют.
                     "wizard.photos.title": "📷 СНИМКИ-ПРИЁМКА",
-                    "wizard.photos.hint": "Пришлите до {limit} картинок.",
+                    "wizard.photos.hint": "Пришлите картинки-приёмка.",
                     # C2b-2 / 2.5.3 §5: экрана «Анонс готов» и экрана
                     # «✏️ Изменить анонс» нет — после доставки правка идёт
                     # через список полей на самом анонсе.
@@ -128,14 +128,15 @@ class OwnerScenarioTests(_Case):
         await h.text("/start")
         self.assertEqual(h.screen_text(), "ПРИВЕТ-ПРИЁМКА\n\nВыберите действие:")
 
-        # 2. справка: настоящий Rich Message, заголовок — из каталога
+        # 2. справка: настоящий Rich Message, заголовок — из Rich-каталога
+        # (`rich_content.yaml`, §15.1), а не из ui_texts.
         await h.text("/help")
         record = h.bot.rich_records[-1]
         heading = record["rich_message"]["blocks"][0]
         # Официальная схема Bot API 10.1: заголовок — `type: "heading"`,
         # текст в поле `text` (поля `heading` в схеме нет).
         self.assertEqual(heading["type"], "heading")
-        self.assertEqual(heading["text"], "СПРАВКА-ПРИЁМКА")
+        self.assertEqual(heading["text"], load_catalog().help.title)
 
         # 3. хаб кирпичиков
         await h.callback("manage")
@@ -169,7 +170,7 @@ class OwnerScenarioTests(_Case):
         await _choose_personal(h, template_id)
         await h.text("Значение")
         self.assertTrue(h.screen_text().startswith("📷 СНИМКИ-ПРИЁМКА"))
-        self.assertIn("Пришлите до 10 картинок.", h.screen_text())
+        self.assertIn("Пришлите картинки-приёмка.", h.screen_text())
         self.assertIn(("◀️ НАЗАД-ПРИЁМКА", "aw_photo_back:1:5"), h.screen_buttons())
 
         await h.callback(_callback(h, "aw_photo_none"))

@@ -198,7 +198,7 @@ def photo_step_text(
     lines = [
         tr("wizard.photos.title"),
         "",
-        tr("wizard.photos.hint", limit=MAX_ANNOUNCEMENT_PHOTOS),
+        tr("wizard.photos.hint"),
     ]
     if total:
         lines.append(

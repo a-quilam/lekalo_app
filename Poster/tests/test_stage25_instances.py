@@ -101,11 +101,11 @@ class Migration26Tests(unittest.TestCase):
 
     def test_fresh_install_has_instances_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 31)
+        self.assertEqual(LATEST_VERSION, 32)
         # 2.5.1 добавила 28 (`template_snapshot_conditional_parts`), этап B —
-        # 29, «Лекало» 2.6 — 30/31: проверяется позиция 25–27.
+        # 29, «Лекало» 2.6 — 30/31, этап D2 — 32: проверяется позиция 25–27.
         self.assertEqual(
-            _journal(self.path)[-7:-4],
+            _journal(self.path)[-8:-5],
             [
                 (25, "single_address_brick"),
                 (26, MIGRATION_26_NAME),

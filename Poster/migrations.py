@@ -4460,6 +4460,58 @@ MIGRATION_31_CURATOR_FOOTER_CATALOGS = Migration(
 )
 
 
+# --- Версия 32: подсказки §16 у системных кирпичиков конструктора ----------
+#
+# Финальное задание 2026-11-08 §16: у системных кирпичиков должны быть
+# РЕАЛЬНЫЕ описания (их показывает экран вопроса), а не только
+# универсальные подсказки типов. Пять кодов без описания: `название`,
+# `дата`, `время_начала`, `описание`, `контакт`. `условие_входа`,
+# `куратор` и `подвал` получили описания ещё миграцией 30 — их не трогаем.
+#
+# `фото` не является кирпичиком (вложения анонса), подсказка шага фото
+# живёт в каталоге текстов (`wizard.photos.hint`), а не в `bricks`.
+#
+# UPDATE условный (`description IS NULL`): описание, уже заданное владельцем
+# или суперадмином, не перезаписывается повторной инициализацией. Коды
+# системных кирпичиков неизменяемы, поэтому выборка по коду безопасна.
+
+_M32_DESCRIPTIONS: tuple[tuple[str, str], ...] = (
+    ("название", "Напишите название мероприятия."),
+    ("дата", "Выберите дату мероприятия или напишите её."),
+    ("время_начала", "Выберите время начала мероприятия или напишите."),
+    ("описание", "Пришлите описание мероприятия."),
+    (
+        "контакт",
+        "Напишите контакты для гостей в формате вашей площадки. "
+        "Например: «Ведущий мероприятия: t.me/iddeleted» или "
+        "«По вопросам площадки: t.me/vozdvizhenka». Можно в несколько строк.",
+    ),
+)
+
+
+def _m32_description_update(code: str, description: str) -> str:
+    """Идемпотентная подстановка описания системного кирпичика."""
+    return f"""
+        UPDATE bricks
+        SET description = {_migration_18_literal(description)},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE code = {_migration_18_literal(code)}
+          AND scope = 'system'
+          AND description IS NULL
+        """
+
+
+MIGRATION_32_SYSTEM_BRICK_HINTS = Migration(
+    version=32,
+    name="system_brick_hints",
+    statements=tuple(
+        _m32_description_update(code, description)
+        for code, description in _M32_DESCRIPTIONS
+    ),
+    requires_tables=("bricks",),
+)
+
+
 DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_1_USERS_PLACES,
     MIGRATION_2_PLACE_CONTACTS_UI,
@@ -4492,6 +4544,7 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_29_USER_EVENT_LOG_REPORTS,
     MIGRATION_30_STANDARD_TEMPLATE_EXTENDED,
     MIGRATION_31_CURATOR_FOOTER_CATALOGS,
+    MIGRATION_32_SYSTEM_BRICK_HINTS,
 )
 
 LATEST_VERSION = DEFAULT_MIGRATIONS[-1].version if DEFAULT_MIGRATIONS else 0

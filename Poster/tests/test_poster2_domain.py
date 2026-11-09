@@ -173,7 +173,7 @@ class MigrationFifteenAndSixteenTests(_MigrationTestCase):
     """Миграции 15–17 на заполненной временной БД версии 13."""
 
     def test_migration_keeps_rows_links_checks_and_passes_integrity(self) -> None:
-        self.assertEqual(LATEST_VERSION, 31)
+        self.assertEqual(LATEST_VERSION, 32)
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
 
         connection = sqlite3.connect(self.path)
@@ -359,10 +359,14 @@ class MigrationFifteenAndSixteenTests(_MigrationTestCase):
         self.assertIsNotNone(user_brick)
         assert user_brick is not None
         self.assertEqual(user_brick.code, "свой")
-        # Описание нового кирпичика пустое: старые строки не переписаны.
+        # Пользовательские строки миграции не переписывают: описание личного
+        # кирпичика осталось пустым.
+        self.assertIsNone(user_brick.description)
+        # §16 (этап D2, миграция 32): системное `название` получает реальную
+        # подсказку, а не остаётся с NULL.
         first_brick = self.session.get(Brick, 1)
         assert first_brick is not None
-        self.assertIsNone(first_brick.description)
+        self.assertEqual(first_brick.description, "Напишите название мероприятия.")
 
 
 class LegacyDraftCompatibilityTests(_MigrationTestCase):

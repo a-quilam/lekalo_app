@@ -63,15 +63,13 @@ def _callbacks(h, prefix: str) -> list[str]:
 
 def _without_notice(text: str) -> str:
     """
-    Убирает одноразовую плашку «значение сохранено» — она не часть экрана.
+    Убирает одноразовую плашку «значение пропущено» — она не часть экрана.
 
-    Подпись плашки задаёт каталог (`alerts.wizard.znachenie_sohraneno`,
-    «✓ {title}»), поэтому сравнение идёт по ключу, а не по литералу.
+    Подпись плашки задаёт каталог (`wizard.skip_question.znachenie_ostavleno`),
+    поэтому сравнение идёт по ключу, а не по литералу. Плашки «✓ {title}»
+    после сохранения в интерфейсе больше нет (§16 финального задания).
     """
-    notice_keys = (
-        "alerts.wizard.znachenie_sohraneno",
-        "wizard.skip_question.znachenie_ostavleno",
-    )
+    notice_keys = ("wizard.skip_question.znachenie_ostavleno",)
     blocks = text.split("\n\n")
     return "\n\n".join(
         block

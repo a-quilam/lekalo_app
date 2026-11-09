@@ -103,15 +103,16 @@ class Migration25JournalTests(_Migration25TestCase):
         # (`template_conditional_parts`), 2.5.1 — 28
         # (`template_snapshot_conditional_parts`), этап B — 29
         # (`user_event_log_reports`), «Лекало» 2.6 A1 — 30
-        # (`standard_template_extended`), B1 — 31 (`curator_footer_catalogs`);
-        # миграция 25 остаётся на своём месте.
-        self.assertEqual(LATEST_VERSION, 31)
+        # (`standard_template_extended`), B1 — 31 (`curator_footer_catalogs`),
+        # этап D2 — 32 (`system_brick_hints`); миграция 25 остаётся на своём
+        # месте.
+        self.assertEqual(LATEST_VERSION, 32)
         self.assertEqual(
             [(migration.version, migration.name) for migration in DEFAULT_MIGRATIONS],
             [
                 *[
                     (migration.version, migration.name)
-                    for migration in DEFAULT_MIGRATIONS[:-7]
+                    for migration in DEFAULT_MIGRATIONS[:-8]
                 ],
                 (25, MIGRATION_25_NAME),
                 (26, "announcement_instances"),
@@ -120,11 +121,12 @@ class Migration25JournalTests(_Migration25TestCase):
                 (29, "user_event_log_reports"),
                 (30, "standard_template_extended"),
                 (31, "curator_footer_catalogs"),
+                (32, "system_brick_hints"),
             ],
         )
         self.assertEqual(
             [migration.version for migration in DEFAULT_MIGRATIONS],
-            list(range(1, 32)),
+            list(range(1, 33)),
             "версии идут без пропусков и в порядке возрастания",
         )
 
@@ -139,16 +141,17 @@ class Migration25JournalTests(_Migration25TestCase):
         finally:
             connection.close()
         self.assertEqual(
-            versions[-8], (24, "template_content_and_extras_without_sections")
+            versions[-9], (24, "template_content_and_extras_without_sections")
         )
-        self.assertEqual(versions[-7], (25, MIGRATION_25_NAME))
-        self.assertEqual(versions[-6], (26, "announcement_instances"))
-        self.assertEqual(versions[-5], (27, "template_conditional_parts"))
-        self.assertEqual(versions[-4], (28, "template_snapshot_conditional_parts"))
-        self.assertEqual(versions[-3], (29, "user_event_log_reports"))
-        self.assertEqual(versions[-2], (30, "standard_template_extended"))
-        self.assertEqual(versions[-1], (31, "curator_footer_catalogs"))
-        self.assertEqual(len(versions), 31)
+        self.assertEqual(versions[-8], (25, MIGRATION_25_NAME))
+        self.assertEqual(versions[-7], (26, "announcement_instances"))
+        self.assertEqual(versions[-6], (27, "template_conditional_parts"))
+        self.assertEqual(versions[-5], (28, "template_snapshot_conditional_parts"))
+        self.assertEqual(versions[-4], (29, "user_event_log_reports"))
+        self.assertEqual(versions[-3], (30, "standard_template_extended"))
+        self.assertEqual(versions[-2], (31, "curator_footer_catalogs"))
+        self.assertEqual(versions[-1], (32, "system_brick_hints"))
+        self.assertEqual(len(versions), 32)
 
     def test_repeated_run_is_idempotent(self) -> None:
         self.migrate_to_24()

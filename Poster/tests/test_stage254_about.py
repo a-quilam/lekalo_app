@@ -34,7 +34,7 @@ from __future__ import annotations
 import unittest
 from typing import Any
 
-from tests import ui_texts_expect as cat
+from utils.rich_content import load_catalog
 from utils.ui_texts import tr
 
 try:
@@ -75,11 +75,9 @@ TO_HELP_DATA = "about_help"
 MENU_TEXT = tr("menu.main")
 RICH_KEY = "help_rich_message_id"
 
-# Названия разделов — из каталога: владелец правит YAML, проверка остаётся
-# проверкой состава и порядка шести разделов.
-SECTION_TITLES = tuple(
-    cat.text(f"about.rich.section{number}") for number in range(1, 7)
-)
+# Названия разделов — из Rich-каталога: владелец правит `rich_content.yaml`,
+# проверка остаётся проверкой состава и порядка шести разделов (§14).
+SECTION_TITLES = tuple(section.title for section in load_catalog().about.sections)
 
 
 # --- помощники -------------------------------------------------------------
@@ -176,12 +174,14 @@ class AboutStructureTests(unittest.TestCase):
         self.assertEqual(list(self.payload), ["blocks"])
 
     def test_heading_and_intro_come_from_catalog(self) -> None:
+        page = load_catalog().about
         self.assertEqual(self.blocks[0]["type"], "heading")
-        self.assertEqual(self.blocks[0]["text"], tr("about.rich.title"))
+        self.assertEqual(self.blocks[0]["text"], page.title)
         self.assertEqual(self.blocks[0]["size"], 1)
-        texts = [b["text"] for b in self.blocks if b["type"] == "paragraph"]
-        self.assertIn(tr("about.rich.intro"), texts)
-        self.assertIn(tr("about.rich.hint"), texts)
+        texts = [_texts(b["text"]) for b in self.blocks if b["type"] == "paragraph"]
+        # §14: без художественной обложки и вступления; подсказка о разделах.
+        self.assertEqual(page.intro, "", "§14: вступления быть не должно")
+        self.assertIn(page.hint, texts)
 
     def test_exactly_six_collapsed_sections(self) -> None:
         details = [b for b in self.blocks if b["type"] == "details"]
@@ -197,16 +197,24 @@ class AboutStructureTests(unittest.TestCase):
     def test_sections_cover_required_topics(self) -> None:
         text = _block_texts(self.payload)
         self.assertIn("Лекало", text)
-        self.assertIn("РанДом Культуры", text)
-        self.assertIn("Поддержать проект", text)
-        # «Поддержать проект» — без кнопки и без ссылки на донаты.
+        self.assertIn("РанДома Культуры", text)
+        # §14.6: просьба о поддержке — жирный абзац про СБП и две ссылки
+        # (Telegram автора и Мастодон), отдельной донат-кнопки/ссылки нет.
         support = next(
-            b for b in self.blocks if b.get("summary") == "Поддержать проект"
+            b for b in self.blocks if b.get("summary") == "Как помочь и связаться"
         )
         support_text = _texts(support["blocks"])
-        for forbidden in ("донат", "Донат", "перевести", "оплатить", "счёт"):
-            self.assertNotIn(forbidden, support_text)
-        self.assertEqual(_urls(support["blocks"]), [], "в поддержке есть ссылка")
+        self.assertIn("СБП", support_text)
+        support_urls = {
+            item["url"]
+            for child in support["blocks"]
+            for item in _urls(child.get("text", ""))
+        }
+        self.assertEqual(
+            support_urls,
+            {AUTHOR_URL, "https://kommuverse.ru/@mush"},
+            "в разделе поддержки две ссылки: Telegram и Мастодон",
+        )
 
     def test_links_are_clickable_with_short_labels(self) -> None:
         urls = _all_urls(self.payload)
@@ -226,7 +234,7 @@ class AboutStructureTests(unittest.TestCase):
             self.assertTrue(item["url"].startswith("https://"))
 
     def test_github_url_is_the_expected_repository(self) -> None:
-        self.assertEqual(GITHUB_URL, "https://github.com/a-quilam/samplePost_bot")
+        self.assertEqual(GITHUB_URL, "https://github.com/a-quilam/lekalo_app")
 
     def test_rich_message_itself_has_no_extra_buttons(self) -> None:
         """Rich Message не несёт клавиатуры: она передаётся отдельно (§7)."""

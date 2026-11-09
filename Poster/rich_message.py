@@ -121,15 +121,37 @@ class InputRichTextUrl:
         }
 
 
+@dataclass(frozen=True)
+class InputRichTextBold:
+    """
+    Жирный фрагмент текста (`RichTextBold`, тип `bold`).
+
+    Утверждённые тексты «Помощи» и «О проекте» выделяют жирным отдельные
+    фразы внутри абзаца (финальное задание 2026-11-08 §13.7, §14.6). По
+    официальной схеме Bot API `text` — снова `RichText`, но здесь нужен
+    только простой текст: вложенные выделения не используются.
+    """
+
+    text: RichText
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "bold", "text": rich_text_to_dict(self.text)}
+
+
 # Официальный `RichText`: строка, типизированный объект или их массив.
-# Poster использует один уровень вложенности (подпись ссылки — строка):
-# этого достаточно, а рекурсивный разбор не нужен и не проверяется.
-RichText = str | InputRichTextUrl | Sequence[str | InputRichTextUrl]
+# Poster использует один уровень вложенности (подпись ссылки и жирная фраза
+# внутри абзаца — строка): этого достаточно, рекурсивный разбор не нужен.
+RichText = (
+    str
+    | InputRichTextUrl
+    | InputRichTextBold
+    | Sequence[str | InputRichTextUrl | InputRichTextBold]
+)
 
 
 def rich_text_to_dict(value: RichText) -> Any:
     """Сериализует `RichText` в форму Bot API (строка остаётся строкой)."""
-    if isinstance(value, InputRichTextUrl):
+    if isinstance(value, (InputRichTextUrl, InputRichTextBold)):
         return value.to_dict()
     if isinstance(value, str):
         return value
@@ -138,7 +160,7 @@ def rich_text_to_dict(value: RichText) -> Any:
 
 def rich_text_plain(value: RichText) -> str:
     """Плоский текст `RichText` (для проверок и логов, не для отправки)."""
-    if isinstance(value, InputRichTextUrl):
+    if isinstance(value, (InputRichTextUrl, InputRichTextBold)):
         return rich_text_plain(value.text)
     if isinstance(value, str):
         return value
@@ -484,7 +506,8 @@ def _require_text(value: Any, what: str) -> str:
 
 def _require_rich_text(value: Any, what: str) -> RichText:
     """
-    Проверяет `RichText`: непустая строка, `RichTextUrl` или их массив.
+    Проверяет `RichText`: непустая строка, `RichTextUrl`, `RichTextBold` или
+    их массив.
 
     Проверка ДО сети: тип `text`/`summary` по официальной схеме — `RichText`,
     поэтому строка и ссылка с подписью равноправны, а случайный `None` или
@@ -494,11 +517,16 @@ def _require_rich_text(value: Any, what: str) -> RichText:
         _require_rich_text(value.text, f"{what}.text")
         _require_url(value.url, f"{what}.url")
         return value
+    if isinstance(value, InputRichTextBold):
+        _require_rich_text(value.text, f"{what}.text")
+        return value
     if isinstance(value, str):
         _require_text(value, what)
         return value
     if isinstance(value, (bytes, bytearray)) or not isinstance(value, Sequence):
-        raise RichMessageError(f"{what}: ожидается строка, RichTextUrl или их список.")
+        raise RichMessageError(
+            f"{what}: ожидается строка, RichTextUrl, RichTextBold или их список."
+        )
     if not value:
         raise RichMessageError(f"{what}: список RichText пуст.")
     for item in value:

@@ -33,11 +33,11 @@ class BrickManagementSchemaTests(BrickDatabaseTestCase):
         # Миграции 7 — эпоха управления кирпичиками; 15/16 добавлены этапом
         # Poster 2.0 S1, 17 — S5, поэтому «последняя» проверяется по
         # LATEST_VERSION.
-        self.assertEqual(LATEST_VERSION, 31)
+        self.assertEqual(LATEST_VERSION, 32)
         self.assertIn((17, "archive_legacy_drafts"), self.journal())
         self.assertEqual(
             self.journal()[-1],
-            (LATEST_VERSION, "curator_footer_catalogs"),
+            (LATEST_VERSION, "system_brick_hints"),
         )
         connection = connect(self.path)
         try:
@@ -129,7 +129,7 @@ class BrickManagementSchemaTests(BrickDatabaseTestCase):
         self.assertIn((17, "archive_legacy_drafts"), self.journal())
         self.assertEqual(
             self.journal()[-1],
-            (LATEST_VERSION, "curator_footer_catalogs"),
+            (LATEST_VERSION, "system_brick_hints"),
         )
 
 

@@ -7,12 +7,12 @@ Poster 2.5.4 §7 + §9 (тест H) — НЕЗАВИСИМАЯ приёмка «
 
 1. на Rich Message справки «◀️ Назад» и «ℹ️ О проекте» стоят в ОДНОЙ строке;
 2. «О проекте» — именно Rich Message (`sendRichMessage`, способ `blocks`),
-   а не обычный `sendMessage` с текстом: заголовок, вводный абзац, подсказка,
-   разделитель и ШЕСТЬ свёрнутых разделов; в разделах есть абзацы и список;
+   а не обычный `sendMessage` с текстом: заголовок, подсказка, разделитель
+   и ШЕСТЬ свёрнутых разделов; в разделах есть абзацы;
 3. ссылки — кликабельные объекты `type: "url"` с короткой подписью, а не
-   «голый» текст адреса: GitHub, автор проекта, «РанДом Культуры»;
-4. у «Поддержать проект» нет донат-кнопки/донат-ссылки, у сообщения ровно
-   одна кнопка — «◀️ К помощи»;
+   «голый» текст адреса: «РанДом Культуры», GitHub, автор проекта, Мастодон;
+4. у «Как помочь и связаться» нет донат-кнопки/платёжной ссылки (СБП —
+   словами), у сообщения ровно одна кнопка — «◀️ К помощи»;
 5. «К помощи» возвращает справку, «Назад» на ней — на ТОТ ЖЕ экран-источник
    (меню, раздел, текущий шаг черновика); исходный экран/черновик не теряется;
 6. в чате не остаётся двух конкурирующих клавиатур: прежний Rich Message
@@ -52,6 +52,7 @@ import unittest
 from typing import Any
 
 from tests import ui_texts_expect as cat
+from utils.rich_content import load_catalog
 from utils.ui_texts import tr
 
 try:
@@ -89,15 +90,15 @@ MENU_TEXT = tr("menu.main")
 # (в каталоге формат «🧩 {title} · {step}/{total}»).
 QUESTION_TEXT = cat.fragment("wizard.question.header")
 
-ABOUT_TITLE = cat.text("about.rich.title")
-# Шесть разделов «О проекте» — из каталога (владелец правит YAML).
-SECTION_TITLES = tuple(
-    cat.text(f"about.rich.section{number}") for number in range(1, 7)
-)
-GITHUB_URL = "https://github.com/a-quilam/samplePost_bot"
+ABOUT_PAGE = load_catalog().about
+ABOUT_TITLE = ABOUT_PAGE.title
+# Шесть разделов «О проекте» — из Rich-каталога (§14, единственный источник).
+SECTION_TITLES = tuple(section.title for section in ABOUT_PAGE.sections)
+GITHUB_URL = "https://github.com/a-quilam/lekalo_app"
 AUTHOR_URL = "https://t.me/a_quilam"
 RANDOM_CULTURE_URL = "https://t.me/random_culture"
-EXPECTED_URLS = {GITHUB_URL, AUTHOR_URL, RANDOM_CULTURE_URL}
+MASTODON_URL = "https://kommuverse.ru/@mush"
+EXPECTED_URLS = {GITHUB_URL, AUTHOR_URL, RANDOM_CULTURE_URL, MASTODON_URL}
 RESUME_PAYLOAD_KEY = "announcement_resume"
 RICH_TEMP_PAYLOAD_KEY = "rich_temp"
 
@@ -238,14 +239,14 @@ class AboutStructureTests(unittest.TestCase):
         blocks = _blocks(payload)
         self.assertEqual(
             len(blocks),
-            10,
-            "структура: заголовок, вступление, подсказка, разделитель, 6 разделов",
+            9,
+            "структура: заголовок, подсказка, разделитель, 6 разделов "
+            "(вступления в §14 нет)",
         )
         self.assertEqual(
             [block["type"] for block in blocks],
             [
                 "heading",
-                "paragraph",
                 "paragraph",
                 "divider",
                 "details",
@@ -258,7 +259,7 @@ class AboutStructureTests(unittest.TestCase):
         )
 
     @scenario_test
-    async def test_heading_intro_and_hint(self, h: Harness) -> None:
+    async def test_heading_and_hint(self, h: Harness) -> None:
         await h.text("/start")
         await h.callback("help")
         await h.callback(ABOUT_DATA)
@@ -269,12 +270,10 @@ class AboutStructureTests(unittest.TestCase):
         self.assertEqual(heading["text"], ABOUT_TITLE)
         self.assertEqual(heading["size"], 1, "заголовок — самый крупный по схеме")
 
-        intro, hint = blocks[1], blocks[2]
-        self.assertEqual(intro["type"], "paragraph")
+        hint = blocks[1]
         self.assertEqual(hint["type"], "paragraph")
-        self.assertTrue(_texts(intro["text"]).strip(), "пустой вводный абзац")
-        self.assertTrue(_texts(hint["text"]).strip(), "пустая подсказка")
-        self.assertEqual(blocks[3], {"type": "divider"})
+        self.assertEqual(_texts(hint["text"]), ABOUT_PAGE.hint, "§14: подсказка")
+        self.assertEqual(blocks[2], {"type": "divider"})
 
     @scenario_test
     async def test_six_collapsed_sections_with_content(self, h: Harness) -> None:
@@ -298,7 +297,7 @@ class AboutStructureTests(unittest.TestCase):
             self.assertTrue(block.get("blocks"), "раздел без содержимого")
 
     @scenario_test
-    async def test_sections_have_paragraphs_and_list(self, h: Harness) -> None:
+    async def test_sections_have_paragraphs(self, h: Harness) -> None:
         await h.text("/start")
         await h.callback("help")
         await h.callback(ABOUT_DATA)
@@ -311,16 +310,14 @@ class AboutStructureTests(unittest.TestCase):
             kinds = [child["type"] for child in by_summary[title]["blocks"]]
             self.assertIn("paragraph", kinds, f"раздел «{title}» без абзаца")
 
-        for_whom = by_summary[cat.text("about.rich.section3")]
-        lists = [child for child in for_whom["blocks"] if child["type"] == "list"]
-        self.assertEqual(len(lists), 1, "«Для кого» — один список")
-        items = lists[0]["items"]
-        self.assertEqual(len(items), 3, "в списке «Для кого» три пункта")
-        for item in items:
-            self.assertEqual(list(item), ["blocks"], "пункт — объект со своими blocks")
-            nested = item["blocks"]
-            self.assertEqual(nested[0]["type"], "paragraph")
-            self.assertTrue(_texts(nested[0]["text"]).strip())
+        # §14.1: «РанДом Культуры» — ссылка внутри первого абзаца раздела.
+        first = by_summary[SECTION_TITLES[0]]
+        urls = [url for block in first["blocks"] for url in _block_urls(block)]
+        self.assertIn(
+            RANDOM_CULTURE_URL,
+            {url["url"] for url in urls},
+            "«РанДом Культуры» — не кликабельная ссылка",
+        )
 
     @scenario_test
     async def test_links_are_url_objects_with_short_labels(self, h: Harness) -> None:
@@ -332,8 +329,8 @@ class AboutStructureTests(unittest.TestCase):
         urls = [url for block in blocks for url in _block_urls(block)]
         self.assertEqual(
             len(urls),
-            3,
-            "ровно три ссылки: GitHub, автор проекта, «РанДом Культуры»",
+            4,
+            "ровно четыре ссылки: «РанДом Культуры», GitHub, автор, Мастодон",
         )
         self.assertEqual({item["url"] for item in urls}, EXPECTED_URLS)
         for item in urls:
@@ -356,13 +353,19 @@ class AboutStructureTests(unittest.TestCase):
         record = _rich(h)[-1]
         blocks = _blocks(record["rich_message"])
 
+        # §14.6: донатов через кнопку или прямую платёжную ссылку нет —
+        # только предложение написать в Telegram и «задонатить по СБП»
+        # словами. Ссылки раздела ведут в Telegram автора и Мастодон.
         support = next(
-            block for block in blocks if block.get("summary") == "Поддержать проект"
+            block for block in blocks if block.get("summary") == SECTION_TITLES[-1]
         )
         text = _block_texts(support).lower()
-        for forbidden in ("донат", "перевести", "оплатить", "реквизит"):
-            self.assertNotIn(forbidden, text, "в поддержке упомянуты донаты")
-        self.assertEqual(_block_urls(support), [], "в поддержке есть ссылка")
+        self.assertIn("сбп", text, "§14.6: СБП упомянут словами")
+        self.assertEqual(
+            {url["url"] for url in _block_urls(support)},
+            {AUTHOR_URL, MASTODON_URL},
+            "§14.6: только Telegram автора и Мастодон, платёжных ссылок нет",
+        )
 
         buttons = inline_buttons(record["reply_markup"])
         for label, data in buttons:

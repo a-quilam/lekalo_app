@@ -61,7 +61,15 @@ try:
         inline_buttons,
         scenario_test,
     )
-    from utils import ui_texts
+    from utils.rich_content import (
+        Block,
+        BoldPart,
+        ListBlock,
+        ParagraphBlock,
+        QuoteBlock,
+        TableBlock,
+        load_catalog,
+    )
 
     IMPORT_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
@@ -170,21 +178,24 @@ class HelpStructureTests(unittest.TestCase):
     def test_heading_and_intro_are_present(self) -> None:
         payload = self.rich.to_dict()
         first = _blocks(payload)[0]
+        page = load_catalog().help
         # Официальная схема: type "heading", текст в поле text, size обязателен.
         self.assertEqual(first["type"], "heading")
-        self.assertEqual(first["text"], cat.text("help.rich.title"))
+        self.assertEqual(first["text"], page.title)
         self.assertEqual(first["size"], 1)
         self.assertNotIn("heading", first)
         texts = [
-            block.get("text", "")
+            rich_text_plain(block.get("text", ""))
             for block in _blocks(payload)
             if block["type"] == "paragraph"
         ]
-        self.assertIn(cat.text("help.rich.intro"), texts)
+        # §13: без вступления, но короткая подсказка о свёрнутых разделах есть.
+        self.assertIn(page.hint, texts)
+        self.assertEqual(page.intro, "", "§13: вступления быть не должно")
 
-    def test_exactly_ten_collapsed_details(self) -> None:
+    def test_exactly_nine_collapsed_details(self) -> None:
         details = self._details()
-        self.assertEqual(len(details), 10)
+        self.assertEqual(len(details), 9, "§13: ровно девять разделов")
         for block in details:
             self.assertIsNone(block.is_open, "раздел должен быть свёрнут (§52)")
             self.assertTrue(
@@ -194,7 +205,7 @@ class HelpStructureTests(unittest.TestCase):
     def test_details_are_real_expandable_blocks(self) -> None:
         payload = self.rich.to_dict()
         details = [b for b in _blocks(payload) if b["type"] == "details"]
-        self.assertEqual(len(details), 10)
+        self.assertEqual(len(details), 9)
         for block in details:
             self.assertNotIn(
                 "is_open",
@@ -206,19 +217,23 @@ class HelpStructureTests(unittest.TestCase):
 
     def test_section_titles_cover_spec(self) -> None:
         titles = [rich_text_plain(block.summary) for block in self._details()]
-        for expected in (
-            "Создание анонса",
-            "Площадки",
-            "Шаблоны",
-            "Кирпичики",
-            "Дополнительные поля",
-            "Условные части",
-            "Фотографии",
-            "Редактирование анонса",
-            "Управление площадкой",
-            "Команды",
-        ):
-            self.assertIn(expected, titles)
+        self.assertEqual(
+            titles,
+            [
+                "Создание анонса",
+                "Площадки",
+                "Шаблоны и кирпичики",
+                "Дополнительные поля",
+                "Фотографии",
+                "Редактирование и публикация",
+                "Как написать хороший анонс",
+                "Управление площадкой",
+                "Ошибки и предложения",
+            ],
+            "§13: девять разделов в утверждённом порядке",
+        )
+        # §17: отдельного раздела об условных частях в справке нет.
+        self.assertNotIn("Условные части", titles)
 
     def test_section_texts_mention_expected_keywords(self) -> None:
         """§54: тексты разделов действительно рассказывают о своём предмете."""
@@ -234,89 +249,93 @@ class HelpStructureTests(unittest.TestCase):
                     parts.extend(_list_item_texts(child))
             return "\n".join(parts)
 
-        self.assertIn("Создать анонс", text_of("Создание анонса"))
-        self.assertIn("тире после времени начала", text_of("Условные части"))
-        self.assertIn("программные выражения", text_of("Условные части"))
-        self.assertIn("расширенный", text_of("Дополнительные поля"))
-        self.assertIn("[дата]", text_of("Кирпичики"))
-        commands = text_of("Команды")
-        self.assertIn("/start", commands)
-        self.assertIn("/help", commands)
+        self.assertIn("Для анонса площадки", text_of("Создание анонса"))
+        self.assertIn("справочник площадок", text_of("Площадки"))
+        self.assertIn("расширенном варианте", text_of("Дополнительные поля"))
+        self.assertIn("до десяти картинок", text_of("Фотографии"))
+        self.assertIn("Мои анонсы", text_of("Редактирование и публикация"))
+        self.assertIn("/report", text_of("Ошибки и предложения"))
 
-    def test_section_texts_use_catalog_button_labels(self) -> None:
+    def test_section_texts_come_from_yaml_catalog(self) -> None:
         """
-        MINOR-2 приёмки E: упоминания кнопок берутся из каталога.
-
-        Проверка через подмену каталога: если в тексте раздела осталась
-        жёсткая подпись, справка начнёт называть кнопку по-старому. Заодно
-        закрепляется, что каждая подпись — существующий ключ каталога.
+        §15.1: тексты разделов живут в `config/rich_content.yaml`, а не в
+        Python. Правка каталога меняет справку без правки кода — это и
+        проверяется подменой загруженного каталога.
         """
-        from help_rich import _LABELS
+        import dataclasses
 
-        for token, key in _LABELS.items():
-            self.assertIn(key, ui_texts.DEFAULTS, f"{token}: нет ключа {key}")
+        from help_rich import load_catalog as help_load_catalog
 
-        catalog = ui_texts.texts()
-        overrides = {
-            "buttons.finished.data": "📝 ДАННЫЕ-ПРОВЕРКА",
-            "buttons.finished.photos": "🖼 СНИМКИ ({count})",
-            "wizard.photos.title": "📷 ФОТО-ШАГ-ПРОВЕРКА",
-        }
-        patched = dict(catalog, **overrides)
-        with mock.patch.object(ui_texts, "_catalog", patched):
+        original = help_load_catalog()
+        help_page = original.help
+        first = help_page.sections[0]
+        edited_section = dataclasses.replace(
+            first,
+            title="СОЗДАНИЕ-ПРОВЕРКА",
+            blocks=(ParagraphBlock(parts=("ТЕКСТ-ПРОВЕРКА",)),),
+        )
+        edited_page = dataclasses.replace(
+            help_page, sections=(edited_section, *help_page.sections[1:])
+        )
+        patched = dataclasses.replace(original, help=edited_page)
+        with mock.patch("help_rich.load_catalog", return_value=patched):
             rebuilt = build_help_rich_message()
-        by_title = {
-            rich_text_plain(block.summary): block
+        details = [
+            block
             for block in rebuilt.blocks or ()
             if isinstance(block, InputRichBlockDetails)
-        }
-
-        def text_of(title: str) -> str:
-            parts: list[str] = []
-            for child in by_title[title].blocks:
-                if isinstance(child, InputRichBlockParagraph):
-                    parts.append(rich_text_plain(child.text))
-                elif isinstance(child, InputRichBlockList):
-                    parts.extend(_list_item_texts(child))
-            return "\n".join(parts)
-
-        edited = text_of("Редактирование анонса")
-        self.assertIn("📝 ДАННЫЕ-ПРОВЕРКА", edited)
-        self.assertIn("🖼 СНИМКИ (n)", edited)
-        self.assertNotIn("«Поля»", edited)
-        self.assertNotIn("«Фотографии»", edited)
-        self.assertIn("📷 ФОТО-ШАГ-ПРОВЕРКА", text_of("Фотографии"))
+        ]
+        self.assertEqual(rich_text_plain(details[0].summary), "СОЗДАНИЕ-ПРОВЕРКА")
+        paragraph = next(
+            child
+            for child in details[0].blocks
+            if isinstance(child, InputRichBlockParagraph)
+        )
+        self.assertEqual(rich_text_plain(paragraph.text), "ТЕКСТ-ПРОВЕРКА")
 
     def test_section_texts_have_no_leftover_markers(self) -> None:
         """
-        В готовой справке нет `{token}`-маркеров и лишних фигурных скобок.
+        В готовой справке нет `{...}`-маркеров подстановки.
 
-        Опорный инвариант подстановки подписей: если в тексте раздела
-        появится `{...}` без ключа в `_LABELS`, `_fill` упадёт `KeyError`, а
-        незамеченный маркер показался бы пользователю как есть.
+        Каталог Rich-контента — литеральные утверждённые тексты; фигурные
+        скобки здесь означали бы незамеченный технический маркер, который
+        пользователь увидит как есть (§15.1).
         """
-        from help_rich import _LABELS, _SECTIONS
+        page = load_catalog().help
+        for section in page.sections:
+            self.assertNotIn(
+                "{", section.title, f"маркер в названии раздела {section.id!r}"
+            )
 
-        for _title_key, paragraph, items in _SECTIONS:
-            for text in (paragraph, *items):
-                for marker in re.findall(r"\{([^}]*)\}", text):
-                    self.assertIn(
-                        marker, _LABELS, f"неизвестная подстановка {{{marker}}}"
-                    )
+        def texts(block: Block) -> list[str]:
+            if isinstance(block, ParagraphBlock):
+                return [part for part in block.parts if isinstance(part, str)] + [
+                    part.text for part in block.parts if isinstance(part, BoldPart)
+                ]
+            if isinstance(block, TableBlock):
+                return list(block.header) + [cell for row in block.rows for cell in row]
+            if isinstance(block, QuoteBlock):
+                return [block.text]
+            if isinstance(block, ListBlock):
+                return [
+                    part
+                    for item in block.items
+                    for part in item
+                    if isinstance(part, str)
+                ]
+            return []
 
-        for block in self._details():
-            for child in block.blocks:
-                values: list[str] = []
-                if isinstance(child, InputRichBlockParagraph):
-                    values.append(rich_text_plain(child.text))
-                elif isinstance(child, InputRichBlockList):
-                    values.extend(_list_item_texts(child))
-                for value in values:
+        for section in page.sections:
+            for block in section.blocks:
+                for value in texts(block):
                     self.assertNotIn("{", value, "в справке остался маркер")
                     self.assertNotIn("}", value, "в справке остался маркер")
 
-    def test_commands_section_lists_only_real_commands(self) -> None:
-        """§51 п.10: в справочнике команд нет придуманных команд."""
+    def test_mentioned_commands_are_real(self) -> None:
+        """
+        Утверждённый §13 упоминает только `/report`; проверка инварианта —
+        в справке нет придуманных команд (прежний §51 п.10).
+        """
         real = {
             "/start",
             "/help",
@@ -329,24 +348,20 @@ class HelpStructureTests(unittest.TestCase):
             "/cancel",
             "/report",
         }
-        details = [
-            block
-            for block in self._details()
-            if rich_text_plain(block.summary) == "Команды"
-        ]
-        self.assertEqual(len(details), 1)
-        items: list[str] = []
-        for child in details[0].blocks:
-            if isinstance(child, InputRichBlockList):
-                items.extend(_list_item_texts(child))
-        listed = {
-            token.split()[0].rstrip(",")
-            for item in items
-            for token in item.split()
-            if token.startswith("/")
-        }
-        self.assertTrue(listed <= real, f"придуманные команды: {listed - real}")
-        self.assertIn("/start", listed)
+        page = load_catalog().help
+        mentioned: set[str] = set()
+        for section in page.sections:
+            for block in section.blocks:
+                if isinstance(block, ParagraphBlock):
+                    chunks = [part for part in block.parts if isinstance(part, str)]
+                elif isinstance(block, QuoteBlock):
+                    chunks = [block.text]
+                else:
+                    chunks = []
+                for chunk in chunks:
+                    mentioned |= set(re.findall(r"/[a-z_]+", chunk))
+        self.assertTrue(mentioned <= real, f"придуманные команды: {mentioned - real}")
+        self.assertIn("/report", mentioned, "§13.9: /report упомянут")
 
 
 # —— 2. Валидация и адаптер ——————————————————————————————————————————
@@ -533,7 +548,7 @@ class HelpFlowTests(unittest.TestCase):
         validate_rich_message(payload)
         self.assertEqual(list(payload), ["blocks"])
         details = [b for b in _blocks(payload) if b["type"] == "details"]
-        self.assertEqual(len(details), 10)
+        self.assertEqual(len(details), 9)
         self.assertTrue(all("is_open" not in block for block in details))
 
         labels = [label for label, _data in inline_buttons(record["reply_markup"])]

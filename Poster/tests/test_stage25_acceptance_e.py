@@ -59,19 +59,18 @@ try:
         inline_buttons,
         scenario_test,
     )
+    from utils.rich_content import load_catalog
 
     INTEGRATION_IMPORT_ERROR = HARNESS_IMPORT_ERROR
 except Exception as exc:  # noqa: BLE001 — причина попадает в skip-сообщение
     INTEGRATION_IMPORT_ERROR = str(exc)
 
 
-# §51: заголовок, введение и порядок десяти разделов — из каталога
-# (владелец правит `config/ui_texts.yaml`, смысл проверки не меняется).
-HELP_TITLE = cat.text("help.rich.title")
-HELP_INTRO = cat.text("help.rich.intro")
-SECTION_TITLES = tuple(
-    cat.text(f"help.rich.section{number}") for number in range(1, 11)
-)
+# §13: заголовок, подсказка и порядок девяти разделов — из Rich-каталога
+# (`config/rich_content.yaml`, единственный источник утверждённого текста).
+HELP_PAGE = load_catalog().help
+HELP_TITLE = HELP_PAGE.title
+SECTION_TITLES = tuple(section.title for section in HELP_PAGE.sections)
 
 # §53 + Poster 2.5.1: кнопка возврата из справки на экран-источник.
 BACK_LABEL = "◀️ Назад"
@@ -90,8 +89,8 @@ MENU_BUTTONS = [
     ("❓ Помощь", "help"),
 ]
 
-# Раздел справки, где перечислены команды.
-COMMANDS_SECTION = "Команды"
+# §13.9: раздел, где перечислены ошибки и команда `/report`.
+ERRORS_SECTION = "Ошибки и предложения"
 
 RICH_KEY = "help_rich_message_id"
 
@@ -191,8 +190,8 @@ def _registered_commands(h) -> set[str]:
 
 
 def _commands_in_help(record: dict) -> set[str]:
-    """Команды `/xxx`, упомянутые в разделе «Команды»."""
-    text = _section_text(record, COMMANDS_SECTION)
+    """Команды `/xxx`, упомянутые в разделе «Ошибки и предложения» (§13.9)."""
+    text = _section_text(record, ERRORS_SECTION)
     return {match for match in re.findall(r"/[a-z_]+", text)}
 
 
@@ -251,16 +250,16 @@ class RichHelpDeliveryTests(unittest.TestCase):
         self.assertEqual(blocks[0]["type"], "heading")
         self.assertEqual(blocks[0]["text"], HELP_TITLE)
         self.assertEqual(blocks[0]["size"], 1)
-        self.assertIn(HELP_INTRO, _rich_plain_text(record), "введение §51")
+        self.assertIn(HELP_PAGE.hint, _rich_plain_text(record), "подсказка §13")
 
     @scenario_test
-    async def test_ten_collapsed_expandable_sections(self, h) -> None:
+    async def test_nine_collapsed_expandable_sections(self, h) -> None:
         await h.text("/start")
         await h.callback("help")
         record = _rich_records(h)[0]
 
         details = _details_of(record)
-        self.assertEqual(len(details), 10, "в справке должно быть 10 разделов")
+        self.assertEqual(len(details), 9, "§13: в справке девять разделов")
         for block in details:
             self.assertNotIn(
                 "is_open",
@@ -273,34 +272,30 @@ class RichHelpDeliveryTests(unittest.TestCase):
         self.assertEqual([block["summary"] for block in details], list(SECTION_TITLES))
 
     @scenario_test
-    async def test_conditional_parts_section_explains_hiding(self, h) -> None:
-        """§51 п.6: тире/строка цены и «без программных выражений»."""
+    async def test_no_separate_conditional_parts_instruction(self, h) -> None:
+        """§17: отдельного раздела об условных частях в справке нет."""
         await h.text("/start")
         await h.callback("help")
-        text = _section_text(_rich_records(h)[0], "Условные части")
-
-        self.assertIn("тире после времени начала", text)
-        self.assertIn("строку с ценой", text)
-        self.assertIn("программные выражения", text)
-        for syntax in ("{{", "{%", "<if", "if("):
-            self.assertNotIn(
-                syntax, text, f"в справку попал синтаксис условий {syntax}"
-            )
+        record = _rich_records(h)[0]
+        titles = [block["summary"] for block in _details_of(record)]
+        self.assertNotIn("Условные части", titles)
+        text = _rich_plain_text(record)
+        for marker in ("программные выражения", "тире после времени начала"):
+            self.assertNotIn(marker, text, f"инструкция §17 попала в справку: {marker}")
 
     @scenario_test
-    async def test_commands_section_matches_registered_commands(self, h) -> None:
-        """§51 п.10: только реально существующие команды, ничего не выдумано."""
+    async def test_errors_section_matches_registered_commands(self, h) -> None:
+        """§13.9: упомянутые команды реально зарегистрированы, ничего не выдумано."""
         await h.text("/start")
         await h.callback("help")
         listed = _commands_in_help(_rich_records(h)[0])
         registered = _registered_commands(h)
 
-        self.assertTrue(listed, "раздел «Команды» пуст")
+        self.assertTrue(listed, "в справке не упомянуто ни одной команды")
         self.assertEqual(listed - registered, set(), "в справке придуманные команды")
-        self.assertIn("/start", listed)
-        self.assertIn("/help", listed)
-        # Каждая зарегистрированная команда полезна автору — сверяем полноту.
-        self.assertEqual(registered - listed, set(), "команда не описана в справке")
+        self.assertIn("/report", listed)
+        # §13 перечисляет только /report: полного справочника команд больше
+        # нет, поэтому полнота регистрации здесь не требуется.
 
     @scenario_test
     async def test_help_keyboard_has_back_and_about_buttons(self, h) -> None:

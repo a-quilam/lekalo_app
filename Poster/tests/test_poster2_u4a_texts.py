@@ -38,6 +38,7 @@ Python-кода».
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -185,7 +186,7 @@ class CatalogFileTests(unittest.TestCase):
             )
 
     def test_required_keys_are_marked(self) -> None:
-        for key in ("menu.main", "menu.manage", "help.rich.title"):
+        for key in ("menu.main", "menu.manage"):
             self.assertIn(key, ui_texts.REQUIRED_KEYS)
             self.assertIn(key, ui_texts.DEFAULTS)
 
@@ -491,10 +492,25 @@ class CatalogScreenTests(_TempCatalog):
 
     @scenario_test
     async def test_help_rich_header_comes_from_catalog(self, h: Harness) -> None:
-        """Poster 2.5: заголовок Rich-справки — строка каталога, не литерал."""
-        self.write_catalog(**{"help.rich.title": "Справка-правка"})
-        ui_texts.reload_texts(self.path)
-        await h.text("/help")
+        """
+        Poster 2.6 §15.1: заголовок Rich-справки — из `rich_content.yaml`,
+        а не из `ui_texts.yaml` и не литерал Python.
+        """
+        from utils import rich_content
+
+        source = rich_content.DEFAULT_PATH.read_text(encoding="utf-8")
+        edited = source.replace('  title: "Помощь"\n', '  title: "Справка-правка"\n', 1)
+        self.assertIn("Справка-правка", edited, "не удалось поправить каталог")
+        path = self.write(edited)
+        previous = os.environ.get(rich_content.PATH_ENV_VARIABLE)
+        os.environ[rich_content.PATH_ENV_VARIABLE] = str(path)
+        try:
+            await h.text("/help")
+        finally:
+            if previous is None:
+                os.environ.pop(rich_content.PATH_ENV_VARIABLE, None)
+            else:
+                os.environ[rich_content.PATH_ENV_VARIABLE] = previous
         record = h.bot.rich_records[-1]
         heading = record["rich_message"]["blocks"][0]
         # Официальная схема Bot API 10.1: type "heading", текст в поле text.
@@ -518,14 +534,14 @@ class CatalogScreenTests(_TempCatalog):
         self.write_catalog(
             **{
                 "wizard.photos.title": "📷 Снимки",
-                "wizard.photos.hint": "Пришлите до {limit} снимков.",
+                "wizard.photos.hint": "Пришлите снимки к анонсу.",
             }
         )
         ui_texts.reload_texts(self.path)
         details = type("Details", (), {"photos": (), "draft_id": 1, "revision": 1})()
         text = wizard_photos.photo_step_text(details)
         self.assertIn("📷 Снимки", text)
-        self.assertIn("Пришлите до 10 снимков.", text)
+        self.assertIn("Пришлите снимки к анонсу.", text)
 
     @scenario_test
     async def test_finished_screen_text_comes_from_catalog(self, h: Harness) -> None:

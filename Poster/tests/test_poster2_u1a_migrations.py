@@ -196,13 +196,13 @@ class PlaceCityMigrationTests(_Base):
         )
 
     def test_latest_version_is_twenty_five(self) -> None:
-        self.assertEqual(LATEST_VERSION, 31)
+        self.assertEqual(LATEST_VERSION, 32)
         self.assertEqual(self.migrate(), LATEST_VERSION)
         journal = self.journal()
         self.assertIn((21, "place_city"), journal)
         self.assertIn((22, "builtin_templates_v4"), journal)
         self.assertIn((24, "template_content_and_extras_without_sections"), journal)
-        self.assertEqual(journal[-1], (31, "curator_footer_catalogs"))
+        self.assertEqual(journal[-1], (32, "system_brick_hints"))
 
     def test_columns_are_added_nullable_and_rows_keep_null_city(self) -> None:
         self.migrate()

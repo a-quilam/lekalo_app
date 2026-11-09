@@ -55,6 +55,7 @@ from tests import ui_texts_expect as cat
 from tests.stage19a_helpers import make_engine
 from tests.stage23_helpers import OWNER_TG, TemplateDatabaseTestCase
 from user_store import get_or_create_user
+from utils.rich_content import load_catalog
 from utils.ui_texts import tr
 
 try:
@@ -149,7 +150,7 @@ class RichHelpAcceptanceTests(unittest.TestCase):
             blocks[0],
             {
                 "type": "heading",
-                "text": tr("help.rich.title"),
+                "text": load_catalog().help.title,
                 "size": 1,
             },
             "первый блок — heading с максимальным размером",
@@ -163,29 +164,40 @@ class RichHelpAcceptanceTests(unittest.TestCase):
         )
 
         details = [block for block in blocks if block["type"] == "details"]
-        self.assertEqual(len(details), 10, "в справке десять разделов")
+        self.assertEqual(len(details), 9, "§13: в справке девять разделов")
         for block in details:
             self.assertNotIn("is_open", block, "свёрнутый раздел без is_open")
             self.assertTrue(block.get("summary"))
             self.assertTrue(block.get("blocks"))
 
-        lists = [
+        # Утверждённый §13 не содержит списков; вложенные объекты проверяются
+        # на таблице подстановки и двух цитатах сравнения (§13.3, §13.7).
+        tables = [
             child
             for block in details
             for child in block["blocks"]
-            if child["type"] == "list"
+            if child["type"] == "table"
         ]
-        self.assertTrue(lists, "в разделах есть списки")
-        for block in lists:
-            self.assertTrue(block["items"])
-            for item in block["items"]:
-                self.assertEqual(
-                    list(item), ["blocks"], "items — объекты со своими blocks"
-                )
-                nested = item["blocks"]
-                self.assertTrue(nested)
-                self.assertEqual(nested[0]["type"], "paragraph")
-                self.assertIsInstance(nested[0]["text"], str)
+        self.assertEqual(len(tables), 1, "в справке одна таблица")
+        for block in tables:
+            self.assertTrue(block["cells"])
+            for row in block["cells"]:
+                for cell in row:
+                    self.assertIsInstance(cell, dict, "ячейка — объект")
+                    self.assertIn("align", cell)
+                    self.assertIn("valign", cell)
+
+        quotes = [
+            child
+            for block in details
+            for child in block["blocks"]
+            if child["type"] == "blockquote"
+        ]
+        self.assertEqual(len(quotes), 2, "в сравнении две отдельные цитаты")
+        for block in quotes:
+            nested = block["blocks"]
+            self.assertTrue(nested)
+            self.assertEqual(nested[0]["type"], "paragraph")
 
     @scenario_test
     async def test_rich_failure_fallback(self, h: Harness) -> None:

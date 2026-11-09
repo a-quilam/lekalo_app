@@ -110,6 +110,45 @@ PLAIN_SPEC: TemplateSpec = ("main", "Основное поле", "short_text", {
 EXTRA_SPEC: TemplateSpec = ("extra_x", "Доп. поле", "short_text", {})
 
 
+def _catalog_block_texts(block) -> list[str]:
+    """Все строки блока Rich-каталога (`utils.rich_content.Block`)."""
+    from utils.rich_content import (
+        BoldPart,
+        DetailsBlock,
+        LinkPart,
+        ListBlock,
+        ParagraphBlock,
+        QuoteBlock,
+        SlideshowBlock,
+        TableBlock,
+    )
+
+    def parts(items) -> list[str]:
+        values: list[str] = []
+        for part in items:
+            if isinstance(part, str):
+                values.append(part)
+            elif isinstance(part, (LinkPart, BoldPart)):
+                values.append(part.text)
+        return values
+
+    if isinstance(block, ParagraphBlock):
+        return parts(block.parts)
+    if isinstance(block, ListBlock):
+        return [text for item in block.items for text in parts(item)]
+    if isinstance(block, TableBlock):
+        return list(block.header) + [cell for row in block.rows for cell in row]
+    if isinstance(block, QuoteBlock):
+        return [block.text] + ([block.credit] if block.credit else [])
+    if isinstance(block, DetailsBlock):
+        return [block.summary] + [
+            text for child in block.blocks for text in _catalog_block_texts(child)
+        ]
+    if isinstance(block, SlideshowBlock):
+        return [slide.id for slide in block.slides]
+    return []
+
+
 # --- честная модель чата ----------------------------------------------------
 
 
@@ -1294,17 +1333,22 @@ class ConditionalEngineTests(unittest.TestCase):
         after_delete = self._preview_extended(h, template_id, empty_cost, control_id)
         self.assertIn("итого", after_delete, "удалённое правило всё ещё скрывает")
 
-        # Справка описывает три режима скрытия и условие расширенной версии.
-        import help_rich
+        # §17 финального задания 2026-11-08: инструкция по условным частям —
+        # только подсказка административного редактора (`templates.cond.hint`);
+        # в «Помощи» отдельного раздела/инструкции нет.
+        cat.assert_shows(self, h.screen_text(), "templates.cond.hint")
+        from utils.rich_content import load_catalog
 
-        help_text = " ".join(
-            paragraph + " " + " ".join(items)
-            for _key, paragraph, items in help_rich._SECTIONS
-        )
-        self.assertIn("всю строку", help_text)
-        self.assertIn("разделителем", help_text)
-        self.assertIn("свой фрагмент", help_text)
-        self.assertIn("расширенным текстом", help_text)
+        help_texts: list[str] = []
+        for section in load_catalog().help.sections:
+            help_texts.append(section.title)
+            for block in section.blocks:
+                help_texts.extend(_catalog_block_texts(block))
+        help_text = " ".join(help_texts)
+        self.assertNotIn("всю строку", help_text)
+        self.assertNotIn("разделителем", help_text)
+        self.assertNotIn("свой фрагмент", help_text)
+        self.assertNotIn("условн", help_text.lower())
 
 
 # ===========================================================================
