@@ -23,6 +23,7 @@ FakeBot и временную SQLite (`tests.integration_harness`): рабоча
 from __future__ import annotations
 
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 from tests import ui_texts_expect as cat
@@ -92,25 +93,44 @@ def _callbacks(h, prefix: str = "") -> list[str]:
 
 def _rich_plain_text(payload: dict) -> str:
     """
-    Весь текст Rich Message одним куском: заголовки, абзацы, списки.
+    Весь текст Rich Message одним куском: заголовки, абзацы, списки, таблицы.
 
     Схема Bot API 10.1: заголовок — `type: "heading"` с полем `text`,
-    элементы списка — объекты `{"blocks": [...]}`, а не строки.
+    элементы списка — объекты `{"blocks": [...]}`, а не строки. Абзац может
+    быть массивом Rich-частей (`{type: "bold"/"link", text: ...}`), таблица
+    (этап D2, §13.3) — набором ячеек с полем `text`.
     """
     parts: list[str] = []
 
+    def add_text(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, dict):
+            add_text(value.get("text"))
+        else:
+            for item in value:
+                add_text(item)
+
     def walk(block: dict) -> None:
         kind = block.get("type")
-        if kind == "heading":
-            parts.append(block.get("text", ""))
-        elif kind == "paragraph":
-            parts.append(block.get("text", ""))
+        if kind in {"heading", "paragraph"}:
+            add_text(block.get("text"))
         elif kind == "list":
             for item in block.get("items") or ():
-                for child in item.get("blocks") or ():
+                for child in (item or {}).get("blocks") or ():
                     walk(child)
+        elif kind == "table":
+            for row in block.get("cells") or ():
+                for cell in row or ():
+                    add_text((cell or {}).get("text"))
+        elif kind == "blockquote":
+            add_text(block.get("credit"))
+            for child in block.get("blocks") or ():
+                walk(child)
         elif kind == "details":
-            parts.append(block.get("summary", ""))
+            parts.append(str(block.get("summary") or ""))
             for child in block.get("blocks") or ():
                 walk(child)
 
@@ -191,15 +211,23 @@ class MainMenuEntryTests(unittest.TestCase):
 
     @scenario_test
     async def test_help_describes_single_entry(self, h):
-        """Poster 2.5: справка — Rich Message; единый вход описан в разделах."""
+        """
+        Poster 2.5 §46 + 2.6 §13: справка — Rich Message §13.
+
+        Новый утверждённый текст описывает единый вход «создайте анонс» без
+        подписей кнопок меню; старых разделов и пятикнопочной эпохи нет.
+        """
         await h.text("/start")
         await h.callback("help")
         record = h.bot.rich_records[0]
-        text = _rich_plain_text(record["rich_message"])
-        self.assertIn("📝 Создать анонс", text)
-        self.assertIn("Создать по личному шаблону", text)
+        payload = record["rich_message"]
+        text = _rich_plain_text(payload)
+        self.assertEqual(payload["blocks"][0]["text"], "Помощь")
+        self.assertIn("Создание анонса", text)
+        self.assertIn("Мои анонсы", text)
         self.assertNotIn("📍 Создать для площадки", text)
         self.assertNotIn("пять кнопок", text.lower())
+        self.assertNotIn("Создать по личному шаблону", text)
 
 
 # --- B. Экран выбора площадки -----------------------------------------------

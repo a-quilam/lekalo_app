@@ -26,6 +26,7 @@ Poster 2.0 S2, Poster 2.4.1 T3: главное меню из трёх строк
 from __future__ import annotations
 
 import unittest
+from typing import Any
 from unittest.mock import patch
 
 from sqlalchemy import delete, select
@@ -90,21 +91,42 @@ MENU_CALLBACKS = [
 
 def _rich_text(payload: dict) -> str:
     """
-    Плоский текст Rich Message: заголовки, абзацы, списки, summary.
+    Плоский текст Rich Message: заголовки, абзацы, списки, таблицы, summary.
 
     Схема Bot API 10.1: заголовок — `type: "heading"` с полем `text`,
-    элементы списка — объекты `{"blocks": [...]}`, а не строки.
+    элементы списка — объекты `{"blocks": [...]}`, а не строки. Абзац может
+    быть массивом Rich-частей (`{type: "bold"/"link", text: ...}`), таблица
+    (этап D2, §13.3) — набором ячеек с полем `text`.
     """
     parts: list[str] = []
+
+    def add_text(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, dict):
+            add_text(value.get("text"))
+        else:
+            for item in value:
+                add_text(item)
 
     def walk(block: dict) -> None:
         kind = block.get("type")
         if kind in {"heading", "paragraph"}:
-            parts.append(str(block.get("text") or ""))
+            add_text(block.get("text"))
         elif kind == "list":
             for item in block.get("items") or ():
                 for child in (item or {}).get("blocks") or ():
                     walk(child)
+        elif kind == "table":
+            for row in block.get("cells") or ():
+                for cell in row or ():
+                    add_text((cell or {}).get("text"))
+        elif kind == "blockquote":
+            add_text(block.get("credit"))
+            for child in block.get("blocks") or ():
+                walk(child)
         elif kind == "details":
             parts.append(str(block.get("summary") or ""))
             for child in block.get("blocks") or ():
@@ -320,16 +342,49 @@ class MainMenuTests(unittest.TestCase):
 
     @scenario_test
     async def test_help_screen_lists_new_entries(self, h):
-        """Poster 2.5 §46: справка — Rich Message, а не обычный экран."""
+        """
+        Poster 2.5 §46 + 2.6 §13/§19.8: справка — Rich Message с 9 разделами.
+
+        Тексты утверждены владельцем (config/rich_content.yaml, §13):
+        проверяются именно они, а не старые подписи кнопок меню.
+        """
         await h.text("/start")
         await h.callback("help")
         record = h.bot.rich_records[0]
-        text = _rich_text(record["rich_message"])
+        payload = record["rich_message"]
+        text = _rich_text(payload)
+
+        # Заголовок строго «Помощь» (не «Poster — помощь»).
+        first = payload["blocks"][0]
+        self.assertEqual(first["type"], "heading")
+        self.assertEqual(first["text"], "Помощь")
+
+        # Ровно девять свёрнутых разделов утверждённого каталога.
+        details = [block for block in payload["blocks"] if block["type"] == "details"]
+        self.assertEqual(len(details), 9, "§13: в справке девять разделов")
+
+        # Раздел 1 (§13.1), «Мои анонсы» (§13.6) и «Управление площадкой»
+        # (§13.8) — реальные фрагменты нового текста, а не подписи кнопок.
         self.assertIn("Создание анонса", text)
-        self.assertIn("Создать анонс", text)
-        self.assertIn("Создать по личному шаблону", text)
         self.assertIn("Мои анонсы", text)
-        self.assertIn("Управление", text)
+        self.assertIn("Управление площадкой", text)
+
+        # §13.3: настоящая Rich-таблица «В шаблоне» / «В анонсе».
+        tables = [
+            child
+            for block in details
+            for child in block.get("blocks") or ()
+            if child.get("type") == "table"
+        ]
+        self.assertEqual(len(tables), 1, "§13.3: ровно одна Rich-таблица")
+        header = tables[0]["cells"][0]
+        self.assertEqual(
+            [cell["text"] for cell in header],
+            ["В шаблоне", "В анонсе"],
+        )
+
+        # Утверждённый текст не упоминает подписей старых кнопок меню.
+        self.assertNotIn("Создать по личному шаблону", text)
 
 
 @unittest.skipIf(

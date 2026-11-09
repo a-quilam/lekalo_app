@@ -28,6 +28,7 @@ import tempfile
 import unittest
 import warnings
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import create_engine, text
@@ -100,25 +101,44 @@ class _ScreenBot:
 
 def _rich_text(payload: dict) -> str:
     """
-    Плоский текст Rich Message: заголовки, абзацы, списки, summary.
+    Плоский текст Rich Message: заголовки, абзацы, списки, таблицы, summary.
 
     Схема Bot API 10.1: заголовок — `type: "heading"` с полем `text`,
-    элементы списка — объекты `{"blocks": [...]}`, а не строки.
+    элементы списка — объекты `{"blocks": [...]}`, а не строки. Абзац может
+    быть массивом Rich-частей (`{type: "bold"/"link", text: ...}`), таблица
+    (этап D2, §13.3) — набором ячеек с полем `text`.
     """
     parts: list[str] = []
 
+    def add_text(value: Any) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            parts.append(value)
+        elif isinstance(value, dict):
+            add_text(value.get("text"))
+        else:
+            for item in value:
+                add_text(item)
+
     def walk(block: dict) -> None:
         kind = block.get("type")
-        if kind == "heading":
-            parts.append(block.get("text", ""))
-        elif kind == "paragraph":
-            parts.append(block.get("text", ""))
+        if kind in {"heading", "paragraph"}:
+            add_text(block.get("text"))
         elif kind == "list":
             for item in block.get("items") or ():
-                for child in item.get("blocks") or ():
+                for child in (item or {}).get("blocks") or ():
                     walk(child)
+        elif kind == "table":
+            for row in block.get("cells") or ():
+                for cell in row or ():
+                    add_text((cell or {}).get("text"))
+        elif kind == "blockquote":
+            add_text(block.get("credit"))
+            for child in block.get("blocks") or ():
+                walk(child)
         elif kind == "details":
-            parts.append(block.get("summary", ""))
+            parts.append(str(block.get("summary") or ""))
             for child in block.get("blocks") or ():
                 walk(child)
 
@@ -324,10 +344,12 @@ class MainMenuKeyboardTests(unittest.TestCase):
 
     def test_help_lists_commands(self):
         """
-        Poster 2.5 §46: справка — настоящий Rich Message, не экран.
+        Poster 2.5 §46 + 2.6 §13: справка — настоящий Rich Message, не экран.
 
-        Проверяем метод Bot API и то, что в разделе команд перечислены
-        реально существующие команды Poster.
+        Проверяем метод Bot API и утверждённый каталог разделов
+        (`config/rich_content.yaml`, §13): заголовок «Помощь», девять
+        свёрнутых разделов и Rich-таблицу §13.3. Списка команд и подписей
+        кнопок в новом тексте нет — это и закрепляется.
         """
         bot = _ScreenBot()
         session_factory, engine = make_session_factory()
@@ -342,14 +364,16 @@ class MainMenuKeyboardTests(unittest.TestCase):
         self.assertEqual([call[0] for call in bot.api_calls], ["sendRichMessage"])
         payload = bot.api_calls[0][1]["rich_message"]
         text = _rich_text(payload)
-        for command in ("/start", "/new_wizard", "/drafts", "/cancel", "/help"):
-            self.assertIn(command, text)
-        # Poster 2.4.1 T3: справка описывает кнопки нового меню и то, что
-        # готовый анонс приходит в личный чат.
-        self.assertIn("Создать анонс", text)
-        self.assertIn("Создать по личному шаблону", text)
+        # §13: заголовок и ключевые разделы утверждённого текста.
+        self.assertEqual(payload["blocks"][0]["text"], "Помощь")
+        self.assertIn("Создание анонса", text)
         self.assertIn("Мои анонсы", text)
-        self.assertIn("Управление", text)
+        self.assertIn("Управление площадкой", text)
+        self.assertIn("В шаблоне", text)
+        self.assertIn("В анонсе", text)
+        # Утверждённый текст не перечисляет старые команды и кнопки.
+        for legacy in ("/new_wizard", "/drafts", "Создать по личному шаблону"):
+            self.assertNotIn(legacy, text)
         # Подмены Rich Message обычным sendMessage нет (§54).
         self.assertEqual(bot.calls, [])
 

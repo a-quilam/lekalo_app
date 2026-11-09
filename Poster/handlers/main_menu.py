@@ -605,6 +605,12 @@ async def _restore_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     достаточно: `_resume_current` сам выберет безопасный экран этапа.
 
     Возвращает False, если черновика нет — вызывающий уходит в меню.
+
+    После отрисовки состояние диалога регистрируется явно
+    (`remember_conversation_state`): справка открывается из fallback-команды
+    `/help` и завершает ConversationHandler, поэтому одной перерисовки экрана
+    мало — без регистрации следующий `aw_*` ушёл бы в
+    `outside_wizard_callback` с ответом «кнопка больше не работает».
     """
     from handlers import announcement_wizard as wizard
 
@@ -614,6 +620,7 @@ async def _restore_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if draft_id is None and not ui_draft:
         return False
 
+    state: int
     if draft_id is not None:
         payload = screen.load_payload(ctx.user(update).id) or {}
         snapshot = payload.get(wizard.RESUME_PAYLOAD_KEY)
@@ -633,7 +640,7 @@ async def _restore_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 # приём фото и снимок resume снялся бы.
                 from handlers import wizard_photos
 
-                await wizard_photos.render_photo_step(
+                state = await wizard_photos.render_photo_step(
                     update,
                     context,
                     details,
@@ -641,6 +648,7 @@ async def _restore_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                         update, details
                     ),
                 )
+                wizard.remember_conversation_state(update, context, state)
                 return True
         else:
             # Снимок устарел (этап сменился): безопасный экран по черновику.
@@ -649,7 +657,8 @@ async def _restore_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             restored_ui["revision"] = None
             ctx.data(context)["announcement_ui"] = restored_ui
 
-    await wizard._resume_current(update, context)  # noqa: SLF001
+    state = await wizard._resume_current(update, context)  # noqa: SLF001
+    wizard.remember_conversation_state(update, context, state)
     return True
 
 

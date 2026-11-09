@@ -34,7 +34,7 @@ from tests import ui_texts_expect as cat
 from utils.ui_texts import tr
 
 try:
-    from handlers.announcement_wizard import RESUME_PAYLOAD_KEY
+    from handlers.announcement_wizard import CONVERSATION_NAME, RESUME_PAYLOAD_KEY
     from models import AnnouncementValue
     from place_state import load_place_session
     from tests.integration_harness import (
@@ -305,6 +305,51 @@ class HelpBackToConstructorTests(unittest.TestCase):
         # Один callback — один answer: вход конструктора сам не отвечает.
         self.assertEqual(_answers(h) - answers_before, 2, "ответы на 2 callback")
         self.assertEqual(len(_live_keyboards(h)), 1, "две конкурирующие клавиатуры")
+
+    @scenario_test
+    async def test_back_keeps_wizard_callbacks_alive(self, h: Harness) -> None:
+        """П.2: возврат из справки оживляет кнопки `aw_*`, а не только экран.
+
+        `/help` завершает ConversationHandler (fallback-команда), поэтому
+        перерисовки вопроса мало: без явной регистрации состояния диалога
+        следующий `aw_*` уходил в `outside_wizard_callback` и отвечал
+        «кнопка больше не работает». Здесь проверяется рабочий переход.
+        """
+        await h.text("/start")
+        place_id, _alias_id = _seed_place(h)
+        await h.callback("pick_place")
+        await h.callback(f"pl_pick:{place_id}")
+        await h.text("Концерт")
+        self.assertRegex(h.screen_text(), cat.question_re(2), "не вопрос даты")
+
+        await h.callback("help")
+        await h.callback(BACK_DATA)
+
+        self.assertRegex(h.screen_text(), cat.question_re(2), "не вернулись к вопросу")
+        skip = [
+            data
+            for _label, data in h.screen_buttons()
+            if data is not None and data.startswith("aw_qskip")
+        ]
+        self.assertTrue(skip, "на восстановленном вопросе нет «Пропустить»")
+        answers_before = _answers(h)
+
+        await h.callback(skip[0])
+
+        self.assertRegex(
+            h.screen_text(),
+            cat.question_re(3),
+            "кнопка конструктора после справки не работает",
+        )
+        self.assertNotIn(
+            tr("errors.expired.wizard"),
+            h.answer_texts()[answers_before:],
+            "кнопка ответила «больше не работает»",
+        )
+        self.assertIsNotNone(
+            h.dialog_state(name=CONVERSATION_NAME),
+            "диалог конструктора не открыт заново",
+        )
 
     @scenario_test
     async def test_back_returns_to_photo_step(self, h: Harness) -> None:
