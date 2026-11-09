@@ -102,6 +102,9 @@ from announcement_store import (
     start_announcement_wizard,
 )
 from announcement_wizard import (
+    BRICK_CODE_CURATOR,
+    BRICK_CODE_FOOTER,
+    CATALOG_BRICK_CODES,
     WizardStage,
     answer_payload_to_raw,
     extra_candidate_brick_ids,
@@ -120,6 +123,13 @@ from brick_types import (
     BrickValueResult,
     BrickValueStatus,
     brick_title_display,
+)
+from catalogs_store import (
+    CatalogError,
+    get_selectable_curator,
+    get_selectable_footer,
+    selectable_curators,
+    selectable_footers,
 )
 from database import SessionLocal
 from handlers import (
@@ -154,9 +164,10 @@ from utils import (
     user_events,
 )
 from utils import tg_context as ctx
+from utils.inline_buttons import danger_button, disabled_button
 from utils.parsers import app_today
 from utils.place_labels import place_title
-from utils.tg_html import capture_message_text, escape_html
+from utils.tg_html import FormattedText, capture_message_text, escape_html
 from utils.ui_texts import join_blocks, tr, tr_plain, tr_safe
 
 # Poster 2.0 S3 п.1: вид вопроса/календаря вынесен в `wizard_questions`,
@@ -360,6 +371,13 @@ def _clear_active(ui: dict[str, Any]) -> None:
     # на любом экране без ввода, иначе следующий текст ушёл бы не туда.
     ui.pop("field_input", None)
     ui.pop("field_input_view", None)
+    # Этап C: единственная попытка автоподстановки подвала привязана к
+    # экрану вопроса; на любом другом экране маркер не нужен.
+    ui.pop("catalog_autofill", None)
+    # Этап C: страницы списков справочников живут в `ui` и относятся к
+    # текущему экрану выбора. На другом экране без активного выбора они
+    # только вводят в заблуждение — сбрасываем вместе с остальным.
+    ui.pop("catalog_pages", None)
 
 
 # —— Poster 2.4 P2b: навигационный стек конструктора (требование V) ————————
@@ -2553,8 +2571,18 @@ def _delivered_text_question_allowed(details, field: AnnouncementFieldState) -> 
 def _text_fields(
     fields: tuple[AnnouncementFieldState, ...],
 ) -> list[AnnouncementFieldState]:
-    """Поля редактора доставленного анонса: без переданных площадкой."""
-    return [field for field in _askable_fields(fields) if _is_text_field(field)]
+    """
+    Поля редактора доставленного анонса: без переданных площадкой.
+
+    `[подвал]` тоже исключён: подвал выбирается ТОЛЬКО из справочника
+    (§10), ручного ввода его текста в мастере и редакторе анонса нет.
+    Редактируется подвал готового анонса в «🧱 Дополнительные поля».
+    """
+    return [
+        field
+        for field in _askable_fields(fields)
+        if _is_text_field(field) and field.code != BRICK_CODE_FOOTER
+    ]
 
 
 def _first_missing_index(fields: list[AnnouncementFieldState]) -> int:
@@ -2595,6 +2623,452 @@ def _question_humor_line(
     return ui_humor.pick_variant(key, screen_kind=screen_kind)
 
 
+# --- Этап C (§9–10.3): справочники в конструкторе -------------------------
+
+# Префиксы callback'ов выбора значений справочников. Все они несут
+# draft_id/revision и brick_id: подделанный/устаревший callback не меняет
+# значение, а права перепроверяются слоем справочника на каждом нажатии.
+CAT_CURATOR_PICK = "aw_curpick"  # aw_curpick:<draft>:<rev>:<brick>:<entry>
+CAT_CURATOR_PAGE = "aw_curpage"  # aw_curpage:<draft>:<rev>:<brick>:<page>
+CAT_FOOTER_PICK = "aw_footpick"  # aw_footpick:<draft>:<rev>:<brick>:<entry>
+CAT_FOOTER_PAGE = "aw_footpage"  # aw_footpage:<draft>:<rev>:<brick>:<page>
+CAT_FOOTER_CHOOSE = "aw_footch"  # aw_footch:<draft>:<rev>:<brick>
+CAT_FOOTER_DELETE = "aw_footdel"  # aw_footdel:<draft>:<rev>:<brick>
+CAT_FOOTER_CANCEL = "aw_footcancel"  # aw_footcancel:<draft>:<rev>:<brick>
+CAT_PAGE_SIZE = pagination.PAGE_SIZE
+
+
+def _catalog_scope(details) -> tuple[int | None, bool]:
+    """
+    Область справочника анонса: `(place_id, is_place)`.
+
+    Площадка — у анонса из меню площадки (`place_id` задан), личная — у
+    анонса по личному шаблону. Это разные справочники с разными правами
+    и разными подсказками пустого списка (§9–10).
+    """
+    place_id = details.place_id
+    if isinstance(place_id, int) and place_id > 0:
+        return place_id, True
+    return None, False
+
+
+def _is_catalog_field(field: AnnouncementFieldState) -> bool:
+    return field.code in CATALOG_BRICK_CODES
+
+
+def _footer_selected_footer(details, brick_id: int):
+    """
+    Текущий выбранный подвал анонса или None.
+
+    Значение принадлежит конкретному анонсу: чтение идёт по его строке
+    значения, а не по справочнику; архивная/удалённая запись справочника
+    уже созданный анонс не переписывает (§10.3).
+    """
+    value = details.value_for(brick_id)
+    if value is None or value.status is not BrickValueStatus.VALID:
+        return None
+    payload = value.payload or {}
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    return {
+        "text": text,
+        "html": payload.get("html") if isinstance(payload.get("html"), str) else None,
+    }
+
+
+def _footer_handled(details, brick_id: int) -> bool:
+    """
+    Обрабатывалось ли поле подвала у этого анонса (для §10.3).
+
+    Признак — ЛЮБАЯ строка значения: valid (выбран) или empty_optional
+    (осознанно удалён/пропущен). Наличие строки запрещает повторную
+    автоподстановку единственного подвала после перерисовки/рестарта, а
+    удаление пишет `empty_optional`-«надгробие» вместо стирания строки.
+    """
+    return details.value_for(brick_id) is not None
+
+
+def _catalog_value(text: str, html: str | None) -> FormattedText:
+    """Значение справочника для записи в анонс: plain-текст + безопасный HTML."""
+    return FormattedText(str(text), str(html or ""))
+
+
+def _footer_entry_value(footer) -> FormattedText:
+    return _catalog_value(footer.text_plain, footer.text_html)
+
+
+def _curator_entry_value(curator) -> FormattedText:
+    return _catalog_value(curator.value_plain, curator.value_html)
+
+
+# Источник активного экрана «подвал в доп. полях». Ввод текста на нём
+# запрещён (§10: подвал выбирается только из справочника), поэтому это не
+# `extra`/`question` и общий обработчик текста его не принимает.
+CATALOG_EXTRA_SOURCE = "catalog_extra"
+
+
+def _catalog_curators(details, telegram_user_id: int) -> tuple:
+    """Активные кураторы области анонса (ошибка чтения = пустой список)."""
+    place_id, _is_place = _catalog_scope(details)
+    try:
+        with SessionLocal() as session:
+            return selectable_curators(
+                session,
+                actor_telegram_user_id=telegram_user_id,
+                place_id=place_id,
+            )
+    except CatalogError as exc:
+        logger.info("Кураторы для анонса #%s не прочитаны: %s", details.draft_id, exc)
+        return ()
+
+
+def _catalog_footers(details, telegram_user_id: int) -> tuple:
+    """Активные подвалы области анонса (ошибка чтения = пустой список)."""
+    place_id, _is_place = _catalog_scope(details)
+    try:
+        with SessionLocal() as session:
+            return selectable_footers(
+                session,
+                actor_telegram_user_id=telegram_user_id,
+                place_id=place_id,
+            )
+    except CatalogError as exc:
+        logger.info("Подвалы для анонса #%s не прочитаны: %s", details.draft_id, exc)
+        return ()
+
+
+def _catalog_pages(ui: dict[str, Any]) -> dict[int, int]:
+    pages = ui.get("catalog_pages")
+    if not isinstance(pages, dict):
+        pages = {}
+        ui["catalog_pages"] = pages
+    return pages
+
+
+def _catalog_page(ui: dict[str, Any], brick_id: int) -> int:
+    value = _catalog_pages(ui).get(brick_id, 0)
+    return max(0, int(value or 0))
+
+
+def _set_catalog_page(ui: dict[str, Any], brick_id: int, page: int) -> None:
+    _catalog_pages(ui)[brick_id] = max(0, int(page or 0))
+
+
+def _empty_catalog_row(code: str, is_place: bool) -> list[InlineKeyboardButton]:
+    """
+    Настоящий неактивный информационный ряд пустого справочника (§9–11).
+
+    Две кнопки в ОДНОЙ строке, без `callback_data`: нажатие не порождает
+    callback, ничего не отправляет администраторам и не меняет состояние.
+    Текст личного шаблона не упоминает администратора площадки.
+    """
+    if code == BRICK_CODE_CURATOR:
+        first = (
+            "wizard.catalog.no_curators_place"
+            if is_place
+            else "wizard.catalog.no_curators_personal"
+        )
+        second = (
+            "wizard.catalog.no_curators_place_hint"
+            if is_place
+            else "wizard.catalog.no_curators_personal_hint"
+        )
+    else:
+        first = (
+            "wizard.catalog.no_footers_place"
+            if is_place
+            else "wizard.catalog.no_footers_personal"
+        )
+        second = (
+            "wizard.catalog.no_footers_place_hint"
+            if is_place
+            else "wizard.catalog.no_footers_personal_hint"
+        )
+    return [disabled_button(tr(first)), disabled_button(tr(second))]
+
+
+def _catalog_entry_rows(
+    details,
+    brick_id: int,
+    entries,
+    *,
+    pick_prefix: str,
+    page_prefix: str,
+    page: int,
+    label_of,
+    skip_entry=None,
+) -> tuple[list[list[InlineKeyboardButton]], int]:
+    """
+    Кнопки выбора записи справочника с пагинацией.
+
+    `skip_entry` — запись, которую не предлагаем повторно (текущий выбор):
+    замена значения, а не дубль. Возвращает строки и применённую страницу —
+    вызывающий слой пишет её в текст экрана.
+    """
+    visible = list(entries)
+    if skip_entry is not None:
+        visible = [entry for entry in visible if entry.id != skip_entry.id]
+    page_slice = pagination.page_items(visible, page, CAT_PAGE_SIZE)
+    rows: list[list[InlineKeyboardButton]] = []
+    for entry in page_slice.items:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    _short(label_of(entry) or "—", 60),
+                    callback_data=(
+                        f"{pick_prefix}:{details.draft_id}:"
+                        f"{details.revision}:{brick_id}:{entry.id}"
+                    ),
+                )
+            ]
+        )
+    nav = pagination.nav_keyboard(
+        page_slice.page,
+        page_slice.total_pages,
+        f"{page_prefix}:{details.draft_id}:{details.revision}:{brick_id}",
+        page_size=CAT_PAGE_SIZE,
+        as_offset=False,
+    )
+    if nav:
+        rows.append(nav)
+    return rows, page_slice.page
+
+
+def _curator_label(curator) -> str:
+    return curator.label()
+
+
+def _footer_label(footer) -> str:
+    return " ".join(str(footer.name).split())
+
+
+def _footer_autofill_value(details, brick_id: int, telegram_user_id: int):
+    """
+    Единственный подвал для одноразовой автоподстановки (§10.1, §10.3).
+
+    Возвращает значение только если поле ещё НЕ обрабатывалось (нет строки
+    значения) и в справочнике ровно один активный подвал. Уже сохранённое,
+    удалённое (`empty_optional`) или заменённое значение повторно не
+    подставляется: изменение справочника не переписывает анонс.
+
+    Попытка подстановки помечается в `ui` (`catalog_autofill`): если запись
+    значения сорвалась, вопрос перерисуется с ошибкой, но второй раз
+    автоподстановку не запустит — иначе ошибка сохранения дала бы цикл.
+    """
+    if _footer_handled(details, brick_id):
+        return None
+    entries = _catalog_footers(details, telegram_user_id)
+    if len(entries) != 1:
+        return None
+    return _footer_entry_value(entries[0])
+
+
+def _catalog_question_rows(ui: dict[str, Any], details, field, entries) -> list:
+    """
+    Кнопки экрана вопроса справочника (§9, §10.1).
+
+    Куратор: кнопки выбора и ручной ввод рядом с ними. Подвал: только выбор
+    из справочника. Пустой справочник — настоящий неактивный информационный
+    ряд; вопрос остаётся, чтобы «Назад»/«Пропустить» были доступны.
+    """
+    _place_id, is_place = _catalog_scope(details)
+    if not entries:
+        return [_empty_catalog_row(field.code, is_place)]
+    if field.code == BRICK_CODE_CURATOR:
+        rows, page = _catalog_entry_rows(
+            details,
+            field.brick_id,
+            entries,
+            pick_prefix=CAT_CURATOR_PICK,
+            page_prefix=CAT_CURATOR_PAGE,
+            page=_catalog_page(ui, field.brick_id),
+            label_of=_curator_label,
+        )
+        _set_catalog_page(ui, field.brick_id, page)
+        return rows
+    rows, page = _catalog_entry_rows(
+        details,
+        field.brick_id,
+        entries,
+        pick_prefix=CAT_FOOTER_PICK,
+        page_prefix=CAT_FOOTER_PAGE,
+        page=_catalog_page(ui, field.brick_id),
+        label_of=_footer_label,
+    )
+    _set_catalog_page(ui, field.brick_id, page)
+    return rows
+
+
+async def _footer_autofill(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    fields: list[AnnouncementFieldState],
+    index: int,
+) -> int | None:
+    """
+    Одноразовая автоподстановка единственного подвала (§10.1, §10.3).
+
+    Срабатывает РОВНО при первом показе поля: если строки значения ещё нет
+    и в справочнике один активный подвал. После неё строка значения уже
+    есть (в том числе `empty_optional`-«надгробие» после удаления), поэтому
+    повторное открытие, перерисовка и рестарт значение не возвращают.
+    """
+    field = fields[index]
+    if field.code != BRICK_CODE_FOOTER:
+        return None
+    ui = _ui(context)
+    if ui.get("catalog_autofill") == field.brick_id:
+        # Запись значения уже сорвалась на этом экране: повторять нельзя.
+        return None
+    value = _footer_autofill_value(details, field.brick_id, _user_id(update))
+    if value is None:
+        return None
+    ui["catalog_autofill"] = field.brick_id
+    return await _save_question_value(
+        update, context, details, field, value, index=index
+    )
+
+
+async def _save_catalog_extra_value(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    brick_id: int,
+    value: object,
+    *,
+    notice: str | None = None,
+) -> int:
+    """
+    Сохраняет значение справочника из меню «Дополнительные поля» (§10.2).
+
+    Строка значения принадлежит конкретному анонсу; справочник не меняется.
+    Пустое значение пишет `empty_optional`-«надгробие»: удалённый подвал не
+    вернётся автоподстановкой.
+    """
+    try:
+        with SessionLocal() as session:
+            updated = save_announcement_value(
+                session,
+                actor_telegram_user_id=_user_id(update),
+                draft_id=details.draft_id,
+                brick_id=brick_id,
+                value=value,
+                expected_revision=details.revision,
+                today=app_today(),
+            )
+    except AnnouncementError as exc:
+        await _answer(update, str(exc), alert=True)
+        return await _resume_current(update, context, notice=str(exc))
+    ui = _ui(context)
+    _set_details(ui, updated)
+    _clear_active(ui)
+    if updated.publication_sent:
+        applied = await _apply_immediately(update, context, updated)
+        updated = _reload_details(update, updated)
+        if applied is None:
+            return await _render_extras(
+                update, context, updated, notice=APPLY_FAILED_TEXT
+            )
+    return await _render_extras(update, context, updated, notice=notice)
+
+
+def _footer_extras_title(notice: str | None, current_name: str) -> str:
+    """
+    Заголовок экрана выбора подвала в доп. полях (§10.2).
+
+    Без выбранного значения — приглашение выбрать подвал; с выбранным —
+    «Выберите другой подвал или удалите текущий» (§10.2: вопрос об удалении
+    задаётся только при единственном активном подвале).
+    """
+    if current_name:
+        return join_blocks(
+            [
+                tr("wizard.catalog.footer_choose_other"),
+                tr("wizard.catalog.footer_selected", name=_h(current_name)),
+                _h(notice) if notice else "",
+            ]
+        )
+    return join_blocks(
+        [tr("wizard.catalog.footer_choose"), _h(notice) if notice else ""]
+    )
+
+
+async def _render_footer_choose(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    brick_id: int,
+    *,
+    page: int | None = None,
+    notice: str | None = None,
+    instance_id: int | None = None,
+    delete_ask: bool = False,
+) -> int:
+    """
+    Экран выбора подвала в «Дополнительных полях» (§10.2).
+
+    Несколько активных: список с пагинацией; уже выбранный подвал в списке
+    не повторяется — экран предлагает замену. «Удалить» убирает значение
+    ТОЛЬКО из анонса, «Отмена» возвращает к списку без изменений.
+
+    `delete_ask` — подтверждение удаления единственного выбранного подвала
+    («Удалить подвал?» с красными «Отмена»/«Удалить»). При нескольких
+    активных подвалах вопрос об удалении НЕ задаётся: автор может хотеть
+    заменить значение, поэтому показывается заголовок «Выберите другой
+    подвал или удалите текущий».
+    """
+    ui = _ui(context)
+    _set_details(ui, details)
+    ui["active_brick_id"] = brick_id
+    ui["active_source"] = CATALOG_EXTRA_SOURCE
+    editor_instance = _editor_instance_id(ui, details, instance_id)
+    _nav_enter(ui, NAV_EXTRAS, instance_id=editor_instance)
+    entries = _catalog_footers(details, _user_id(update))
+    selected = _footer_selected_footer(details, brick_id)
+    current_name = ""
+    current_entry = None
+    if selected is not None:
+        for entry in entries:
+            if entry.text_plain == str(selected.get("text") or ""):
+                current_entry = entry
+                current_name = _footer_label(entry)
+                break
+    rows, used_page = _catalog_entry_rows(
+        details,
+        brick_id,
+        entries,
+        pick_prefix=CAT_FOOTER_PICK,
+        page_prefix=CAT_FOOTER_PAGE,
+        page=_catalog_page(ui, brick_id) if page is None else page,
+        label_of=_footer_label,
+        skip_entry=current_entry,
+    )
+    _set_catalog_page(ui, brick_id, used_page)
+    delete_button = danger_button(
+        tr("buttons.wizard.catalog_delete"),
+        f"{CAT_FOOTER_DELETE}:{details.draft_id}:{details.revision}:{brick_id}",
+    )
+    cancel_button = danger_button(
+        tr("buttons.wizard.catalog_cancel"),
+        f"{CAT_FOOTER_CANCEL}:{details.draft_id}:{details.revision}:{brick_id}",
+    )
+    if delete_ask:
+        text = join_blocks(
+            [tr("wizard.catalog.footer_delete_confirm"), _h(current_name)]
+        )
+        rows = [[cancel_button, delete_button]]
+        await _render(update, context, text, InlineKeyboardMarkup(rows))
+        return AW_EXTRAS
+    if selected is not None:
+        rows.append([delete_button])
+    rows.append([cancel_button])
+    text = _footer_extras_title(notice, current_name)
+    await _render(update, context, text, InlineKeyboardMarkup(rows))
+    return AW_EXTRAS
+
+
 async def _render_question(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -2622,6 +3096,13 @@ async def _render_question(
         index=index,
         brick_id=field.brick_id,
     )
+    # §10.1/§10.3: единственный подвал подставляется ровно один раз — при
+    # первом показе поля. После записи значения вопрос сразу пропускается.
+    if field.code != BRICK_CODE_FOOTER:
+        ui.pop("catalog_autofill", None)
+    autofilled = await _footer_autofill(update, context, details, fields, index)
+    if autofilled is not None:
+        return autofilled
     # Poster 2.0 S3 п.2: сначала настоящий анонс сверху, затем служебный
     # экран. Порядок в чате фиксирован хронологией сообщений, поэтому
     # верхний блок синхронизируется ДО отрисовки нижнего вопроса.
@@ -2631,7 +3112,25 @@ async def _render_question(
     )
     rows: list[list[InlineKeyboardButton]] = []
 
-    if field.value_type == BRICK_TYPE_CHOICE:
+    if _is_catalog_field(field):
+        # Этап C §9–10.1: справочные кирпичики выбираются из справочника,
+        # ручной ввод текста остаётся только у куратора.
+        entries = (
+            _catalog_curators(details, _user_id(update))
+            if field.code == BRICK_CODE_CURATOR
+            else _catalog_footers(details, _user_id(update))
+        )
+        rows.extend(_catalog_question_rows(ui, details, field, entries))
+        if field.code == BRICK_CODE_CURATOR:
+            # §9: ручной ввод контакта доступен всегда — и при непустом
+            # списке, и при пустом.
+            hint = (
+                "wizard.catalog.curator_choose_other"
+                if field.status == FIELD_STATUS_VALID
+                else "wizard.catalog.curator_choose"
+            )
+            text = join_blocks([text, tr(hint)])
+    elif field.value_type == BRICK_TYPE_CHOICE:
         options = _choice_options(field)
         selected = set(_selected_choices(field))
         for option_index, option in enumerate(options):
@@ -4522,18 +5021,30 @@ def _extras_entries(details, telegram_user_id: int):
     order.extend(
         extra.brick_id for extra in details.extras if extra.brick_id not in candidates
     )
+    # §10.2: при отсутствии активных подвалов кнопку `[подвал]` в списке
+    # дополнительных полей не показываем вовсе и не открываем экран пустого
+    # справочника. Само значение анонса при этом не меняется.
+    footers_available: bool | None = None
     entries: list[dict[str, Any]] = []
     for brick_id in order:
         definition = payload.definitions_by_id.get(brick_id)
         if definition is None:
             continue
         extra = chosen.get(brick_id)
+        if definition.code == BRICK_CODE_FOOTER:
+            if footers_available is None:
+                footers_available = bool(_catalog_footers(details, telegram_user_id))
+            if not footers_available:
+                continue
         entries.append(
             {
                 "brick_id": brick_id,
                 "extra_id": extra.extra_id if extra is not None else None,
                 "title": brick_title_display(definition.title, definition.code),
                 "field": _extra_field_state(details, definition),
+                "catalog": (
+                    definition.code if definition.code in CATALOG_BRICK_CODES else None
+                ),
             }
         )
     return entries, bool(candidates)
@@ -4646,8 +5157,13 @@ async def _render_extras(
                     60,
                 ),
                 callback_data=(
-                    f"aw_exedit:{details.draft_id}:"
+                    f"{CAT_FOOTER_CHOOSE}:{details.draft_id}:"
                     f"{details.revision}:{entry['brick_id']}"
+                    if entry["catalog"] == BRICK_CODE_FOOTER
+                    else (
+                        f"aw_exedit:{details.draft_id}:"
+                        f"{details.revision}:{entry['brick_id']}"
+                    )
                 ),
             ),
             (
@@ -4693,6 +5209,226 @@ async def _render_extras(
     text = f"{notice}\n\n{screen_text}" if notice else screen_text
     await _render(update, context, text, InlineKeyboardMarkup(rows))
     return AW_EXTRAS
+
+
+def _select_catalog_entry(details, code: str, entry_id: int, telegram_user_id: int):
+    """
+    Перечитывает запись справочника для подстановки в анонс.
+
+    Права и активность проверяются заново на КАЖДОМ нажатии: устаревшая
+    кнопка архивированной/чужой записи получает отказ и значение не меняет.
+    """
+    place_id, _is_place = _catalog_scope(details)
+    with SessionLocal() as session:
+        if code == BRICK_CODE_CURATOR:
+            return get_selectable_curator(
+                session,
+                actor_telegram_user_id=telegram_user_id,
+                place_id=place_id,
+                entry_id=entry_id,
+            )
+        return get_selectable_footer(
+            session,
+            actor_telegram_user_id=telegram_user_id,
+            place_id=place_id,
+            entry_id=entry_id,
+        )
+
+
+async def _catalog_pick(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    draft_id: int,
+    revision: int,
+    brick_id: int,
+    entry_id: int,
+    *,
+    code: str,
+) -> int:
+    """
+    Выбор записи справочника — общий путь вопроса и доп. полей.
+
+    Значение принадлежит конкретному анонсу: справочник только читается.
+    """
+    guarded = _guard_details(update, context, draft_id, revision)
+    if guarded is None:
+        return await _stale(update, context)
+    ui, details = guarded
+    if ui.get("active_brick_id") != brick_id:
+        return await _stale(update, context)
+    source = ui.get("active_source")
+    if source not in {"question", CATALOG_EXTRA_SOURCE}:
+        return await _stale(update, context)
+    field = _find_catalog_field(details, brick_id, code, _user_id(update))
+    if field is None:
+        return await _stale(update, context)
+    try:
+        entry = _select_catalog_entry(details, code, entry_id, _user_id(update))
+    except CatalogError as exc:
+        return await _stale(update, context, str(exc))
+    value = (
+        _curator_entry_value(entry)
+        if code == BRICK_CODE_CURATOR
+        else _footer_entry_value(entry)
+    )
+    if source == "question":
+        fields = await _question_fields_for(update, context, details)
+        found = _find_field(fields, brick_id)
+        if found is None:
+            return await _stale(update, context)
+        index, _field = found
+        await _answer(
+            update,
+            (
+                tr("wizard.catalog.curator_selected")
+                if code == BRICK_CODE_CURATOR
+                else None
+            ),
+        )
+        return await _save_question_value(
+            update, context, details, field, value, index=index
+        )
+    await _answer(update)
+    notice = (
+        tr("wizard.catalog.footer_selected", name=_footer_label(entry))
+        if code == BRICK_CODE_FOOTER
+        else None
+    )
+    return await _save_catalog_extra_value(
+        update, context, details, brick_id, value, notice=notice
+    )
+
+
+async def _catalog_page_callback(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    draft_id: int,
+    revision: int,
+    brick_id: int,
+    page: int,
+    *,
+    code: str,
+) -> int:
+    """Перелистывание списка выбора справочника (§9, §10.1, §10.2)."""
+    guarded = _guard_details(update, context, draft_id, revision)
+    if guarded is None:
+        return await _stale(update, context)
+    ui, details = guarded
+    if ui.get("active_brick_id") != brick_id:
+        return await _stale(update, context)
+    source = ui.get("active_source")
+    _set_catalog_page(ui, brick_id, page)
+    await _answer(update)
+    if source == "question":
+        fields = await _question_fields_for(update, context, details)
+        found = _find_field(fields, brick_id)
+        if found is None:
+            return await _stale(update, context)
+        return await _render_question(update, context, details, fields, found[0])
+    if source == CATALOG_EXTRA_SOURCE:
+        return await _render_footer_choose(
+            update, context, details, brick_id, page=page
+        )
+    return await _stale(update, context)
+
+
+async def _footer_extras_open(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    draft_id: int,
+    revision: int,
+    brick_id: int,
+) -> int:
+    """
+    Нажатие `[подвал]` в «Дополнительных полях» — пять сценариев §10.2.
+
+    Ровно один активный подвал и значение не выбрано: немедленная вставка с
+    возвратом в список (без экрана выбора из одного варианта и без
+    подтверждения). Один активный и выбран: «Удалить подвал?». Несколько и
+    не выбран: список. Несколько и выбран: список замены без вопроса об
+    удалении.
+    """
+    guarded = _guard_details(update, context, draft_id, revision)
+    if guarded is None:
+        return await _stale(update, context)
+    ui, details = guarded
+    entries = _catalog_footers(details, _user_id(update))
+    if not entries:
+        # §10.2: при отсутствии активных подвалов экран не открывается.
+        await _answer(update)
+        return await _render_extras(update, context, details)
+    selected = _footer_selected_footer(details, brick_id)
+    if len(entries) == 1 and selected is None:
+        await _answer(update)
+        return await _save_catalog_extra_value(
+            update,
+            context,
+            details,
+            brick_id,
+            _footer_entry_value(entries[0]),
+            notice=tr("wizard.catalog.footer_selected", name=_footer_label(entries[0])),
+        )
+    await _answer(update)
+    return await _render_footer_choose(
+        update,
+        context,
+        details,
+        brick_id,
+        delete_ask=(len(entries) == 1 and selected is not None),
+    )
+
+
+async def _footer_extras_delete(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    draft_id: int,
+    revision: int,
+    brick_id: int,
+) -> int:
+    """
+    «Удалить» на экране подвала (§10.2): только значение анонса.
+
+    Запись справочника не архивируется и не меняется. Вместо стирания строки
+    пишется `empty_optional`-«надгробие», чтобы автоподстановка §10.3 не
+    вернула удалённое значение.
+    """
+    guarded = _guard_details(update, context, draft_id, revision)
+    if guarded is None:
+        return await _stale(update, context)
+    _ui_data, details = guarded
+    if _footer_selected_footer(details, brick_id) is None:
+        return await _stale(update, context)
+    await _answer(update)
+    return await _save_catalog_extra_value(
+        update,
+        context,
+        details,
+        brick_id,
+        "",
+        notice=tr("wizard.catalog.footer_deleted"),
+    )
+
+
+def _find_catalog_field(
+    details, brick_id: int, code: str, telegram_user_id: int
+) -> AnnouncementFieldState | None:
+    """Поле справочника из актуальных данных черновика (или None)."""
+    snapshot = details.template_snapshot
+    if snapshot is None or brick_id not in snapshot.brick_ids:
+        return None
+    try:
+        with SessionLocal() as session:
+            payload = build_announcement_render_payload(
+                session,
+                actor_telegram_user_id=telegram_user_id,
+                draft_id=details.draft_id,
+            )
+    except AnnouncementError:
+        return None
+    definition = payload.definitions_by_id.get(brick_id)
+    if definition is None or definition.code != code:
+        return None
+    return _extra_field_state(details, definition)
 
 
 async def _enter_extras(
@@ -7653,6 +8389,37 @@ async def _reject_choice_text(
     )
 
 
+async def _reject_catalog_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    field: AnnouncementFieldState,
+    index: int,
+) -> int:
+    """
+    Отказ ручному вводу подвала (§10: только выбор из справочника).
+
+    Куратор ручной ввод принимает — этот путь только для `[подвал]`.
+    """
+    message = tr("wizard.catalog.footer_choose")
+    screen.track_failed_input(
+        ctx.data(context), f"aw:{field.brick_id}", update.effective_message
+    )
+    fields = await _question_fields_for(update, context, details)
+    found = _find_field(fields, field.brick_id)
+    if found is None:
+        return await _render_extras(update, context, details)
+    return await _render_question(
+        update,
+        context,
+        details,
+        fields,
+        found[0],
+        editing=True,
+        error=message,
+    )
+
+
 async def _handle_active_text(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> int | None:
@@ -7714,6 +8481,10 @@ async def _handle_active_text(
             # (§5), даже если вопрос был подставлен старым снимком resume.
             return await _stale(update, context)
         await _reanchor(update, context)
+        if field.code == BRICK_CODE_FOOTER:
+            # §10: подвал выбирается ТОЛЬКО из справочника — ручного ввода
+            # текста подвала в мастере нет. Ввод не пишется в анонс.
+            return await _reject_catalog_text(update, context, details, field, index)
         if field.value_type == BRICK_TYPE_CHOICE:
             return await _reject_choice_text(
                 update, context, details, field, index, "question"
@@ -8519,6 +9290,34 @@ async def handle_question_callback(
 
     if action.startswith("aw_cal"):
         return await _handle_calendar_callback(update, context)
+    if action in {CAT_CURATOR_PICK, CAT_FOOTER_PICK} and len(parts) == 5:
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        return await _catalog_pick(
+            update,
+            context,
+            int(parts[1]),
+            int(parts[2]),
+            int(parts[3]),
+            int(parts[4]),
+            code=(
+                BRICK_CODE_CURATOR if action == CAT_CURATOR_PICK else BRICK_CODE_FOOTER
+            ),
+        )
+    if action in {CAT_CURATOR_PAGE, CAT_FOOTER_PAGE} and len(parts) == 5:
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        return await _catalog_page_callback(
+            update,
+            context,
+            int(parts[1]),
+            int(parts[2]),
+            int(parts[3]),
+            int(parts[4]),
+            code=(
+                BRICK_CODE_CURATOR if action == CAT_CURATOR_PAGE else BRICK_CODE_FOOTER
+            ),
+        )
     if action == "aw_choice" and len(parts) == 5:
         if not all(item.isdigit() for item in parts[1:]):
             return await _stale(update, context)
@@ -8712,6 +9511,30 @@ async def handle_extras_callback(
         # Эти действия живут на экране обзора/управления, но доступны и с
         # экрана доп. кирпичиков — иначе правку нельзя было бы применить.
         return await handle_preview_callback(update, context)
+    if action in {CAT_CURATOR_PICK, CAT_CURATOR_PAGE, CAT_FOOTER_PICK, CAT_FOOTER_PAGE}:
+        # Выбор/пагинация справочника — общий путь с экраном вопроса.
+        return await handle_question_callback(update, context)
+    if action == CAT_FOOTER_CHOOSE and len(parts) == 4:
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        return await _footer_extras_open(
+            update, context, int(parts[1]), int(parts[2]), int(parts[3])
+        )
+    if action == CAT_FOOTER_DELETE and len(parts) == 4:
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        return await _footer_extras_delete(
+            update, context, int(parts[1]), int(parts[2]), int(parts[3])
+        )
+    if action == CAT_FOOTER_CANCEL and len(parts) == 4:
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
+        if guarded is None:
+            return await _stale(update, context)
+        _ui_data, details = guarded
+        await _answer(update)
+        return await _render_extras(update, context, details)
 
     if action == "aw_extras" and len(parts) == 3:
         if not all(item.isdigit() for item in parts[1:]):

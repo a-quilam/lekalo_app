@@ -178,6 +178,36 @@ def _scope_owner(
     return actor, actor.id
 
 
+def _selection_owner(
+    session: Session,
+    actor_telegram_user_id: int | None,
+    place_id: int | None,
+) -> int | None:
+    """
+    Область справочника в режиме ВЫБОРА значения для анонса (§9–10).
+
+    Читать список для подстановки в анонс вправе любой действующий
+    пользователь Poster — не только администратор площадки: управление
+    справочником (создание/правка/архив) остаётся за `_scope_owner`.
+    Личный справочник по-прежнему виден только владельцу.
+    """
+    if place_id is not None:
+        if isinstance(place_id, bool) or not isinstance(place_id, int) or place_id <= 0:
+            raise CatalogNotFoundError("Некорректный идентификатор площадки.")
+        if session.get(Place, place_id) is None:
+            raise CatalogNotFoundError("Площадка не найдена.")
+        if _actor_user(session, actor_telegram_user_id) is None:
+            raise CatalogPermissionError(
+                "Выбор из справочника доступен только зарегистрированному "
+                "пользователю."
+            )
+        return None
+    actor = _actor_user(session, actor_telegram_user_id)
+    if actor is None:
+        raise CatalogPermissionError("Личный справочник доступен только его владельцу.")
+    return actor.id
+
+
 def _ensure_status(status: str) -> str:
     if status not in CATALOG_STATUSES:
         raise CatalogError(f"Неизвестный статус записи: {status!r}.")
@@ -841,6 +871,88 @@ def restore_footer(
     )
 
 
+# --- Выбор значения для анонса (§9–10) -------------------------------------
+
+
+def selectable_curators(
+    session: Session,
+    *,
+    actor_telegram_user_id: int | None,
+    place_id: int | None,
+) -> tuple[CuratorEntryView, ...]:
+    """
+    Активные кураторы области для подстановки в анонс.
+
+    В отличие от `list_curators`, чтение доступно любому действующему
+    пользователю Poster: администратор площадки нужен только для
+    РЕДАКТИРОВАНИЯ справочника. Личный список по-прежнему принадлежит
+    владельцу. Возвращаются все активные записи в порядке ID.
+    """
+    owner_user_id = _selection_owner(session, actor_telegram_user_id, place_id)
+    rows = session.scalars(
+        select(CuratorEntry)
+        .where(
+            *_scope_conditions(CuratorEntry, place_id, owner_user_id),
+            CuratorEntry.status == STATUS_ACTIVE,
+        )
+        .order_by(CuratorEntry.id)
+    ).all()
+    return tuple(_curator_view(row) for row in rows)
+
+
+def get_selectable_curator(
+    session: Session,
+    *,
+    actor_telegram_user_id: int | None,
+    place_id: int | None,
+    entry_id: int,
+) -> CuratorEntryView:
+    """Один активный куратор области для подстановки в анонс (иначе — 404)."""
+    owner_user_id = _selection_owner(session, actor_telegram_user_id, place_id)
+    row = _load_curator(
+        session, entry_id, place_id=place_id, owner_user_id=owner_user_id
+    )
+    if row.status != STATUS_ACTIVE:
+        raise CatalogNotFoundError("Куратор не найден.")
+    return _curator_view(row)
+
+
+def selectable_footers(
+    session: Session,
+    *,
+    actor_telegram_user_id: int | None,
+    place_id: int | None,
+) -> tuple[FooterEntryView, ...]:
+    """Активные подвалы области для подстановки в анонс (§10)."""
+    owner_user_id = _selection_owner(session, actor_telegram_user_id, place_id)
+    rows = session.scalars(
+        select(FooterEntry)
+        .where(
+            *_scope_conditions(FooterEntry, place_id, owner_user_id),
+            FooterEntry.status == STATUS_ACTIVE,
+        )
+        .order_by(FooterEntry.id)
+    ).all()
+    return tuple(_footer_view(row) for row in rows)
+
+
+def get_selectable_footer(
+    session: Session,
+    *,
+    actor_telegram_user_id: int | None,
+    place_id: int | None,
+    entry_id: int,
+) -> FooterEntryView:
+    """Один активный подвал области для подстановки в анонс (иначе — 404)."""
+    owner_user_id = _selection_owner(session, actor_telegram_user_id, place_id)
+    row = _load_footer(
+        session, entry_id, place_id=place_id, owner_user_id=owner_user_id
+    )
+    if row.status != STATUS_ACTIVE:
+        raise CatalogNotFoundError("Подвал не найден.")
+    return _footer_view(row)
+
+
 __all__ = [
     "CATALOG_STATUSES",
     "CatalogConflictError",
@@ -860,10 +972,14 @@ __all__ = [
     "create_footer",
     "get_curator",
     "get_footer",
+    "get_selectable_curator",
+    "get_selectable_footer",
     "list_curators",
     "list_footers",
     "restore_curator",
     "restore_footer",
+    "selectable_curators",
+    "selectable_footers",
     "update_curator",
     "update_footer_name",
     "update_footer_text",

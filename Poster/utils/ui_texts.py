@@ -2103,6 +2103,27 @@ DEFAULTS: dict[str, str] = {
     "buttons.catalogs.edit_name": "✏️ Изменить название",
     "buttons.catalogs.restore": "♻️ Восстановить",
     "buttons.catalogs.to_archive": "📦 В архив",
+    # --- Этап C (§9–10.3): выбор куратора/подвала в конструкторе -----------
+    "wizard.catalog.curator_choose": "Выберите куратора или пришлите его контакт.",
+    "wizard.catalog.curator_choose_other": "Выберите куратора или пришлите другой контакт.",
+    "wizard.catalog.no_curators_place": "Списка кураторов нет.",
+    "wizard.catalog.no_curators_place_hint": "Попросите админа места их внести",
+    "wizard.catalog.no_curators_personal": "Списка кураторов нет.",
+    "wizard.catalog.no_curators_personal_hint": "Пополните свой список кураторов",
+    "wizard.catalog.footer_choose": "Выберите напоминание, которое появится внизу анонса.",
+    "wizard.catalog.footer_choose_other": (
+        "Выберите другой подвал или удалите текущий."
+    ),
+    "wizard.catalog.no_footers_place": "Списка подвалов нет.",
+    "wizard.catalog.no_footers_place_hint": "Попросите админа места их внести",
+    "wizard.catalog.no_footers_personal": "Списка подвалов нет.",
+    "wizard.catalog.no_footers_personal_hint": "Пополните свой список подвалов",
+    "wizard.catalog.footer_delete_confirm": "Удалить подвал?",
+    "wizard.catalog.footer_selected": "Выбран подвал: {name}.",
+    "wizard.catalog.footer_deleted": "Подвал убран из анонса.",
+    "wizard.catalog.curator_selected": "Куратор выбран.",
+    "buttons.wizard.catalog_delete": "Удалить",
+    "buttons.wizard.catalog_cancel": "Отмена",
 }
 
 

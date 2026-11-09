@@ -47,6 +47,7 @@ from template_parser import (
 from template_types import (
     TEMPLATE_CONTENT,
     TEMPLATE_EXTENDED_CONTENT,
+    TEMPLATE_KIND_STANDARD,
     TEMPLATE_TEXTS,
 )
 
@@ -58,6 +59,12 @@ TEXT_ORDER = TEMPLATE_TEXTS
 # места строится по ID, а не по повторному разрешению текстовых кодов. ID
 # берутся из каталога, чтобы не дублировать магические числа.
 PLACE_BRICK_ID_NAME = SYSTEM_BRICKS_BY_CODE["место"].id
+
+# Коды кирпичиков-справочников (этап C, §9–10): их значения выбираются из
+# справочников кураторов/подвалов, а не вводятся свободным текстом.
+BRICK_CODE_CURATOR = "куратор"
+BRICK_CODE_FOOTER = "подвал"
+CATALOG_BRICK_CODES = (BRICK_CODE_CURATOR, BRICK_CODE_FOOTER)
 PLACE_BRICK_ID_URL = SYSTEM_BRICKS_BY_CODE["ссылка_места"].id
 # Poster 2.4 P1: адресный кирпичик ОДИН — `[адрес]` (Poster 2.0 S1). Легаси-
 # определение `адрес_места` устранено миграцией 25, алиаса нет: адрес
@@ -466,6 +473,42 @@ def extra_candidate_brick_ids(
     )
 
 
+def catalog_question_brick_ids(
+    snapshot: AnnouncementTemplateSnapshot,
+) -> tuple[int, ...]:
+    """
+    Кирпичики-справочники, которые спрашиваются в ПЕРВОНАЧАЛЬНОМ мастере.
+
+    У стандартного шаблона с включённым расширенным вариантом итоговый
+    анонс рендерится по `extended_content` (этап A1, §3.1), поэтому
+    `[куратор]` и `[подвал]` оттуда — обычные вопросы конструктора
+    (этап C, §9–10.1), а не «дополнительные поля». Остальные кирпичики
+    расширения остаются кандидатами экрана доп. полей: этап C меняет
+    контракт только для справочников.
+
+    У личного шаблона расширенный текст используется лишь после
+    добавления доп. полей, поэтому его кирпичики не поднимаются в вопросы:
+    выбранный шаблон и его простой текст остаются источником вопросов.
+    """
+    if snapshot.source_kind != TEMPLATE_KIND_STANDARD:
+        return ()
+    if not snapshot.extended_active:
+        return ()
+    if not snapshot_has_extended_content(snapshot):
+        return ()
+    bindings = _bindings_by_code(snapshot)
+    extended_ids = set(snapshot_brick_ids_in_text(snapshot, TEMPLATE_EXTENDED_CONTENT))
+    content_ids = set(snapshot_brick_ids_in_text(snapshot, TEMPLATE_CONTENT))
+    found: list[int] = []
+    for code in CATALOG_BRICK_CODES:
+        brick_id = bindings.get(code)
+        if brick_id is None or brick_id in content_ids:
+            continue
+        if brick_id in extended_ids and brick_id not in found:
+            found.append(brick_id)
+    return tuple(found)
+
+
 def _validate_context_value(
     definition: BrickDefinition,
     raw: object,
@@ -514,9 +557,20 @@ def build_questions(
     seen: set[int] = set()
     questions: list[Question] = []
 
+    ordered: list[tuple[int, str]] = []
     for node in iter_snapshot_bricks(snapshot, text_name=TEMPLATE_CONTENT):
         assert node.brick_id is not None
-        brick_id = node.brick_id
+        ordered.append((node.brick_id, node.code))
+    # Этап C (§9–10.1): справочные кирпичики `[куратор]`/`[подвал]` из
+    # расширенного текста стандарта — обычные вопросы мастера, хотя рендер
+    # идёт по `extended_content`.
+    catalog_ids = set(catalog_question_brick_ids(snapshot))
+    for node in iter_snapshot_bricks(snapshot, text_name=TEMPLATE_EXTENDED_CONTENT):
+        assert node.brick_id is not None
+        if node.brick_id in catalog_ids:
+            ordered.append((node.brick_id, node.code))
+
+    for brick_id, code in ordered:
         if brick_id in seen:
             continue
         seen.add(brick_id)
@@ -559,7 +613,7 @@ def build_questions(
         questions.append(
             Question(
                 brick_id=brick_id,
-                code=node.code,
+                code=code,
                 title=definition.title,
                 value_type=definition.value_type,
                 rules=dict(definition.rules),
