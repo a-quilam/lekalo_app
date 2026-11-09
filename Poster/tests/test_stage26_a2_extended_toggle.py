@@ -50,6 +50,7 @@ from tests import ui_texts_expect as cat
 from tests.integration_harness import (
     DEFAULT_USER_ID,
     HARNESS_IMPORT_ERROR,
+    frozen_today,
     scenario_test,
 )
 from tests.stage23_helpers import OTHER_TG
@@ -456,12 +457,15 @@ class StandardExtendedToggleTests(unittest.TestCase):
                 session, actor_telegram_user_id=DEFAULT_USER_ID, draft_id=draft_id
             )
             self.assertFalse(payload.use_extended, "черновик начат простым вариантом")
-            before = build_announcement_preview(
-                session,
-                actor_telegram_user_id=DEFAULT_USER_ID,
-                draft_id=draft_id,
-                today=TODAY,
-            ).html
+            # Компилятор проверяет относительную дату («09.11») по `app_today()`,
+            # а не по переданному `today`: нужна заморозка часов.
+            with frozen_today(TODAY.year, TODAY.month, TODAY.day):
+                before = build_announcement_preview(
+                    session,
+                    actor_telegram_user_id=DEFAULT_USER_ID,
+                    draft_id=draft_id,
+                    today=TODAY,
+                ).html
             snapshots_before = int(
                 session.scalar(
                     select(func.count(TemplateSnapshot.id)).where(
@@ -481,12 +485,13 @@ class StandardExtendedToggleTests(unittest.TestCase):
             self.assertFalse(
                 payload.use_extended, "снимок не переключился задним числом"
             )
-            after = build_announcement_preview(
-                session,
-                actor_telegram_user_id=DEFAULT_USER_ID,
-                draft_id=draft_id,
-                today=TODAY,
-            ).html
+            with frozen_today(TODAY.year, TODAY.month, TODAY.day):
+                after = build_announcement_preview(
+                    session,
+                    actor_telegram_user_id=DEFAULT_USER_ID,
+                    draft_id=draft_id,
+                    today=TODAY,
+                ).html
             self.assertEqual(after, before, "начатый черновик не изменился")
             snapshots_after = int(
                 session.scalar(

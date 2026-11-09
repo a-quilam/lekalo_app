@@ -316,12 +316,16 @@ class _StandardTemplateCase(unittest.TestCase):
             self.session, actor_telegram_user_id=OWNER_TG, draft_id=chosen.draft_id
         )
         self.assertEqual(payload.use_extended, extended)
-        return build_announcement_preview(
-            self.session,
-            actor_telegram_user_id=OWNER_TG,
-            draft_id=chosen.draft_id,
-            today=TODAY,
-        ).html
+        # Компилятор проверяет относительную дату («09.11») по `app_today()`,
+        # а не по переданному `today`: без заморозки год выбирается от реальной
+        # даты и «09.11» со временем уходит в прошлое (horizon_months ≥ 0).
+        with frozen_today(TODAY.year, TODAY.month, TODAY.day):
+            return build_announcement_preview(
+                self.session,
+                actor_telegram_user_id=OWNER_TG,
+                draft_id=chosen.draft_id,
+                today=TODAY,
+            ).html
 
     # --- инварианты сообщения --------------------------------------------
 
@@ -867,12 +871,13 @@ class FlagFreezeTests(_StandardTemplateCase):
         payload = build_announcement_render_payload(
             self.session, actor_telegram_user_id=OWNER_TG, draft_id=chosen.draft_id
         )
-        html = build_announcement_preview(
-            self.session,
-            actor_telegram_user_id=OWNER_TG,
-            draft_id=chosen.draft_id,
-            today=TODAY,
-        ).html
+        with frozen_today(TODAY.year, TODAY.month, TODAY.day):
+            html = build_announcement_preview(
+                self.session,
+                actor_telegram_user_id=OWNER_TG,
+                draft_id=chosen.draft_id,
+                today=TODAY,
+            ).html
         self.assertTrue(payload.use_extended, "начатый черновик продолжает вариант")
         self.assertEqual(html, EXTENDED_FULL_HTML)
 
