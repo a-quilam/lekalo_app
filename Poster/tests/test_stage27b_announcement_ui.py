@@ -728,14 +728,10 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
         await h.text("Длинный текст")
 
         self.assertRegex(h.screen_text(), cat.question_re(3, 8))
-        # §3.3 (2.6.1): у даты без ограничений типовой подсказки нет —
-        # остаётся универсальный fallback; календарь при этом на экране.
-        cat.assert_shows(
-            self,
-            h.screen_text(),
-            "wizard.hint.fallback",
-            title="Дата события",
-        )
+        # §3.3 (2.6.1): календарь прикреплён к вопросу даты всегда, поэтому
+        # типовая подсказка даты показывается и без правил; fallback не нужен.
+        cat.assert_shows(self, h.screen_text(), "wizard.hint.date")
+        cat.assert_not_shows(self, h.screen_text(), "wizard.hint.fallback")
         # U2a: компактный календарь уже на вопросе — быстрые даты и месяцы.
         self.assertTrue(_callback(h, "aw_calday"))
         self.assertTrue(_callback(h, "aw_calmonths"))

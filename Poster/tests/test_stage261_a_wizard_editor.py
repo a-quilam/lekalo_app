@@ -20,7 +20,7 @@ Poster 2.6.1, этап A — независимая приёмка экранн�
 прежними эмодзи типов; у пользовательских кирпичиков — сохранённое название.
 
 §3.3 — подсказка РОВНО одна: описание кирпичика, иначе типовая подсказка
-(время/выбор), иначе короткий fallback «Укажите значение поля „{название}“.».
+(дата/время/выбор), иначе короткий fallback «Укажите значение поля „{название}“.».
 Дубль «Напишите название мероприятия» + «Напишите короткий текст» запрещён.
 
 §3.4 — счётчик считается по фактической последовательности вопросов:
@@ -482,6 +482,22 @@ class QuestionHintTests(unittest.TestCase):
         self.assertEqual(
             blocks[1], cat.text("wizard.hint.time", presets="18:00, 18:30, 19:00")
         )
+        cat.assert_not_shows(self, screen, FALLBACK_KEY)
+
+    @scenario_test
+    async def test_date_field_shows_calendar_hint_without_rules(self, h) -> None:
+        """Дата без правил: подсказка календаря есть всегда (календарь на экране)."""
+        place_id = await _place(h)
+        template_id, _revision, _bricks = _seed_personal_template(
+            h,
+            name="Шаблон с датой",
+            specs=[("d1", "Дата встречи", "date", {})],
+            content="[d1]",
+        )
+        await _open_personal_questions(h, place_id, template_id)
+        screen = h.screen_text()
+        self.assertEqual(len(_blocks(screen)), 2, f"блоков больше двух: {screen!r}")
+        self.assertEqual(_blocks(screen)[1], cat.text("wizard.hint.date"))
         cat.assert_not_shows(self, screen, FALLBACK_KEY)
 
     @scenario_test
