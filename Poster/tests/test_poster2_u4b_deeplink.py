@@ -22,8 +22,9 @@ Poster 2.2 U4b: ссылка «создать анонс этой площадк
 - `/start` без payload — прежний вход в меню (регресс);
 - ссылка не даёт прав: у приглашённого нет ни редактирования площадки, ни
   административного кабинета;
-- повторный вход в раздел ссылки не создаёт дублей, перевыпуск отзывает
-  прежний токен.
+- повторный вход в раздел ссылки не создаёт дублей; пользовательского
+  перевыпуска на экране нет (Poster 2.6.1 §8.2) — старая кнопка `adm_invite_regen`
+  получает безопасный STALE и токен не меняет.
 """
 
 from __future__ import annotations
@@ -186,25 +187,29 @@ class PlaceInviteLinkTests(unittest.TestCase):
         self.assertEqual(len(_invites(h)), 1)
 
     @scenario_test
-    async def test_regenerate_revokes_previous_token(self, h):
+    async def test_link_screen_has_no_regenerate_button(self, h):
+        """
+        Poster 2.6.1 §8.2: кнопки «Создать новую ссылку» больше нет.
+
+        Ротация осталась внутренним API хранилища (аудит и отзыв токена по
+        прежним правилам), но пользовательского доступа к ней нет.
+        """
         place_id = _seed_place(h, admin=True)
         old_token = await _open_invite_screen(h, place_id)
 
-        await h.callback(_callback(h, "adm_invite_regen:"))
-        new_token = _token_from_screen(h)
-
-        self.assertNotEqual(old_token, new_token)
-        cat.assert_shows(self, h.screen_text(), "places.invite.regenerated")
-        rows = _invites(h)
-        self.assertEqual(len(rows), 2, "отозванная ссылка остаётся аудитом")
+        data = [data or "" for _label, data in h.screen_buttons()]
+        self.assertFalse(
+            [item for item in data if item.startswith("adm_invite_regen")],
+            f"кнопка перевыпуска осталась: {h.screen_buttons()}",
+        )
+        # Старая кнопка из прежнего сообщения — безопасный STALE, экран цел.
+        before = h.screen_text()
+        await h.callback(f"adm_invite_regen:{place_id}")
+        cat.assert_stale(self, h.answer_texts()[-1])
+        self.assertEqual(h.screen_text(), before)
         self.assertEqual(len(_active_invites(h)), 1)
-        revoked = [row for row in rows if row.revoked_at is not None]
-        self.assertEqual([row.token for row in revoked], [old_token])
-
-        # Старый токен больше не открывает конструктор.
-        await h.text(f"/start {old_token}", user_id=INVITED_TG)
-        cat.assert_shows(self, h.screen_text(), "places.invite.invalid")
-        self.assertIsNone(h.dialog_state(user_id=INVITED_TG, name=CONVERSATION_NAME))
+        self.assertEqual([row.token for row in _active_invites(h)], [old_token])
+        self.assertIn(old_token, h.screen_text())
 
     @scenario_test
     async def test_link_does_not_grant_admin_rights(self, h):

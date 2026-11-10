@@ -348,18 +348,13 @@ DEFAULTS: dict[str, str] = {
         "Выберите площадку, чтобы сразу начать анонс по её стандартному шаблону."
     ),
     # --- Poster 2.2 U4b: ссылка на создание анонса площадки -----------------
-    "places.invite.title": (
-        (
-            "🔗 Ссылка для создания анонса\n\n📍 {place}\n\n"
-            "Отправьте ссылку автору анонса. По ней сразу откроется создание анонса для этой площадки с её стандартным шаблоном.\n"
-            "\n"
-            "Ссылка не даёт прав администратора: изменить площадку или шаблон по ней нельзя."
-        )
+    "places.invite.title": "🔗 Ссылка для создания анонса\n\n📍 {place}",
+    "places.invite.instruction": (
+        "Отправьте ссылку вашему организатору. У него сразу откроется "
+        "конструктор анонса, и бот спросит, как называется мероприятие, "
+        "которое он хочет провести."
     ),
     "places.invite.link": "{link}",
-    "places.invite.regenerated": (
-        "🔁 Прежняя ссылка больше не работает. Новая ссылка — ниже."
-    ),
     "places.invite.invalid": (
         "Ссылка не работает: возможно, её отозвали или площадку удалили. Открываю главное меню — отсюда можно начать новый анонс."
     ),
@@ -450,7 +445,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.places.all": "📚 Все места",
     "buttons.places.add": "➕ Добавить место",
     "buttons.places.invite": "🔗 Ссылка для создания анонса",
-    "buttons.places.invite_regenerate": "🔁 Создать новую ссылку",
+    "buttons.places.invite_copy": "📋 Скопировать",
     # --- служебные сообщения экрана -----------------------------------------
     "screen.legacy_keyboard_reset": ("Кнопки теперь находятся под сообщением."),
     # --- Администрирование: места, передачи, конфликты кодов -----------
@@ -909,7 +904,6 @@ DEFAULTS: dict[str, str] = {
     "alerts.admin.u_mesta_poyavilsya_administrator": "У места уже появился администратор. Выберите «Заменить администратора».",
     "alerts.admin.uvedomlenie_bolshe_trebuetsya": "Статус передачи изменился. Уведомление больше не нужно.",
     "alerts.admin.zadacha_nedostupna": "Задача недоступна.",
-    "alerts.places.ssylka_perevypuschena": "Новая ссылка создана",
     "alerts.places.u_est_prava_upravlenie": "У вас уже есть права на управление этим местом.",
     "alerts.places.uzhe_podtverzhdeno": "Уже подтверждено.",
     "alerts.templates.ne_udalos_otkryt_standartnyy": "Не удалось открыть стандартный шаблон. Попробуйте ещё раз.",
@@ -1225,19 +1219,19 @@ DEFAULTS: dict[str, str] = {
     "buttons.templates.ispravit": "✏️ Исправить",
     "buttons.templates.ispravit_tekst": "✏️ Исправить текст",
     "buttons.templates.izmenit_nazvanie": "✏️ Изменить название",
+    "buttons.templates.k_redaktoru": "◀️ К редактору",
     "buttons.templates.k_shablonu": "◀️ К шаблону",
-    "buttons.templates.k_shablonu_otmenit_pravku": "◀️ К шаблону (отменить правку)",
     "buttons.templates.k_vyboru_osnovy": "◀️ К выбору основы",
-    "buttons.templates.kirpichiki": "📋 Кирпичики",
+    "buttons.templates.kak_redaktirovat": "❔ Как редактировать",
+    "buttons.templates.kirpichiki": "🧩 Кирпичики",
     "buttons.templates.obnovit_versiyu_povtorit": "🔄 Обновить версию и повторить",
-    "buttons.templates.ochistit": "🧹 Очистить",
-    "buttons.templates.podskazka": "❓ Подсказка",
     "buttons.templates.podtverdit_vosstanovlenie": "✅ Подтвердить восстановление",
     "buttons.templates.povtorit": "🔄 Повторить",
     "buttons.templates.povtorit_sohranenie": "💾 Повторить сохранение",
+    "buttons.templates.prostoy_shablon": "✏️ Простой шаблон",
     "buttons.templates.pustoy": "📄 Пустой",
-    "buttons.templates.rasshirennaya_versiya": "✏️ Расширенная версия",
-    "buttons.templates.rasshirennyy": "✏️ Правка расширенного шаблона",
+    "buttons.templates.rasshirennyy_shablon": "✏️ Расширенный шаблон",
+    "buttons.templates.spisok_kirpichikov": "📋 Список кирпичиков",
     "buttons.templates.sozdat": "💾 Создать",
     "buttons.templates.sozdat_rasshirennuyu": "➕ Расширенная версия",
     "buttons.templates.sozdat_shablon": "➕ Создать шаблон",
@@ -1245,10 +1239,10 @@ DEFAULTS: dict[str, str] = {
     "buttons.templates.tekst": "✏️ Правка шаблона",
     "buttons.templates.udalit": "✅ Удалить",
     "buttons.templates.udalit_shablon": "🗑 Удалить шаблон",
-    "buttons.templates.uslovnye_chasti": "🧩 Условия расширенного шаблона",
+    "buttons.templates.uslovnye_chasti": "🧩 Условные части",
     "buttons.templates.vklyuchit_dopolnitelnyy_shablon": "➕ Включить расширенный шаблон",
     "buttons.templates.vosstanovit_standart": "♻️ Восстановить стандарт",
-    "buttons.templates.vyklyuchit_dopolnitelnyy_shablon": "➖ Выключить расширенный шаблон",
+    "buttons.templates.vyklyuchit_dopolnitelnyy_shablon": "Выключить расширенный шаблон",
     "buttons.wizard.chernovik_sohranen": "✅ Черновик сохранён",
     "buttons.wizard.da_udalit_vse": "🗑 Да, удалить все",
     "buttons.wizard.dopolnitelnye_kirpichiki": "➕ Дополнительные поля",
@@ -1346,7 +1340,6 @@ DEFAULTS: dict[str, str] = {
     "templates.brick_list.vsego": "Всего: {total}.",
     "templates.build.dannye_poteryany_povtorite": "Данные сохранены. Попробуйте сохранить ещё раз. Если снова появится выбор кирпичика, выберите нужный кнопкой.",
     "templates.build.izmenenie_nevozmozhno_prava": "Изменить шаблон нельзя: у вас больше нет прав на него.",
-    "templates.build.mesto": "Место: {place_name}",
     "templates.build.nazvanie": "Название: «{name}»",
     "templates.build.novaya_versiya_sozdana_chuzhie": "Новая версия не создана. Изменения из другого окна сохранены. Обновите версию, проверьте свой текст и подтвердите сохранение.",
     "templates.build.osnova": "Основа: {mode_title}",
@@ -1356,23 +1349,13 @@ DEFAULTS: dict[str, str] = {
     "templates.build.proverte_novyy_shablon": "📄 Проверьте новый шаблон",
     "templates.build.rasshirennaya_versiya_osnova": "Расширенная версия задаёт место дополнительных кирпичиков в тексте анонса. Основа скопирована из текущего шаблона.",
     "templates.build.rasshirennyy_tekst": "Расширенный шаблон",
-    "templates.build.redaktirovanie_otpravte_novym": (
-        "✏️ Правка {title}\n\n{value_block}\n\n"
-        "Отправьте весь новый текст одним сообщением. Переносы строк, пробелы и любые символы сохранятся как есть.\n"
-        "\n"
-        "Чтобы вставить кирпичик, напишите его код в квадратных скобках: [код]. Список кодов — по кнопке ниже. Для обычных квадратных скобок используйте [[ и ]].\n"
-        "Форматирование: **жирный**, *курсив*, __подчёркнутый__, ~~зачёркнутый~~. Ссылка: Текст(https://example.com).\n"
-        "Фото добавляются отдельно, в шаблон они не входят."
-    ),
     "templates.build.sekciya_seychas_pusta": "Здесь пока нет текста.",
     "templates.build.shablon_bolshe_nedostupen": "⚠️ Шаблон больше недоступен",
     "templates.build.sovsem_pustoy_shablon_baza": "Шаблон нельзя сохранить совсем пустым, поэтому в заготовке есть кирпичик [название]. После создания его можно заменить или добавить другой текст.",
     "templates.build.tekst": "Шаблон",
     "templates.build.tekst_chernovik": "Текст (черновик)",
-    "templates.build.tip": "Тип: {kind_title}",
     "templates.build.vash_tekst": "Ваш текст",
     "templates.build.vash_tekst_sohranen": "Ваш текст сохранён",
-    "templates.build.versiya": "Версия: {revision}",
     "templates.build.vtoroy_tekst_shablona_menyaetsya": "Другой вариант текста останется прежним. Новая версия шаблона появится после нажатия «Сохранить».",
     "templates.cond.brick_button": "{title}",
     "templates.cond.brick_button_done": "{title} ✓",
@@ -1435,7 +1418,6 @@ DEFAULTS: dict[str, str] = {
         "Если по шаблону уже создавались анонсы, удалить его нельзя: он нужен для их истории. В этом случае можно выбрать «♻️ Восстановить стандарт»."
     ),
     "templates.handle_back.sozdanie_shablona_podtverzhdeno": "Вы не подтвердили создание шаблона. Данные не сохранены.",
-    "templates.handle_clear.tekst_ochischen_proverte_rezultat": "Текст очищен. Проверьте его и подтвердите сохранение.",
     "templates.handle_create_save.lichnyy_shablon_sozdan": "Личный шаблон создан.",
     "templates.handle_create_save.ne_udalos_sozdat_shablon": "Из-за временной ошибки не удалось создать шаблон. Данные сохранены. Попробуйте ещё раз.",
     "templates.handle_delete_yes.ne_udalos_udalit_shablon": "Не удалось удалить шаблон. Попробуйте ещё раз.",
@@ -1462,16 +1444,27 @@ DEFAULTS: dict[str, str] = {
     "templates.handle_save.soderzhimoe_izmenilos_novaya": "Текст остался прежним. Новая версия не создана.",
     "templates.handle_save.sohraneno_versii": "Сохранено в версии {revision}.",
     "templates.handle_save.tekst_proshel_proverku": "Текст не прошёл проверку.",
-    "templates.help.oformlenie_teksta_shablona_kod": (
-        "❓ Как оформить шаблон\n\n"
-        "• [код] — вставить кирпичик, например [название] или [дата].\n"
-        "• [[ и ]] — показать обычные квадратные скобки.\n"
-        "• **жирный**, *курсив*, __подчёркнутый__, ~~зачёркнутый~~.\n"
-        "• Ссылка: Текст(https://example.com) или Текст([ссылка_места]).\n"
-        "• Чтобы показать служебный символ как текст, поставьте перед ним обратную косую черту: \\* \\_ \\~ \\( \\) \\[ \\].\n"
-        "\n"
-        "Отправляйте весь текст одним сообщением. Переносы строк, отступы и любые символы сохранятся. Фото добавляются к анонсу отдельно, в шаблон они не входят."
+    "templates.card.extended_on": "Расширенный шаблон включён.",
+    "templates.card.simple_html": "<b>Простой шаблон</b>",
+    "templates.card.title": "📄 Шаблон — {place_name}",
+    "templates.edit.current": "Текущий текст:",
+    "templates.edit.instruction": (
+        "Пришлите новый текст шаблона целиком. Кирпичики пишутся в "
+        "квадратных скобках, например [дата]."
     ),
+    "templates.edit.title": "✏️ Правка шаблона",
+    "templates.edit.title_extended": "✏️ Правка расширенного шаблона",
+    # Пример §7.5: ровно тот синтаксис, который понимает template_parser.
+    "templates.help.example": "**[название]**\n\n[дата], [время_начала]\n\n[описание]",
+    "templates.help.formats": (
+        "Жирный: **текст**. Курсив: *текст*. Ссылка: Текст(https://example.com)."
+    ),
+    "templates.help.intro": (
+        "Напишите анонс так, как он должен выглядеть. Вместо информации, "
+        "которая меняется от мероприятия к мероприятию, используйте кирпичики."
+    ),
+    "templates.help.substitution": "Бот заменит кирпичики ответами организатора.",
+    "templates.help.title": "Как редактировать шаблон",
     "templates.hub.moi_shablony_u_poka": (
         "📄 Мои шаблоны\n\n"
         "Личных шаблонов пока нет. Шаблон задаёт вид текста анонса. Один шаблон можно использовать для разных мест."

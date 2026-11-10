@@ -562,7 +562,10 @@ class VersionHistoryTests(unittest.TestCase):
         self.assertIn("*Второй* вариант [main]", card)
         self.assertNotIn("<i>Второй</i>", card)
         self.assertNotIn("&lt;i&gt;", card)
-        self.assertIn("Версия: 3", card)
+        # 2.6.1 §6: технической строки «Версия: N» в карточке больше нет,
+        # а сохранённые маркеры видны в блоке простого шаблона.
+        self.assertNotIn("Версия:", card)
+        cat.assert_shows(self, card, "templates.card.simple_html")
 
 
 @unittest.skipIf(
@@ -642,10 +645,12 @@ class ContentAndExtendedTests(unittest.TestCase):
             _version_extended(h, template_id, 3),
             "*Расширенно*: [main] [extra]",
         )
-        # Карточка показывает обе секции с маркерами.
+        # Карточка показывает простой текст с маркерами; 2.6.1 §6: расширенный
+        # текст в карточке не дублируется — только строка о включении.
         card = h.screen_text()
         self.assertIn("**Основной** текст [main]", card)
-        self.assertIn("*Расширенно*: [main] [extra]", card)
+        self.assertNotIn("*Расширенно*: [main] [extra]", card)
+        cat.assert_shows(self, card, "templates.card.extended_on")
 
         # Анонс: без доп. поля — content, с доп. полем — extended.
         await h.text("/start")
@@ -777,7 +782,8 @@ class StandardPlaceTemplateTests(unittest.TestCase):
         callbacks = [data for _label, data in h.screen_buttons()]
         self.assertIn(f"tp_std:{place_id}", callbacks)
         await h.callback(f"tp_std:{place_id}")
-        self.assertIn("Стандартный шаблон места", h.screen_text())
+        # 2.6.1 §6: карточка начинается с шапки «📄 Шаблон — {площадка}».
+        cat.assert_shows(self, h.screen_text(), "templates.card.title")
 
         template_id = int(
             next(

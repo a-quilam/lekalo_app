@@ -697,10 +697,9 @@ def _hub_content(session: Session, user: User, state: dict):
                 )
             ]
         )
+    # Poster 2.6.1 §5: единственный возврат из хаба — «◀️ Назад» в экран,
+    # откуда человек пришёл (`hub_origin`). Кнопки «🏠 В меню» здесь больше нет.
     rows.append([InlineKeyboardButton(tr("buttons.nav.back"), callback_data="bk_back")])
-    rows.append(
-        [InlineKeyboardButton(tr("buttons.nav.main_menu"), callback_data="main_menu")]
-    )
     return "\n".join(parts), InlineKeyboardMarkup(rows)
 
 

@@ -321,19 +321,17 @@ class DeletePersonalTemplateTests(unittest.TestCase):
             "карточка строится по тому же чтению, что и проверка удаления",
         )
 
-        # Пользователь остался в карточке, видит пояснение и НОВУЮ версию.
+        # Пользователь остался в карточке, видит пояснение и НОВЫЙ текст.
         text = h.screen_text()
         self.assertIn(STALE_NOTICE, text, "исход «шаблон изменился» объяснён")
         self.assertIn("Изменённый шаблон", text, "карточка того же шаблона")
-        self.assertIn(
-            tr("templates.build.versiya", revision=fresh.revision),
-            text,
-            "карточка свежая",
-        )
+        # 2.6.1 §6: технической строки «Версия» больше нет — свежесть
+        # карточки видна по тексту, прочитанному в той же операции.
+        self.assertNotIn("Версия:", text, "технические строки убраны")
         self.assertIn(
             new_content,
             text,
-            "карточка показывает текст, прочитанный в той же операции",
+            "карточка свежая: показан текст из того же чтения",
         )
         self.assertIn(f"tp_delete:{template_id}", _callbacks(h, "tp_delete:"))
 

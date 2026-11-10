@@ -3265,7 +3265,6 @@ async def _render_phase(
                     session,
                     details,
                     telegram_user_id=user_id,
-                    regenerated=bool(state.get("invite_regenerated")),
                 )
         elif phase == "assign_search":
             if details is None:
@@ -3826,52 +3825,6 @@ async def handle_invite_open(
         return
     await query.answer()
     state["phase"] = "invite"
-    state.pop("invite_regenerated", None)
-    await _render_phase(update, context, state)
-
-
-async def handle_invite_regenerate(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """«🔁 Перевыпустить»: старый токен отзывается, выдаётся новый."""
-    query = ctx.query(update)
-    state = load_admin_session(ctx.user(update).id)
-    if state is None or state.get("phase") != "invite":
-        await _stale(update)
-        return
-    place_id = _proposal_callback_id(str(query.data or ""))
-    if place_id is None or state.get("place_id") != place_id:
-        await _stale(update)
-        return
-    user_id = ctx.user(update).id
-    from place_invite_store import PlaceInvitePermissionError, regenerate_invite
-
-    session = SessionLocal()
-    details = None
-    refused = True
-    try:
-        details = get_place_details(session, place_id)
-        if details is not None and can_manage_place(session, user_id, place_id):
-            regenerate_invite(
-                session, actor_telegram_user_id=user_id, place_id=place_id
-            )
-            refused = False
-    except PlaceInvitePermissionError:
-        refused = True
-    finally:
-        session.close()
-    if refused:
-        await query.answer(
-            (
-                tr("places.invite.no_rights")
-                if details is not None
-                else tr("alerts.admin.mesto_suschestvuet_udaleno")
-            ),
-            show_alert=True,
-        )
-        return
-    await query.answer(tr("alerts.places.ssylka_perevypuschena"))
-    state["invite_regenerated"] = True
     await _render_phase(update, context, state)
 
 
@@ -3885,7 +3838,6 @@ async def handle_invite_back(
         await _stale(update)
         return
     await query.answer()
-    state.pop("invite_regenerated", None)
     state["phase"] = "place"
     await _render_phase(update, context, state)
 
@@ -7800,9 +7752,6 @@ def admin_handlers() -> list[BaseHandler]:
         # Регистрируется до финального `^adm_`: иначе кнопки получали бы
         # «устаревшую» заглушку.
         CallbackQueryHandler(handle_invite_open, pattern=r"^adm_invite:\d+$"),
-        CallbackQueryHandler(
-            handle_invite_regenerate, pattern=r"^adm_invite_regen:\d+$"
-        ),
         CallbackQueryHandler(handle_invite_back, pattern=r"^adm_invite_back$"),
         # Poster 2.5 A3: подраздел «Управление администратором» (вход/возврат).
         CallbackQueryHandler(

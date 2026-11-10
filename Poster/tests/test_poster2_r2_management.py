@@ -258,7 +258,9 @@ class TemplateManagementTests(unittest.TestCase):
         await h.callback(f"tp_open:{template_id}")
         text = h.screen_text()
         self.assertIn("Карточка", text)
-        self.assertIn("Личный шаблон", text)
+        # 2.6.1 §6: строки «Личный шаблон» больше нет — карточка показывает
+        # шапку и блок простого шаблона.
+        cat.assert_shows(self, text, "templates.card.simple_html")
         # Ни карточка, ни список не предлагают старт анонса.
         self.assertEqual(_callbacks(h, "tp_pick:"), [])
         self.assertEqual(_callbacks(h, "pl_pick:"), [])
@@ -361,7 +363,7 @@ class TemplateManagementTests(unittest.TestCase):
         await h.text("/start")
         await h.callback(f"tp_std:{place_id}")
 
-        self.assertIn("Стандартный шаблон места", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "templates.card.title")
         self.assertIn("Стандарт", h.screen_text())
         self.assertEqual(_callbacks(h, "tp_delete:"), [])
         self.assertIn(f"tp_reset:{template_id}", _callbacks(h, "tp_reset:"))

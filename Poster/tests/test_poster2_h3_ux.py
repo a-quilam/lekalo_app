@@ -449,7 +449,7 @@ class CurrentValueDisplayTests(unittest.TestCase):
 
     @scenario_test
     async def test_template_card_shows_value_as_block_without_code(self, h) -> None:
-        from utils.current_value import SEPARATOR, TRUNCATED_NOTE
+        from utils.current_value import TRUNCATED_NOTE
 
         await h.text("/start")
         template_id, _revision, _bricks = _seed_personal_template(
@@ -459,8 +459,10 @@ class CurrentValueDisplayTests(unittest.TestCase):
         await h.callback(f"tp_open:{template_id}")
 
         text = h.screen_text()
-        # Подпись, рамка, значение, рамка — без <code> вокруг значения.
-        self.assertIn(f"Шаблон:\n{SEPARATOR}\nТело [main]\n{SEPARATOR}", text)
+        # 2.6.1 §6: шапка с названием, жирный подзаголовок, текст шаблона.
+        cat.assert_shows(self, text, "templates.card.title", place_name="Короткий")
+        self.assertIn(cat.text("templates.card.simple_html"), text)
+        self.assertIn("Тело [main]", text)
         self.assertNotIn("<code>", text)
         self.assertNotIn(TRUNCATED_NOTE, text, "короткое значение не помечается")
 
@@ -468,7 +470,7 @@ class CurrentValueDisplayTests(unittest.TestCase):
     async def test_long_template_value_is_clipped_only_by_telegram_limit(
         self, h
     ) -> None:
-        from utils.current_value import SEPARATOR, TRUNCATED_NOTE
+        from utils.current_value import TRUNCATED_NOTE
 
         body = "A" * 5000 + " [main]"
         await h.text("/start")
@@ -490,9 +492,9 @@ class CurrentValueDisplayTests(unittest.TestCase):
         self.assertNotIn("на экране сокращено", text, "косметической обрезки нет")
         self.assertNotIn("<code>", text)
 
-        # Обе половины рамки на месте: значение осталось блоком.
-        self.assertEqual(text.count(SEPARATOR), 2)
-        self.assertIn("Шаблон:", text)
+        # Значение осталось блоком простого шаблона (2.6.1 §6).
+        cat.assert_shows(self, text, "templates.card.title", place_name="Длинный")
+        self.assertIn(cat.text("templates.card.simple_html"), text)
 
     @scenario_test
     async def test_two_huge_place_values_fit_one_screen(self, h) -> None:
@@ -589,7 +591,14 @@ class ScreenLimitRegressionTests(unittest.TestCase):
 
     @scenario_test
     async def test_template_card_with_two_huge_values_fits_and_marked(self, h):
-        """Дефект 1: карточка шаблона с каноническим и расширенным текстом."""
+        """
+        Дефект 1: карточка шаблона с каноническим и расширенным текстом.
+
+        2.6.1 §6: расширенный текст в карточке не показывается вообще — ни в
+        выключенном, ни во включённом состоянии. Поэтому клиппинг относится
+        к одному значению (простой текст), а расширенное обязано сохраниться
+        в БД целиком и не раздувать экран.
+        """
         from utils.current_value import TRUNCATED_NOTE
 
         body = "A" * 5000
@@ -622,10 +631,10 @@ class ScreenLimitRegressionTests(unittest.TestCase):
         self.assertLessEqual(
             len(card), self.TELEGRAM_LIMIT, "экран не влезет в Telegram"
         )
-        # Оба значения помечены: ни одно не потеряно молча.
-        self.assertEqual(card.count(TRUNCATED_NOTE), 2, card[-200:])
+        # Помечено единственное показанное значение — простое.
+        self.assertEqual(card.count(TRUNCATED_NOTE), 1, card[-200:])
         self.assertGreater(card.count("A"), 500)
-        self.assertGreater(card.count("B"), 500)
+        self.assertNotIn("B", card, "расширенный текст в карточке не показывается")
         self.assertNotIn("<code>", card)
 
         # Полные значения остались в БД, показан только фрагмент.
@@ -670,8 +679,10 @@ class ScreenLimitRegressionTests(unittest.TestCase):
         self.assertIn(TRUNCATED_NOTE, screen)
         self.assertGreater(screen.count("A"), 1000)
         # Подсказка про формат осталась целиком: сокращено только значение.
-        cat.assert_shows(self, screen, "templates.build.redaktirovanie_otpravte_novym")
-        self.assertIn("📋 Кирпичики", [label for label, _ in h.screen_buttons()])
+        cat.assert_shows(self, screen, "templates.edit.instruction")
+        labels = [label for label, _data in h.screen_buttons()]
+        self.assertIn("📋 Список кирпичиков", labels)
+        self.assertIn("❔ Как редактировать", labels)
 
     @scenario_test
     async def test_brick_description_of_5000_fits_every_screen(self, h):
@@ -840,8 +851,9 @@ class TemplateEditorLayoutTests(unittest.TestCase):
         rows = _rows(h)
         # 2.5.2 T4: отдельного экрана предпросмотра нет — текст показан на
         # самой карточке, поэтому остаётся только список кодов кирпичиков.
+        # 2.6.1 §6: на карточке подпись «🧩 Кирпичики».
         self.assertTrue(
-            any(len(row) == 1 and row[0][0].endswith("📋 Кирпичики") for row in rows),
+            any(len(row) == 1 and row[0][0].endswith("🧩 Кирпичики") for row in rows),
             f"на карточке должен быть список кодов кирпичиков: {rows}",
         )
         self.assertNotIn(
@@ -867,17 +879,17 @@ class TemplateEditorLayoutTests(unittest.TestCase):
 
         rows = _rows(h)
         pairs = {tuple(label for label, _data in row) for row in rows}
+        # 2.6.1 §7.3: справочные действия — одной строкой.
         self.assertIn(
-            ("📋 Кирпичики", "❓ Подсказка"),
+            ("📋 Список кирпичиков", "❔ Как редактировать"),
             pairs,
             f"справочные действия должны стоять рядом: {rows}",
         )
-        # «Очистить» необратима для черновика — отдельной строкой.
+        # 2.6.1 §7.3: сценария «Очистить» больше нет вовсе.
         clear_rows = [
             row for row in rows if any("Очистить" in label for label, _ in row)
         ]
-        self.assertEqual(len(clear_rows), 1)
-        self.assertEqual(len(clear_rows[0]), 1, f"очистка не одна в строке: {rows}")
+        self.assertEqual(clear_rows, [], f"«Очистить» удалена из редактора: {rows}")
 
     @scenario_test
     async def test_create_choice_puts_two_bases_in_one_row(self, h) -> None:

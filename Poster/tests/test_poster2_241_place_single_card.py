@@ -291,7 +291,7 @@ class InviteScreenFromFullCardTests(unittest.TestCase):
         self.assertEqual(admin_state["place_id"], place_id)
 
     @scenario_test
-    async def test_reopen_does_not_duplicate_and_regenerate_works(self, h):
+    async def test_reopen_does_not_duplicate_and_no_regenerate(self, h):
         place_id = _seed_place(h, admin=True)
 
         await _open_handbook(h)
@@ -306,11 +306,13 @@ class InviteScreenFromFullCardTests(unittest.TestCase):
         self.assertEqual(_token_from_screen(h), first)
         self.assertEqual(_active_invites_count(h), 1)
 
-        # Перевыпуск отзывает прежнюю ссылку и выдаёт новую.
-        await h.callback(_callback(h, "adm_invite_regen:"))
-        new_token = _token_from_screen(h)
-        self.assertNotEqual(new_token, first)
-        cat.assert_shows(self, h.screen_text(), "places.invite.regenerated")
+        # Poster 2.6.1 §8.2: пользовательского перевыпуска больше нет.
+        self.assertEqual(_callbacks(h, "adm_invite_regen"), [])
+        before = h.screen_text()
+        await h.callback(f"adm_invite_regen:{place_id}")
+        cat.assert_stale(self, _last_alert(h))
+        self.assertEqual(h.screen_text(), before)
+        self.assertEqual(_token_from_screen(h), first)
         self.assertEqual(_active_invites_count(h), 1)
 
 
@@ -414,7 +416,8 @@ class FullCardReturnTests(unittest.TestCase):
         await _open_handbook(h)
         await h.callback(f"plm_open:{place_id}")
         await h.callback(f"tp_std:{place_id}")
-        self.assertIn("Стандартный шаблон места", h.screen_text())
+        # 2.6.1 §6: шапка карточки — «📄 Шаблон — {площадка}».
+        cat.assert_shows(self, h.screen_text(), "templates.card.title")
 
         await h.callback(_callback(h, "tp_back_place:"))
         state = load_admin_session(DEFAULT_USER_ID)

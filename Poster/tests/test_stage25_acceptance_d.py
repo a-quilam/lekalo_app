@@ -244,14 +244,14 @@ class RouteTests(unittest.TestCase):
         template_id, revision = _template_with_system_time_bricks(h)
         await _open_card(h, template_id)
         self.assertIn(
-            ("🧩 Условия расширенного шаблона", f"tp_cond:{template_id}"),
+            (cat.text("buttons.templates.uslovnye_chasti"), f"tp_cond:{template_id}"),
             h.screen_buttons(),
             "в редакторе шаблона есть раздел условий (§3)",
         )
 
         await h.callback(f"tp_cond:{template_id}")
         self.assertIn(
-            "🧩 Условия расширенного шаблона", h.screen_text(), "единый экран условий"
+            cat.text("templates.cond.title"), h.screen_text(), "единый экран условий"
         )
         await h.callback(f"tp_condadd:{template_id}")
 
@@ -305,9 +305,14 @@ class RouteTests(unittest.TestCase):
         await h.callback(f"tp_condback:{template_id}:bricks")
         self.assertIn("Время окончания", _labels(h), "кирпичик не потерян")
         await h.callback(f"tp_condback:{template_id}:list")
-        self.assertIn("🧩 Условия расширенного шаблона", h.screen_text())
+        self.assertIn(cat.text("templates.cond.title"), h.screen_text())
         await h.callback(f"tp_condback:{template_id}:card")
-        self.assertIn("Версия", h.screen_text(), "вернулись в редактор шаблона")
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "templates.card.title",
+            "вернулись в редактор шаблона",
+        )
         self.assertEqual(_parts(h, template_id), [], "«Назад» ничего не сохранил")
 
     @scenario_test
@@ -885,10 +890,12 @@ class AccessTests(unittest.TestCase):
         await h.callback(f"tp_std:{place_id}", user_id=OTHER_TG)
         await h.callback(f"tp_cond:{standard_id}", user_id=OTHER_TG)
         self.assertIn(
-            "🧩 Условия расширенного шаблона", h.screen_text(), "экран условий открылся"
+            cat.text("templates.cond.title"),
+            h.screen_text(),
+            "экран условий открылся",
         )
         await h.callback(f"tp_condadd:{standard_id}", user_id=OTHER_TG)
-        self.assertIn("🧩 Условия расширенного шаблона", h.screen_text())
+        self.assertIn(cat.text("templates.cond.title"), h.screen_text())
         brick_buttons = [
             data
             for _label, data in h.screen_buttons()
@@ -919,15 +926,17 @@ class AccessTests(unittest.TestCase):
         with patch("config.SUPERADMIN_USER_IDS", (SUPERADMIN_TG,)):
             await h.text("/start", user_id=SUPERADMIN_TG)
             await h.callback(f"tp_std:{place_id}", user_id=SUPERADMIN_TG)
-            self.assertIn("Стандартный шаблон места", h.screen_text())
+            cat.assert_shows(self, h.screen_text(), "templates.card.title")
             answers_before = len(h.answer_texts())
             await h.callback(f"tp_cond:{standard_id}", user_id=SUPERADMIN_TG)
             self.assertEqual(h.answer_texts()[answers_before:], [], "без отказа")
             self.assertIn(
-                "🧩 Условия расширенного шаблона", h.screen_text(), "экран открылся"
+                cat.text("templates.cond.title"),
+                h.screen_text(),
+                "экран открылся",
             )
             await h.callback(f"tp_condadd:{standard_id}", user_id=SUPERADMIN_TG)
-            self.assertIn("🧩 Условия расширенного шаблона", h.screen_text())
+            self.assertIn(cat.text("templates.cond.title"), h.screen_text())
 
 
 # --- 6. перезапуск §44 -----------------------------------------------------

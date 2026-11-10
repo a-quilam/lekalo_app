@@ -159,8 +159,8 @@ class OwnerScenarioAcceptanceTests(unittest.TestCase):
         self.assertIn("Ссылка для создания анонса", text)
         self.assertIn("Дом культуры", text)
         self.assertIn(f"https://t.me/{h.bot.username}?start={token}", text)
-        # Объяснение: права администратора ссылка не даёт.
-        self.assertIn("не даёт прав", text)
+        # Poster 2.6.1 §8.1: абзац-инструкция для организатора.
+        cat.assert_shows(self, text, "places.invite.instruction")
         record = h.screen()
         assert record is not None
         preview = record.get("link_preview_options")
@@ -306,11 +306,21 @@ class OwnerScenarioAcceptanceTests(unittest.TestCase):
 
     @scenario_test
     async def test_revoked_link_is_refused(self, h):
+        """
+        Отозванная ссылка не открывает конструктор.
+
+        Poster 2.6.1 §8.2 убрал пользовательский перевыпуск с экрана, поэтому
+        отзыв делается внутренним API хранилища (как это делает персонал при
+        обслуживании). Инвариант «отозванный токен не работает» сохраняется.
+        """
+        from place_invite_store import regenerate_invite
+
         place_id = _seed_place(h)
         old_token = await _open_invite_screen(h, place_id)
-
-        await h.callback(f"adm_invite_regen:{place_id}", user_id=DEFAULT_USER_ID)
-        new_token = _token_from_screen(h)
+        with h.session_factory() as session:
+            new_token = regenerate_invite(
+                session, actor_telegram_user_id=DEFAULT_USER_ID, place_id=place_id
+            ).token
         self.assertNotEqual(old_token, new_token)
 
         await h.text(f"/start {old_token}", user_id=INVITED_TG)
@@ -385,7 +395,7 @@ class IssuanceRightsTests(unittest.TestCase):
 
         self.assertEqual(_invites(h), [], "обычный пользователь ссылку не выдаёт")
         self.assertNotIn("?start=", h.screen_text())
-        # Перевыпуск тоже закрыт.
+        # Устаревшая кнопка перевыпуска тоже ничего не выдаёт.
         await h.callback(f"adm_invite_regen:{place_id}", user_id=PLAIN_TG)
         self.assertEqual(_invites(h), [])
 
@@ -453,11 +463,21 @@ class IdempotencyAcceptanceTests(unittest.TestCase):
 
     @scenario_test
     async def test_regenerate_keeps_audit_and_revokes_old(self, h):
+        """
+        Ротация в хранилище остаётся: отзыв аудитируется, старый токен мёртв.
+
+        Poster 2.6.1 §8.2 удалил только ПОЛЬЗОВАТЕЛЬСКИЙ доступ к перевыпуску;
+        сам `regenerate_invite` не тронут.
+        """
+        from place_invite_store import regenerate_invite
+
         place_id = _seed_place(h)
         old_token = await _open_invite_screen(h, place_id)
 
-        await h.callback(f"adm_invite_regen:{place_id}")
-        new_token = _token_from_screen(h)
+        with h.session_factory() as session:
+            new_token = regenerate_invite(
+                session, actor_telegram_user_id=DEFAULT_USER_ID, place_id=place_id
+            ).token
 
         self.assertNotEqual(old_token, new_token)
         rows = _invites(h)
@@ -466,10 +486,10 @@ class IdempotencyAcceptanceTests(unittest.TestCase):
             [row.token for row in rows if row.revoked_at is not None], [old_token]
         )
         self.assertEqual(_active_tokens(h), [new_token])
-        # Отзыв виден и после рестарта процесса.
-        await h.restart()
+        # Старая ссылка из прошлого сообщения — STALE, токен не меняется.
         await h.callback(f"adm_invite_regen:{place_id}", message_id=2)
-        self.assertNotEqual(_token_from_screen(h), new_token)
+        cat.assert_stale(self, h.answer_texts()[-1])
+        self.assertEqual(_active_tokens(h), [new_token])
 
 
 @unittest.skipIf(ACCEPTANCE_IMPORT_ERROR, ACCEPTANCE_IMPORT_ERROR or "")

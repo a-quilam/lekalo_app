@@ -226,7 +226,9 @@ class ConditionalAvailabilityTests(unittest.TestCase):
             _callbacks(h, "tp_cond"),
             "у простого шаблона нет кнопки условий",
         )
-        self.assertIn("Версия", h.screen_text(), "карточка простого шаблона на месте")
+        cat.assert_shows(
+            self, h.screen_text(), "templates.card.title", "карточка на месте"
+        )
 
     @scenario_test
     async def test_simple_template_callback_is_refused(self, h) -> None:
@@ -254,7 +256,11 @@ class ConditionalAvailabilityTests(unittest.TestCase):
     async def test_extended_template_shows_rules_entry(self, h) -> None:
         template_id, _revision = _template_with_system_time_bricks(h)
         await _open_card(h, template_id)
-        self.assertIn((TITLE, f"tp_cond:{template_id}"), h.screen_buttons())
+        # 2.6.1 §6.3: кнопка раздела условий подписана «🧩 Условные части».
+        self.assertIn(
+            (cat.text("buttons.templates.uslovnye_chasti"), f"tp_cond:{template_id}"),
+            h.screen_buttons(),
+        )
 
     @scenario_test
     async def test_content_section_callback_is_refused(self, h) -> None:
@@ -469,7 +475,12 @@ class ConditionalUiRouteTests(unittest.TestCase):
         await h.callback(f"tp_condback:{template_id}:list")
         self.assertIn(TITLE, h.screen_text())
         await h.callback(f"tp_condback:{template_id}:card")
-        self.assertIn("Версия", h.screen_text(), "вернулись в карточку шаблона")
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "templates.card.title",
+            "вернулись в карточку шаблона",
+        )
         self.assertEqual(_parts(h, template_id), [], "«Назад» ничего не сохранил")
 
     @scenario_test
@@ -597,7 +608,7 @@ class ConditionalUiRouteTests(unittest.TestCase):
             )
             self.assertTrue(result.ok, result.message)
         await h.callback(f"tp_std:{place_id}")
-        self.assertIn("Стандартный шаблон места", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "templates.card.title")
 
         await h.callback(f"tp_cond:{template_id}")
         self.assertIn(TITLE, h.screen_text())

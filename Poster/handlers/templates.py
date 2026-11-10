@@ -122,6 +122,8 @@ BUTTON_TITLE_LIMIT = 42
 # Единственный предел — физический лимит сообщения Telegram; он живёт в
 # общем компоненте «Текущее значение» (utils/current_value.py).
 ERROR_TEXT_LIMIT = 1400
+# §7.4: краткое описание кирпичика в списке — одна строка, не карточка.
+BRICK_DESCRIPTION_LIMIT = 160
 
 PHASE_HUB = "hub"
 # Poster 2.0 S2: список личных шаблонов как вход в анонс. Тап по названию
@@ -696,41 +698,34 @@ def _card_content(
     session: Session | None = None,
     telegram_user_id: int | None = None,
 ) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Карточка шаблона (§6 задания 2.6.1).
+
+    У площадки один шаблон с двумя сохранёнными вариантами текста. Пока
+    расширенный вариант выключен, карточка показывает только простой текст:
+    расширенный хранится в базе, но не занимает место и не выглядит
+    доступным. Технические строки («Тип», «Версия») и справка из карточки
+    убраны.
+    """
     version = template.current_version
-    kind_title = (
-        tr("wizard.selected_template.standartnyy_shablon_mesta")
-        if template.kind == TEMPLATE_KIND_STANDARD
-        else tr("wizard.selected_template.lichnyy_shablon")
-    )
     has_extended = version.extended_content is not None
+    is_standard = template.kind == TEMPLATE_KIND_STANDARD
+    # Флаг есть только у стандарта места; у личного шаблона расширенный
+    # вариант доступен по факту сохранённого текста (§4: фиктивный
+    # переключатель личному шаблону не нужен).
+    extended_on = bool(template.extended_active) if is_standard else has_extended
+    title_name = place_name if is_standard and place_name else template.display_name
 
     def build(limits: list[int]) -> str:
         lines = [
-            f"📄 <b>{_h(template.display_name)}</b>",
-            tr("templates.build.tip", kind_title=kind_title),
-            tr("templates.build.versiya", revision=template.revision),
+            tr("templates.card.title", place_name=title_name),
+            "",
+            tr("templates.card.simple_html"),
+            "",
+            current_value.clip_html(_h(version.content), limit=limits[0]),
         ]
-        if template.kind == TEMPLATE_KIND_STANDARD and place_name:
-            lines.append(tr_safe("templates.build.mesto", place_name=_h(place_name)))
-        lines.extend(
-            [
-                "",
-                _value_block(
-                    tr("templates.build.tekst"), version.content, limit=limits[0]
-                ),
-            ]
-        )
-        if has_extended:
-            lines.extend(
-                [
-                    "",
-                    _value_block(
-                        tr("templates.build.rasshirennyy_tekst"),
-                        version.extended_content,
-                        limit=limits[1],
-                    ),
-                ]
-            )
+        if extended_on:
+            lines.extend(["", tr("templates.card.extended_on")])
         if session is not None and telegram_user_id is not None:
             # Ленивый импорт: модуль условных частей сам использует экраны
             # шаблонов (`_show`, `_short`), циклический импорт недопустим.
@@ -751,111 +746,149 @@ def _card_content(
                 )
         return "\n".join(lines)
 
-    text = _fit_value_screen(build, blocks=2 if has_extended else 1)
-    edit_row = [
-        InlineKeyboardButton(
-            tr("buttons.templates.tekst"),
-            callback_data=f"tp_edit:{template.template_id}",
-        )
-    ]
-    # Этап A2 (§3): у стандарта места расширенный вариант включается и
-    # выключается одной кнопкой. Пока флаг выключен, доступ к расширенному
-    # редактору скрыт, но сам текст и правила остаются в базе.
-    standard_toggle: InlineKeyboardButton | None = None
-    if template.kind == TEMPLATE_KIND_STANDARD:
-        if template.extended_active:
+    text = _fit_value_screen(build, blocks=1)
+    template_id = template.template_id
+    rows: list[list[InlineKeyboardButton]] = []
+    if is_standard:
+        if extended_on:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.templates.prostoy_shablon"),
+                        callback_data=f"tp_edit:{template_id}",
+                    ),
+                    InlineKeyboardButton(
+                        tr("buttons.templates.rasshirennyy_shablon"),
+                        callback_data=(
+                            f"tp_edit_ext:{template_id}"
+                            if has_extended
+                            else f"tp_mkext:{template_id}"
+                        ),
+                    ),
+                ]
+            )
+            # §6.3: правила — только у включённого расширенного варианта.
             if has_extended:
-                edit_row.append(
-                    InlineKeyboardButton(
-                        tr("buttons.templates.rasshirennaya_versiya"),
-                        callback_data=f"tp_edit_ext:{template.template_id}",
-                    )
+                rows.append(
+                    [
+                        InlineKeyboardButton(
+                            tr("buttons.templates.uslovnye_chasti"),
+                            callback_data=f"tp_cond:{template_id}",
+                        )
+                    ]
                 )
-            else:
-                # Стандарт, созданный до этапа A1, ещё без расширенного
-                # текста: «Расширенная версия» открывает его создание.
-                edit_row.append(
+            rows.append(
+                [
                     InlineKeyboardButton(
-                        tr("buttons.templates.rasshirennaya_versiya"),
-                        callback_data=f"tp_mkext:{template.template_id}",
+                        tr("buttons.templates.kirpichiki"),
+                        callback_data=f"tp_bricks:{template_id}",
                     )
-                )
-            standard_toggle = InlineKeyboardButton(
-                tr("buttons.templates.vyklyuchit_dopolnitelnyy_shablon"),
-                callback_data=f"tp_ext_off:{template.template_id}",
+                ]
+            )
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.templates.vosstanovit_standart"),
+                        callback_data=f"tp_reset:{template_id}",
+                    ),
+                    InlineKeyboardButton(
+                        tr("buttons.templates.vyklyuchit_dopolnitelnyy_shablon"),
+                        callback_data=f"tp_ext_off:{template_id}",
+                    ),
+                ]
             )
         else:
-            standard_toggle = InlineKeyboardButton(
-                tr("buttons.templates.vklyuchit_dopolnitelnyy_shablon"),
-                callback_data=f"tp_ext_on:{template.template_id}",
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.templates.tekst"),
+                        callback_data=f"tp_edit:{template_id}",
+                    ),
+                    InlineKeyboardButton(
+                        tr("buttons.templates.vklyuchit_dopolnitelnyy_shablon"),
+                        callback_data=f"tp_ext_on:{template_id}",
+                    ),
+                ]
             )
-    elif has_extended:
-        edit_row.append(
-            InlineKeyboardButton(
-                tr("buttons.templates.rasshirennyy"),
-                callback_data=f"tp_edit_ext:{template.template_id}",
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.templates.kirpichiki"),
+                        callback_data=f"tp_bricks:{template_id}",
+                    )
+                ]
             )
-        )
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.templates.vosstanovit_standart"),
+                        callback_data=f"tp_reset:{template_id}",
+                    )
+                ]
+            )
     else:
-        # Poster 2.3.1 E2: путь создания расширенной версии. Кнопка стоит
-        # рядом с правкой текста: основа берётся из него же.
-        edit_row.append(
+        # Личный шаблон: кнопки прежние (удаление и пр.), меняются только
+        # термины и раскладка первой строки.
+        edit_row = [
             InlineKeyboardButton(
-                tr("buttons.templates.sozdat_rasshirennuyu"),
-                callback_data=f"tp_mkext:{template.template_id}",
+                tr("buttons.templates.tekst"),
+                callback_data=f"tp_edit:{template_id}",
             )
-        )
-    keyboard = InlineKeyboardMarkup(
-        [
-            edit_row,
-            *([[standard_toggle]] if standard_toggle is not None else []),
-            # Текст шаблона показан на этой же карточке, поэтому отдельный
-            # экран предпросмотра не нужен: остаётся список кодов кирпичиков.
+        ]
+        if has_extended:
+            edit_row.append(
+                InlineKeyboardButton(
+                    tr("buttons.templates.rasshirennyy_shablon"),
+                    callback_data=f"tp_edit_ext:{template_id}",
+                )
+            )
+        else:
+            # Poster 2.3.1 E2: путь создания расширенной версии. Кнопка
+            # стоит рядом с правкой текста: основа берётся из него же.
+            edit_row.append(
+                InlineKeyboardButton(
+                    tr("buttons.templates.sozdat_rasshirennuyu"),
+                    callback_data=f"tp_mkext:{template_id}",
+                )
+            )
+        rows.append(edit_row)
+        if has_extended:
+            rows.append(
+                [
+                    InlineKeyboardButton(
+                        tr("buttons.templates.uslovnye_chasti"),
+                        callback_data=f"tp_cond:{template_id}",
+                    )
+                ]
+            )
+        rows.append(
             [
                 InlineKeyboardButton(
                     tr("buttons.templates.kirpichiki"),
-                    callback_data=f"tp_bricks:{template.template_id}",
-                ),
-            ],
-            # Опасное действие — отдельной строкой: его нельзя нажать
-            # случайно рядом с просмотром.
+                    callback_data=f"tp_bricks:{template_id}",
+                )
+            ]
+        )
+        rows.append(
             [
                 InlineKeyboardButton(
                     tr("buttons.templates.vosstanovit_standart"),
-                    callback_data=f"tp_reset:{template.template_id}",
+                    callback_data=f"tp_reset:{template_id}",
                 )
-            ],
-            [_card_back_button(template)],
-        ]
-    )
-    rows = [list(row) for row in keyboard.inline_keyboard]
-    # Poster 2.5.2 §6: раздел правил — только у расширенного шаблона. У
-    # простого нет ни расширенного текста, ни кнопки: правило скрывает часть
-    # расширенного текста, а его отсутствие делает раздел бессмысленным.
-    if has_extended:
-        # Отдельный раздел правил стоит сразу после списка кирпичиков —
-        # это про тот же текст, но не необратимое действие.
-        rows.insert(
-            2,
-            [
-                InlineKeyboardButton(
-                    tr("buttons.templates.uslovnye_chasti"),
-                    callback_data=f"tp_cond:{template.template_id}",
-                )
-            ],
+            ]
         )
-    if template.kind == TEMPLATE_KIND_PERSONAL:
         # Стандарт места не удаляется: место не может остаться без шаблона
-        # (это гарантирует триггер схемы). У личного удаление — в конце списка.
-        rows.insert(
-            -1,
+        # (это гарантирует триггер схемы). У личного удаление — перед
+        # возвратом.
+        rows.append(
             [
                 InlineKeyboardButton(
                     tr("buttons.templates.udalit_shablon"),
-                    callback_data=f"tp_delete:{template.template_id}",
+                    callback_data=f"tp_delete:{template_id}",
                 )
-            ],
+            ]
         )
+    rows.append([_card_back_button(template)])
     return text, InlineKeyboardMarkup(rows)
 
 
@@ -1009,45 +1042,53 @@ def _delete_personal_template(
 def _text_edit_content(
     state: dict,
 ) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    Экран правки текста шаблона (§7.2 задания 2.6.1).
+
+    Заголовок зависит от варианта (`state["text_name"]`), ниже сохранённый
+    текст с переносами и один короткий абзац-инструкция. Сценария
+    «Очистить» больше нет: очищать текст шаблона одним нажатием не нужно.
+    """
     text_name = state["text_name"]
-    title = TEXT_GENITIVE[text_name]
+    title = (
+        tr("templates.edit.title_extended")
+        if text_name == TEMPLATE_EXTENDED_CONTENT
+        else tr("templates.edit.title")
+    )
     draft = state.get("draft_text", "")
 
     def build(limits: list[int]) -> str:
         # Бюджет значения считается от обвязки ЭТОГО экрана: заголовок и
-        # подсказка про формат входят в 4096 вместе с блоком значения.
-        return tr_safe(
-            "templates.build.redaktirovanie_otpravte_novym",
-            title=title,
-            value_block=_value_block(
-                tr("templates.build.tekst_chernovik"), draft, limit=limits[0]
-            ),
+        # подсказка входят в 4096 вместе с блоком значения.
+        return "\n".join(
+            [
+                title,
+                "",
+                tr("templates.edit.current"),
+                current_value.clip_html(_h(draft), limit=limits[0]),
+                "",
+                tr("templates.edit.instruction"),
+            ]
         )
 
     text = _fit_value_screen(build, blocks=1)
     template_id = state["template_id"]
     keyboard = InlineKeyboardMarkup(
         [
-            # H3 (требование E): два справочных действия рядом.
+            # §7.3: два справочных действия — одной строкой.
             [
                 InlineKeyboardButton(
-                    tr("buttons.templates.kirpichiki"),
+                    tr("buttons.templates.spisok_kirpichikov"),
                     callback_data=f"tp_bricks:{template_id}",
                 ),
                 InlineKeyboardButton(
-                    tr("buttons.templates.podskazka"),
+                    tr("buttons.templates.kak_redaktirovat"),
                     callback_data=f"tp_help:{template_id}",
                 ),
             ],
-            # Очистка — отдельной строкой: необратимо для черновика.
             [
                 InlineKeyboardButton(
-                    tr("buttons.templates.ochistit"), callback_data="tp_clear"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    tr("buttons.templates.k_shablonu_otmenit_pravku"),
+                    tr("buttons.templates.k_shablonu"),
                     callback_data=f"tp_open:{template_id}",
                 )
             ],
@@ -1394,6 +1435,15 @@ def _brick_list_content(
                 f"{_h(brick_title_display(brick.title, brick.code))} "
                 f"· {type_title} · {scope}"
             )
+            # §7.4: у кирпичика с описанием показываем краткое пояснение
+            # одной строкой — это подсказка автору, а не справочник.
+            if brick.description:
+                lines.append(
+                    "   "
+                    + current_value.clip_html(
+                        _h(brick.description), limit=BRICK_DESCRIPTION_LIMIT
+                    ).replace("\n", " ")
+                )
 
     else:
         lines.append(tr("templates.brick_list.net_dostupnyh_kirpichikov"))
@@ -1408,9 +1458,35 @@ def _brick_list_content(
 
 
 def _help_content() -> tuple[str, InlineKeyboardMarkup]:
-    text = tr("templates.help.oformlenie_teksta_shablona_kod")
+    """
+    «Как редактировать» (§7.5 задания 2.6.1).
+
+    Короткий экран: что писать, пример отдельным блоком и одна строка
+    поддерживаемого форматирования. Синтаксис примера совпадает с
+    `template_parser`/`template_compiler`: `**[кирпичик]**` — жирный вокруг
+    значения, `*текст*` — курсив, `Текст(URL)` — ссылка.
+    """
+    text = "\n".join(
+        [
+            tr("templates.help.title"),
+            "",
+            tr("templates.help.intro"),
+            "",
+            tr("templates.help.example"),
+            "",
+            tr("templates.help.substitution"),
+            "",
+            tr("templates.help.formats"),
+        ]
+    )
     return text, InlineKeyboardMarkup(
-        [[InlineKeyboardButton(tr("buttons.nav.back"), callback_data="tp_back")]]
+        [
+            [
+                InlineKeyboardButton(
+                    tr("buttons.templates.k_redaktoru"), callback_data="tp_back"
+                )
+            ]
+        ]
     )
 
 
@@ -2708,23 +2784,6 @@ async def handle_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 # --- Обработчики: редактирование секции -------------------------------------
 
 
-async def handle_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = ctx.query(update)
-    state = load_template_session(ctx.user(update).id)
-    if not _valid_state(state) or state.get("phase") != PHASE_SECTION_EDIT:
-        await query.answer(STALE_TEXT, show_alert=True)
-        return
-    await query.answer()
-    state["draft_text"] = ""
-    state["chosen_brick_ids"] = {}
-    await _validate_and_show(
-        update,
-        context,
-        state,
-        notice=tr("templates.handle_clear.tekst_ochischen_proverte_rezultat"),
-    )
-
-
 async def handle_retry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = ctx.query(update)
     state = load_template_session(ctx.user(update).id)
@@ -3550,7 +3609,6 @@ def templates_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(handle_help, pattern=r"^tp_help:\d+$"),
         CallbackQueryHandler(handle_back, pattern=r"^tp_back$"),
         # Редактирование и сохранение.
-        CallbackQueryHandler(handle_clear, pattern=r"^tp_clear$"),
         CallbackQueryHandler(handle_retry, pattern=r"^tp_retry$"),
         CallbackQueryHandler(handle_refresh, pattern=r"^tp_refresh$"),
         CallbackQueryHandler(handle_retry_save, pattern=r"^tp_retry_save$"),

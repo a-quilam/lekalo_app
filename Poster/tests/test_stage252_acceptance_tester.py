@@ -795,8 +795,12 @@ class TemplateCardTests(unittest.TestCase):
         )
         await _open_card(h, template_id)
         labels = screen_labels(h)
-        self.assertIn("✏️ Правка шаблона", labels, labels)
-        self.assertIn("✏️ Правка расширенного шаблона", labels, labels)
+        # 2.6.1 §6/§7: терминология «Расширенный шаблон» едина во всех меню —
+        # на карточке две кнопки правки: простая и расширенная.
+        self.assertIn(cat.text("buttons.templates.tekst"), labels, labels)
+        self.assertIn(
+            cat.text("buttons.templates.rasshirennyy_shablon"), labels, labels
+        )
         self.assertNotIn("✏️ Текст", labels, "старая подпись кнопки")
         self.assertNotIn("✏️ Расширенный", labels, "старая подпись кнопки")
         self.assertFalse(
@@ -922,7 +926,10 @@ class ConditionalEntryTests(unittest.TestCase):
         await h.callback("tp_hub")
         await h.callback(f"tp_open:{extended_id}")
         self.assertIn(
-            ("🧩 Условия расширенного шаблона", f"tp_cond:{extended_id}"),
+            (
+                cat.text("buttons.templates.uslovnye_chasti"),
+                f"tp_cond:{extended_id}",
+            ),
             h.screen_buttons(),
         )
 
@@ -966,10 +973,10 @@ class ConditionalEntryTests(unittest.TestCase):
             self.assertTrue(updated.ok, updated.message)
 
         await h.callback(f"tp_std:{place_id}")
-        self.assertIn("Стандартный шаблон места", h.screen_text())
+        cat.assert_shows(self, h.screen_text(), "templates.card.title")
         await h.callback(f"tp_cond:{template_id}")
         self.assertIn(
-            "🧩 Условия расширенного шаблона",
+            cat.text("templates.cond.title"),
             h.screen_text(),
             "ложный отказ по origin",
         )

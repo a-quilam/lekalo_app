@@ -203,7 +203,7 @@ async def _assert_can_create_extended(h) -> None:
             "кнопка расширенной версии не создаёт её, а сообщает об "
             f"отсутствии: {alerts}"
         )
-    if not cat.shows(h.screen_text(), "templates.build.redaktirovanie_otpravte_novym"):
+    if not cat.shows(h.screen_text(), "templates.edit.instruction"):
         raise AssertionError(
             "кнопка должна открывать редактор расширенного текста, "
             f"экран: {h.screen_text()[:300]!r}"

@@ -63,8 +63,8 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 TODAY = date(2026, 11, 2)
 
-TITLE_SIMPLE = "✏️ Правка шаблона"
-TITLE_EXTENDED = cat.text("buttons.templates.rasshirennaya_versiya")
+TITLE_SIMPLE = cat.text("templates.edit.title")
+TITLE_EXTENDED = cat.text("buttons.templates.rasshirennyy_shablon")
 BUTTON_ON = cat.text("buttons.templates.vklyuchit_dopolnitelnyy_shablon")
 BUTTON_OFF = cat.text("buttons.templates.vyklyuchit_dopolnitelnyy_shablon")
 
@@ -326,7 +326,7 @@ class StandardExtendedToggleTests(unittest.TestCase):
         cat.assert_shows(
             self,
             h.screen_text(),
-            "templates.build.redaktirovanie_otpravte_novym",
+            "templates.edit.instruction",
             "экран редактора расширенного текста не открылся",
         )
 

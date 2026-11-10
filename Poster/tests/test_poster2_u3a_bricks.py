@@ -191,7 +191,9 @@ class BrickRowEntryTests(unittest.TestCase):
         # Базовые выходы хаба не потерялись.
         self.assertIn("bk_create", _datas(h))
         self.assertIn("bp_mine", _datas(h))
-        self.assertIn("main_menu", _datas(h))
+        # Poster 2.6.1 §5: «🏠 В меню» из хаба убрана, остался «◀️ Назад».
+        self.assertNotIn("main_menu", _datas(h))
+        self.assertIn("bk_back", _datas(h))
 
     @scenario_test
     async def test_archived_brick_row_has_no_propose_button(self, h: Harness) -> None:

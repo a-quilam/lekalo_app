@@ -227,9 +227,7 @@ class TemplatesUiTests(unittest.TestCase):
         await h.callback(f"tp_open:{tid}", user_id=OWNER_TG)
         self.assertIn("Редактируемый", h.screen_text())
         await h.callback(f"tp_edit:{tid}", user_id=OWNER_TG)
-        cat.assert_shows(
-            self, h.screen_text(), "templates.build.redaktirovanie_otpravte_novym"
-        )
+        cat.assert_shows(self, h.screen_text(), "templates.edit.instruction")
         await h.text("Новое тело [дата]", user_id=OWNER_TG)
         self.assertIn("Новое тело", h.screen_text())
         await h.callback("tp_save", user_id=OWNER_TG)
@@ -359,16 +357,17 @@ class TemplatesUiTests(unittest.TestCase):
         admin_tg = OWNER_TG
         place_id, template_id = self.make_place_with_admin(h, admin_tg)
         await h.callback(f"tp_std:{place_id}", user_id=admin_tg)
-        self.assertIn("Стандартный шаблон места", h.screen_text())
-        self.assertIn("Версия: 1", h.screen_text())
+        # §6.2: в карточке остались только шапка и текст простого шаблона;
+        # «Тип» и «Версия» убраны.
+        cat.assert_shows(self, h.screen_text(), "templates.card.title")
+        cat.assert_shows(self, h.screen_text(), "templates.card.simple_html")
+        self.assertNotIn("Версия:", h.screen_text())
         buttons = self.screen_callbacks(h)
         self.assertIn(f"tp_edit:{template_id}", buttons)
         self.assertIn(f"tp_back_place:{place_id}", buttons)
 
         await h.callback(f"tp_edit:{template_id}", user_id=admin_tg)
-        cat.assert_shows(
-            self, h.screen_text(), "templates.build.redaktirovanie_otpravte_novym"
-        )
+        cat.assert_shows(self, h.screen_text(), "templates.edit.instruction")
         await h.text("Своё тело [название]", user_id=admin_tg)
         self.assertIn("Своё тело", h.screen_text())
         await h.callback("tp_save", user_id=admin_tg)
@@ -430,7 +429,7 @@ class TemplatesUiTests(unittest.TestCase):
 
         with patch("config.SUPERADMIN_USER_IDS", (stranger_tg,)):
             await h.callback(f"tp_std:{place_id}", user_id=stranger_tg)
-            self.assertIn("Стандартный шаблон места", h.screen_text())
+            cat.assert_shows(self, h.screen_text(), "templates.card.title")
             await h.callback(f"tp_back_place:{place_id}", user_id=stranger_tg)
             self.assertIn(f"Место {admin_tg}", h.screen_text())
             self.assertIn(f"tp_std:{place_id}", self.screen_callbacks(h))
@@ -762,12 +761,17 @@ class TemplatesUiTests(unittest.TestCase):
         assert saved is not None
         self.assertEqual(saved.content, full_text)
 
-        # H2: текст шаблона один, поэтому «Очистить» оставляет пустой
-        # черновик — сохранить его нельзя, прежняя версия остаётся.
+        # 2.6.1 §7.3: сценария «Очистить» больше нет. Кнопка удалена,
+        # поэтому устаревший `tp_clear` обрабатывается общим правилом
+        # «кнопка устарела» и ничего не меняет.
         await h.callback(f"tp_edit:{template_id}", user_id=owner_tg)
+        answers_before = len(h.answer_texts())
         await h.callback("tp_clear", user_id=owner_tg)
-        self.assertIn("Текст не сохранён", h.screen_text())
-        self.assertIn("пустых строк", h.screen_text())
+        self.assertGreater(
+            len(h.answer_texts()), answers_before, "устаревшая кнопка без ответа"
+        )
+        self.assertEqual(h.answer_texts()[-1], cat.text("errors.stale.templates"))
+        cat.assert_not_shows(self, h.screen_text(), "errors.internal")
         row = self.template_row(h, template_id)
         assert row is not None
         self.assertEqual(row.revision, 2)

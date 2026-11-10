@@ -19,7 +19,8 @@ Poster 2.5.2, T2: «◀️ Назад» из хаба «Мои кирпичик�
   тот же шаг из resume-снимка, а справка поверх хаба источник не сбрасывает;
 - у старой сессии без `hub_origin` (прямая команда `/bricks`, старый
   callback) безопасный фолбэк — «Управление», без «внутренней ошибки»;
-- кнопка «🏠 В меню» в хабе остаётся рабочей.
+- кнопки «🏠 В меню» в хабе нет: единственный возврат — «◀️ Назад»
+  (Poster 2.6.1 §5).
 
 Только настоящее приложение, FakeBot и временная SQLite: реальные
 `post_bot.db`, `.env` и сеть Telegram не используются.
@@ -262,11 +263,11 @@ class HubBackTests(unittest.TestCase):
         )
 
     @scenario_test
-    async def test_hub_keeps_main_menu_button(self, h) -> None:
+    async def test_hub_has_no_main_menu_button(self, h) -> None:
+        # Poster 2.6.1 §5: в хабе остался ОДИН возврат — «◀️ Назад».
         await open_from_manage(h)
-        self.assertIn(("🏠 В меню", "main_menu"), _buttons(h))
-        await h.callback("main_menu", user_id=OWNER_TG)
-        self.assertIn(cat.text("menu.main"), h.screen_text())
+        self.assertNotIn(("🏠 В меню", "main_menu"), _buttons(h))
+        self.assertIn((BACK_LABEL, "bk_back"), _buttons(h))
 
 
 if __name__ == "__main__":

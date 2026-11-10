@@ -315,9 +315,21 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 
 def _draft_block(screen: str) -> str:
-    """Текст между первой парой разделителей — то, что видит автор."""
-    parts = screen.split("────────────")
-    return parts[1].strip("\n") if len(parts) > 1 else ""
+    """
+    Текст сохранённого варианта с экрана правки.
+
+    2.6.1 §7.2: экран больше не рисует значение в рамке-разделителе —
+    текст стоит отдельным блоком после подписи «Текущий текст:», а ниже идёт
+    абзац-инструкция.
+    """
+    marker = cat.text("templates.edit.current")
+    if marker not in screen:
+        return ""
+    tail = screen.split(marker, 1)[1].strip("\n")
+    instruction = cat.text("templates.edit.instruction")
+    if instruction and instruction in tail:
+        tail = tail.split(instruction, 1)[0]
+    return tail.strip("\n")
 
 
 def _version_content(h, template_id: int, revision: int) -> str:
