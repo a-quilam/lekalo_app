@@ -41,6 +41,7 @@ from announcement_store import (
     AnnouncementActorError,
     AnnouncementError,
     AnnouncementNotFoundError,
+    extras_enabled,
     get_announcement_draft,
 )
 from brick_types import (
@@ -211,6 +212,14 @@ async def handle_panel_callback(
         # Коллекция фото объясняет запрет сама, поэтому сюда не попадает.
         await wizard._answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
         await wizard._render_publish_status(update, context, details)
+        return
+
+    if action == announcement_controls.ACTION_EXTRAS and not extras_enabled(details):
+        # §4 2.6.1: у выключенного расширенного шаблона доп. полей нет.
+        # Старая кнопка панели получает короткий ответ, экран не меняется;
+        # состояние диалога остаётся состоянием управления анонсом.
+        wizard.remember_conversation_state(update, context, wizard.AW_PREVIEW)
+        await wizard._answer(update, tr("wizard.extras.disabled"), alert=True)
         return
 
     wizard.remember_conversation_state(update, context, PANEL_STATES[action])

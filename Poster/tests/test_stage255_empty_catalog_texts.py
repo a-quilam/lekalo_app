@@ -3,9 +3,8 @@
 Poster 2.5.5 §3 — пустые блоки каталога не ломают экран.
 
 Каталог `config/ui_texts.yaml` — канон текстов, и владелец вправе оставить
-строку пустой. Три таких ключа влияют на сборку экранов:
+строку пустой. Два таких ключа влияют на сборку экранов:
 
-- `wizard.question.optional` — подсказка «поле можно пропустить»;
 - `wizard.question.missing` — «поле пока не заполнено»;
 - `wizard.extras.intro` — вступление экрана дополнительных полей.
 
@@ -52,7 +51,6 @@ except Exception as exc:  # noqa: BLE001 — причина попадает в 
 
 
 EMPTY_CATALOG_KEYS = (
-    "wizard.question.optional",
     "wizard.question.missing",
     "wizard.extras.intro",
 )
@@ -115,8 +113,9 @@ class QuestionWithoutOptionalBlockTests(unittest.TestCase):
     def test_missing_value_question_has_no_empty_separator(self) -> None:
         field = _field(FIELD_STATUS_MISSING)
         text = wizard_questions.question_text(field, 0, 1)
-        cat.assert_no_empty_block(self, text, "wizard.question.optional")
         cat.assert_no_empty_block(self, text, "wizard.question.missing")
+        # Poster 2.6.1 §3.1: ровно шапка и одна подсказка. У поля без
+        # описания и без правил типа подсказка — универсальный fallback.
         self.assertEqual(
             text,
             "\n\n".join(
@@ -124,18 +123,20 @@ class QuestionWithoutOptionalBlockTests(unittest.TestCase):
                     cat.text(
                         "wizard.question.header", step=1, total=1, title="Название"
                     ),
-                    cat.text("wizard.hint.short_text"),
+                    cat.text("wizard.hint.fallback", title="Название"),
                 ]
             ),
             "пустые блоки каталога оставили лишние строки",
         )
 
-    def test_skipped_value_keeps_its_block_only(self) -> None:
+    def test_skipped_value_does_not_add_service_lines(self) -> None:
         field = _field(FIELD_STATUS_SKIPPED)
         text = wizard_questions.question_text(field, 1, 3)
-        cat.assert_shows(self, text, "wizard.question.skipped")
-        cat.assert_no_empty_block(self, text, "wizard.question.optional")
+        # §3.3: служебной строки «Поле пропущено» на экране вопроса нет —
+        # пользователь видит шапку и единственную подсказку.
+        cat.assert_not_shows(self, text, "wizard.question.skipped")
         cat.assert_no_empty_block(self, text, "wizard.question.missing")
+        self.assertEqual(len(text.split("\n\n")), 2, text)
 
 
 # --- extras без вступления -------------------------------------------------
@@ -169,26 +170,26 @@ class ExtrasWithoutIntroTests(unittest.TestCase):
 
 
 class NonEmptyBlocksIntactTests(unittest.TestCase):
-    """(в) При непустых значениях все блоки на месте и не склеиваются."""
+    """(в) При непустых значениях экран не склеивается и ничего лишнего нет."""
 
-    def test_filled_value_question_keeps_all_blocks(self) -> None:
+    def test_filled_value_question_has_no_current_value_line(self) -> None:
         field = _field(FIELD_STATUS_VALID, raw_value="Значение")
         text = wizard_questions.question_text(field, 2, 4)
         cat.assert_shows(self, text, "wizard.question.header", step=3, total=4)
-        cat.assert_shows(self, text, "wizard.hint.short_text")
-        cat.assert_shows(self, text, "wizard.question.current_value")
+        # §3.3: служебной строки «Сейчас: …» на экране вопроса больше нет,
+        # повторный ввод заменяет значение, а не показывает его отдельно.
+        cat.assert_not_shows(self, text, "wizard.question.current_value")
         self.assertNotIn("\n\n\n", text)
         self.assertEqual(
             text.split("\n\n"),
             [
                 cat.text("wizard.question.header", step=3, total=4, title="Название"),
-                cat.text("wizard.hint.short_text"),
-                cat.text("wizard.question.current_value", value="Значение"),
+                cat.text("wizard.hint.fallback", title="Название"),
             ],
             "непустые блоки склеились или потерялись",
         )
 
-    def test_error_block_added_after_values(self) -> None:
+    def test_error_block_added_after_hint(self) -> None:
         field = _field(FIELD_STATUS_VALID, raw_value="Значение")
         text = wizard_questions.question_text(field, 0, 2, error="Неверный формат")
         self.assertNotIn("\n\n\n", text)

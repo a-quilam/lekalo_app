@@ -121,7 +121,7 @@ class CatalogFileTests(unittest.TestCase):
             root / "utils" / "screen.py",
         ]
         # Источник — действующий каталог (владелец правит YAML), а не
-        # `DEFAULTS`. Пустые строки (`wizard.question.optional` и т.п.) и
+        # `DEFAULTS`. Пустые строки (`wizard.question.missing` и т.п.) и
         # короткие служебные значения вроде «Да» не проверяем: они законно
         # встречаются как обычные литералы.
         catalog = ui_texts.texts()

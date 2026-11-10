@@ -837,7 +837,9 @@ class QuestionScreenTests(unittest.TestCase):
         self.assertIn(PHOTO_STEP, h.screen_text())
         await h.callback(_callback(h, "aw_photo_back"))
         cat.assert_shows(self, h.screen_text(), "wizard.question.header")
-        self.assertIn(CURRENT_VALUE, h.screen_text())
+        # §3.3 (2.6.1): строки «Сейчас: …» на экране вопроса больше нет —
+        # значение остаётся в БД, а автор видит шапку и одну подсказку.
+        cat.assert_not_shows(self, h.screen_text(), "wizard.question.current_value")
         assert_clean("заполненное поле")
 
         # Экран ошибки ввода (editing=True) по заполненному полю.
@@ -934,12 +936,10 @@ class SkipSemanticsTests(unittest.TestCase):
         self.assertIsNotNone(state)
         self.assertEqual(state[0], "valid")
         self.assertEqual(state[1].get("text"), "M")
-        self.assertIn(
-            CURRENT_VALUE,
-            h.screen_text(),
-            "на заполненном вопросе видно текущее значение",
-        )
-        self.assertIn("M", h.screen_text())
+        # §3.3 (2.6.1): значение сохранено, но экран вопроса его не
+        # дублирует служебной строкой — только шапка и одна подсказка.
+        cat.assert_not_shows(self, h.screen_text(), "wizard.question.current_value")
+        self.assertEqual(len(h.screen_text().split("\n\n")), 2, h.screen_text())
 
     @scenario_test
     async def test_s11_new_input_replaces_old_value(self, h):

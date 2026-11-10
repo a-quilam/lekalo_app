@@ -157,6 +157,7 @@ systemctl --user restart poster-bot
 | `wizard.extras.empty` | там же | пустое состояние «Дополнительных полей пока нет.» |
 | `wizard.extras.no_extended` | там же | у шаблона без расширенной версии текста: доп. полей нет |
 | `wizard.extras.unavailable` | там же | список не открылся по другой причине (данные изменились) |
+| `wizard.extras.disabled` | там же | расширенный вариант шаблона площадки выключен — доп. полей нет |
 | `buttons.extras.edit` | там же | «✏️ {number}. {title}» — вход в правку поля |
 | `buttons.extras.delete` | там же | «🗑 {number}» — удаление поля |
 

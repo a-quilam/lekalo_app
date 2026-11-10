@@ -361,11 +361,13 @@ class MutationCaptureTests(unittest.TestCase):
             entities=[ent(MessageEntity.URL, 0, 21)],
         )
 
-        # Экран вопроса: allow-list'нутый HTML, без повторного экранирования.
+        # §3.3 (2.6.1): экран вопроса больше не показывает сохранённое
+        # значение отдельной строкой, поэтому allow-list'нутый HTML виден в
+        # живом блоке анонса, а не на служебном экране.
         await _reopen_first_question(h)
         screen = h.screen()
-        self.assertIn('<a href="https://example.com/a">', screen["text"])
-        self.assertNotIn("&lt;a href", screen["text"])
+        self.assertNotIn("&lt;a href", _live_text(h))
+        self.assertIn('<a href="https://example.com/a">', _live_text(h))
         self.assertTrue(screen["link_preview_options"].is_disabled)
 
         # Живой блок и все последующие правки — без превью.
@@ -460,10 +462,12 @@ class MutationCaptureTests(unittest.TestCase):
         self.assertEqual(tags, ["<b>", "</b>"], f"осталась чужая разметка: {tags}")
         self.assertEqual(field.raw_value, "Исходно", "plain остаётся источником истины")
 
-        # Служебный экран тоже не содержит опасной разметки.
+        # Служебный экран вопроса не показывает значение отдельной строкой
+        # (§3.3 2.6.1), но и опасной разметки в нём нет.
         await _reopen_question(h)
         self.assertNotIn("<img", h.screen()["text"])
-        self.assertIn("<b>ok</b>", h.screen()["text"])
+        self.assertNotIn("<b>ok</b>", h.screen()["text"])
+        self.assertIn("<b>ok</b>", _live_text(h))
 
     @scenario_test
     async def test_url_label_value_does_not_nest_links(self, h):
@@ -537,26 +541,17 @@ class LongValueScreenTests(unittest.TestCase):
         self.assertEqual(payload["text"], text)
         self.assertEqual(payload["html"], f"<b>{text}</b>")
 
-        # Следующий вопрос и «Назад» на нём: экран первого вопроса с уже
-        # сохранённым длинным значением (жалоба приёмки).
+        # Следующий вопрос и «Назад» на нём: экран первого вопроса остаётся
+        # коротким — с 2.6.1 §3.3 сохранённое значение на нём не дублируется,
+        # поэтому лимит Telegram не достигается даже длинным ответом.
         await h.callback(_callback(h, "aw_qback"))
         screen_text = h.screen_text()
         self.assertNotIn("Произошла внутренняя ошибка", "\n".join(h.screen_texts()))
-        self.assertIn(cat.text("wizard.question.current_value", value=""), screen_text)
+        cat.assert_not_shows(self, screen_text, "wizard.question.current_value")
         self.assertLess(len(screen_text), 4096, "экран ушёл за лимит Telegram")
-        # Разметка сохранена, но значение усечено и обрезано «…».
-        self.assertIn("<b>", screen_text)
-        self.assertNotIn("&lt;b&gt;", screen_text)
-        self.assertIn("…", screen_text)
-        self.assertEqual(screen_text.count("<b>"), screen_text.count("</b>"))
-        value_html = screen_text.split(
-            cat.fragment("wizard.question.current_value"), 1
-        )[1]
-        visible = re.sub(r"<[^>]*>", "", value_html)
-        self.assertLessEqual(
-            len(visible), wizard_questions_module.DISPLAY_TEXT_LIMIT, value_html[-40:]
-        )
-        self.assertTrue(visible.endswith("…"))
+        # Полное значение с разметкой остаётся в живом блоке анонса.
+        self.assertIn(f"<b>{text}</b>", _live_text(h))
+        self.assertNotIn("&lt;b&gt;", _live_text(h))
 
     @staticmethod
     async def _choose_extra_brick(h, brick_id: int) -> None:

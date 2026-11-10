@@ -265,11 +265,48 @@ SYSTEM_BRICK_EMOJIS: dict[str, str] = {
 }
 
 
+# Poster 2.6.1 §3.2: короткие названия системных кирпичиков ТОЛЬКО для
+# шапки вопроса мастера («🏷 Название», «🕒 Начало»). Каталог `bricks`,
+# карточки и списки кирпичиков продолжают показывать полное сохранённое
+# название: короткое имя — оформление одного экрана, а не данных.
+SYSTEM_BRICK_SHORT_TITLES: dict[str, str] = {
+    "название": "Название",
+    "дата": "Дата",
+    "время_начала": "Начало",
+    "время_окончания": "Окончание",
+    "описание": "Описание",
+    "контакт": "Контакт",
+    "условие_входа": "Условие входа",
+    "куратор": "Куратор",
+    "подвал": "Подвал",
+}
+
+
 def system_brick_emoji(code: object) -> str:
     """Эмодзи системного кирпичика по коду; для прочих — пустая строка."""
     if not isinstance(code, str):
         return ""
     return SYSTEM_BRICK_EMOJIS.get(code, "")
+
+
+def brick_short_title(title: object, code: object) -> str:
+    """
+    Короткое название для шапки вопроса мастера (Poster 2.6.1 §3.2).
+
+    У системных кодов — утверждённое короткое имя, у пользовательских —
+    сохранённое название без изменений. Полное название и каталог `bricks`
+    не затрагиваются.
+    """
+    if isinstance(code, str) and code in SYSTEM_BRICK_SHORT_TITLES:
+        title = SYSTEM_BRICK_SHORT_TITLES[code]
+    return "" if title is None else str(title)
+
+
+def brick_short_title_display(title: object, code: object) -> str:
+    """Короткое название с эмодзи — ровно так, как в шапке вопроса."""
+    emoji = system_brick_emoji(code)
+    text = brick_short_title(title, code)
+    return f"{emoji} {text}" if emoji else text
 
 
 def brick_title_display(title: object, code: object) -> str:

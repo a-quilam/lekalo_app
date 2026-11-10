@@ -38,12 +38,13 @@ from brick_types import (
     BRICK_TYPE_TIME,
     BRICK_TYPE_TITLES,
     BRICK_TYPE_URL,
-    brick_title_display,
+    brick_short_title,
+    brick_short_title_display,
 )
 from utils import calendar_view, keyboard_layouts
 from utils.parsers import app_today
 from utils.tg_html import escape_html, utf16_len
-from utils.ui_texts import join_blocks, tr, tr_safe
+from utils.ui_texts import join_blocks, tr
 
 # Быстрые значения времени (S3 п.5): самые частые начала вечеринок/встреч.
 # Ручной ввод остаётся: кнопки — сокращение, а не замена.
@@ -328,6 +329,59 @@ def description_html(value: object) -> str:
     return f"<code>{h(text)}</code>" if text else ""
 
 
+def _has_type_rules(field: AnnouncementFieldState) -> bool:
+    """
+    Есть ли у типа поля правила, о которых стоит предупредить (2.6.1 §3.3).
+
+    Типовая подсказка сама по себе — не «инструкция автора»: она полезна
+    только там, где ограничивает ввод (даты горизонта, допустимые числа,
+    быстрый ввод времени, варианты выбора). Для простого текста без
+    описания остаётся короткий универсальный fallback.
+    """
+    rules = dict(field.rules or {})
+    if field.value_type == BRICK_TYPE_DATE:
+        return bool(date_rules_hint(rules))
+    if field.value_type == BRICK_TYPE_NUMBER:
+        return bool(number_rules_hint(rules))
+    return field.value_type in {BRICK_TYPE_TIME, BRICK_TYPE_CHOICE}
+
+
+def has_description_hint(field: AnnouncementFieldState) -> bool:
+    """
+    Есть ли у кирпичика собственная подсказка-описание (§3.3).
+
+    Описание задаёт человек (у системных кирпичиков — миграции 30/32), и
+    именно оно становится ЕДИНСТВЕННОЙ подсказкой вопроса. Вызывающий слой
+    по этому признаку решает, можно ли добавить служебную строку каталога:
+    две подсказки одновременно §3.3 запрещает.
+    """
+    return bool(_description_text(field.description))
+
+
+def question_hint(field: AnnouncementFieldState) -> str:
+    """
+    ЕДИНСТВЕННАЯ подсказка вопроса (Poster 2.6.1 §3.3).
+
+    Приоритет: специальная подсказка кирпичика (его `description`; у
+    системных кирпичиков она задана миграциями 30/32) → компактная
+    подсказка типа, если у типа есть правила → короткий универсальный
+    fallback. Две подсказки одновременно не показываются никогда: дубль
+    «Напишите название мероприятия» + «Напишите короткий текст» — дефект,
+    который устраняет этот контракт.
+    """
+    description = _description_text(field.description)
+    if description:
+        # Описание задаёт человек; `tr` экранирует его внутри `<code>`
+        # (Poster 2.1 R4 №27: описание в предпросмотре — моноширинно).
+        return tr("wizard.question.description_html", description=description)
+    if _has_type_rules(field):
+        return type_hint(field)
+    return tr(
+        "wizard.hint.fallback",
+        title=brick_short_title(field.title, field.code),
+    )
+
+
 def question_text(
     field: AnnouncementFieldState,
     index: int,
@@ -338,8 +392,15 @@ def question_text(
     notice: str | None = None,
 ) -> str:
     """
-    Текст вопроса по кирпичику: заголовок, описание автора, подсказка типа,
-    состояние значения, ошибка/уведомление.
+    Экран вопроса: короткая шапка, пустая строка и одна подсказка (§3.1).
+
+    Ровно два содержательных блока: шапка `🧩 🏷 Название · 1/5` и одна
+    подсказка (`question_hint`). Описание кирпичика, типовая подсказка,
+    состояние значения и «поле можно пропустить» больше не дублируются:
+    служебные строки о уже заполненных полях (`✓ Дата`) и универсальные
+    инструкции внизу запрещены. Ошибка ввода и уведомление остаются
+    отдельным блоком ПОСЛЕ подсказки — при ошибке пользователь видит и
+    свой текст, и конкретную причину отказа (§3.3 ТЗ).
 
     Юмора здесь нет намеренно (S5 §5.7): редкая шутливая строка добавляется
     вызывающим слоем уже после сборки клавиатуры, чтобы текст вопроса
@@ -350,39 +411,15 @@ def question_text(
             "wizard.question.header",
             step=index + 1,
             total=total,
-            title=brick_title_display(field.title, field.code),
-        )
+            title=brick_short_title_display(field.title, field.code),
+        ),
+        question_hint(field),
     ]
-    # Poster 2.0 S5: описание кирпичика — инструкция автору анонса. Текст
-    # задаёт человек, поэтому `tr` экранирует его и оставляет в `<code>`
-    # (Poster 2.1 R4 №27: описание в предпросмотре — моноширинно).
-    description = _description_text(field.description)
-    if description:
-        blocks.append(tr("wizard.question.description_html", description=description))
-    blocks.extend(
-        [
-            type_hint(field),
-            tr("wizard.question.optional"),
-        ]
-    )
-    if field.status == FIELD_STATUS_VALID:
-        # U1b: сохранённое значение показываем с форматированием (allow-list
-        # пройден при записи и чтении); plain-значения экранируются внутри.
-        # tr_safe: HTML значения уже прошёл allow-list — экранировать его
-        # повторно нельзя, иначе пользователь увидит &lt;b&gt;.
-        blocks.append(
-            tr_safe("wizard.question.current_value", value=stored_value_html(field))
-        )
-    elif field.status == FIELD_STATUS_SKIPPED:
-        blocks.append(tr("wizard.question.skipped"))
-    elif field.status == FIELD_STATUS_MISSING:
-        blocks.append(tr("wizard.question.missing"))
     if error:
         blocks.append(tr("wizard.question.error", message=error))
     if notice:
         blocks.append(h(notice))
-    # Пустые строки каталога (например, `wizard.question.optional` с
-    # намеренно пустым значением) не должны оставлять пустой блок.
+    # Пустые строки каталога не должны оставлять пустой блок.
     return join_blocks(blocks)
 
 

@@ -1706,6 +1706,28 @@ def extra_selectable(
     )
 
 
+def extras_enabled(details: AnnouncementDraftDetails) -> bool:
+    """
+    Разрешены ли доп. поля шаблоном снимка (Poster 2.6.1 §4).
+
+    Стандартный (площадочный) шаблон показывает доп. поля ТОЛЬКО при
+    включённом расширенном варианте: сохранённый в БД расширенный текст при
+    выключенном флаге не делает поля доступными. Снимок фиксирует флаг на
+    момент создания черновика, поэтому начатый сценарий не меняется от
+    последующего переключения (§4 ТЗ, этап A1).
+
+    Личный шаблон переключателя площадки не имеет: для него проверка
+    всегда проходит, и доступность, как и раньше, решают расширенный текст
+    и кандидаты в `extras_available`.
+    """
+    snapshot = details.template_snapshot
+    if snapshot is None:
+        return False
+    if snapshot.source_kind == TEMPLATE_KIND_STANDARD:
+        return bool(snapshot.extended_active)
+    return True
+
+
 def extras_available(
     session: Session,
     details: AnnouncementDraftDetails,
@@ -1719,6 +1741,8 @@ def extras_available(
     доставленного анонса, панель экземпляра). Кнопка нужна только тогда,
     когда экран списка не окажется пустым:
 
+    - расширенный вариант шаблона разрешён снимком (`extras_enabled`):
+      у площадки — включённый флаг, у личного шаблона — расширенный текст;
     - у снимка есть расширенный текст (`extended_content`);
     - в нём есть кирпичики, которых нет в простой версии (кандидаты), либо
       у анонса уже выбраны доп. поля;
@@ -1727,6 +1751,8 @@ def extras_available(
 
     Снимок без расширенного текста и без выбранных полей — кнопки нет.
     """
+    if not extras_enabled(details):
+        return False
     snapshot = details.template_snapshot
     if snapshot is None:
         return False

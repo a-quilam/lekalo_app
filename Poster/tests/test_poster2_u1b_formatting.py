@@ -208,13 +208,15 @@ class FormattingScreenTests(unittest.TestCase):
             entities=[ent(MessageEntity.BOLD, 0, 5)],
         )
 
-        # Возврат ко первому вопросу: значение показывается с разметкой.
+        # Возврат к первому вопросу: §3.3 (2.6.1) убрал служебную строку
+        # «Сейчас: …» с экрана вопроса. Сохранённая разметка видна в живом
+        # блоке анонса и не деградирует до экранированных тегов.
         await h.callback(_callback(h, "aw_qback"))
         screen = h.screen()["text"]
-        cat.assert_shows(
-            self, screen, "wizard.question.current_value", value="<b>Театр</b>"
-        )
+        cat.assert_not_shows(self, screen, "wizard.question.current_value")
         self.assertNotIn("&lt;b&gt;", screen)
+        self.assertIn("<b>Театр</b>", _live_text(h))
+        self.assertNotIn("&lt;b&gt;", _live_text(h))
 
     @scenario_test
     async def test_edit_screen_shows_old_formatting_and_saves_new(self, h):
@@ -313,12 +315,14 @@ class FormattingPersistenceTests(unittest.TestCase):
         # категории правки там прежние (`aw_qmanage` → `aw_qgoto`).
         await h.callback(_callback(h, "aw_qmanage"))
         await h.callback(_callback(h, "aw_qgoto"))
-        cat.assert_shows(
+        # §3.3 (2.6.1): экран вопроса больше не дублирует значение строкой
+        # «Сейчас: …». Сохранённая разметка видна в живом блоке анонса.
+        cat.assert_not_shows(
             self,
             h.screen()["text"],
             "wizard.question.current_value",
-            value="<b>До</b> рестарта",
         )
+        self.assertIn("<b>До</b> рестарта", _live_text(h))
 
     @scenario_test
     async def test_final_text_without_photos_keeps_formatting(self, h):
@@ -562,12 +566,10 @@ class FormattingSafetyTests(unittest.TestCase):
         self.assertEqual(_live_text(h), "&lt;b&gt;ответ&lt;/b&gt;")
         await _reopen_question(h)
         screen = h.screen()["text"]
-        cat.assert_shows(
-            self,
-            screen,
-            "wizard.question.current_value",
-            value="&lt;b&gt;ответ&lt;/b&gt;",
-        )
+        # §3.3 (2.6.1): служебной строки со значением на экране вопроса нет,
+        # поэтому проверяем только отсутствие двойного экранирования.
+        cat.assert_not_shows(self, screen, "wizard.question.current_value")
+        self.assertNotIn("&amp;lt;", screen)
         self.assertEqual(escape_html("<b>ответ</b>"), "&lt;b&gt;ответ&lt;/b&gt;")
 
 

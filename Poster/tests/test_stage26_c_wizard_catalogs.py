@@ -376,7 +376,23 @@ class CuratorInWizardTests(unittest.TestCase):
         await _open_place_questions(h, place_id)
         await _answer_name(h)
 
-        self.assertIn(cat.text("wizard.catalog.curator_choose"), h.screen_text())
+        # §3.3 (2.6.1): у системного куратора есть собственное описание,
+        # поэтому это описание и есть единственная подсказка — строка
+        # `wizard.catalog.curator_choose` второй подсказкой не добавляется.
+        self.assertEqual(
+            h.screen_text().split("\n\n")[1:],
+            [
+                cat.text(
+                    "wizard.question.description_html",
+                    description=(
+                        "Выберите куратора или пришлите его контакт: @ник, "
+                        "ссылку или текст с гиперссылкой."
+                    ),
+                )
+            ],
+            f"у вопроса куратора не одна подсказка: {h.screen_text()!r}",
+        )
+        cat.assert_not_shows(self, h.screen_text(), "wizard.catalog.curator_choose")
         picks = _callbacks(h, "aw_curpick:")
         self.assertEqual(len(picks), 5, "пять записей на страницу")
         self.assertIn(("1/2", "noop:1:2"), h.screen_buttons())
@@ -706,9 +722,12 @@ class FooterInWizardTests(unittest.TestCase):
 
         after_autofill = _details(h, _draft_id(h)).revision
         # «Назад» со шага фото возвращает к вопросу подвала с уже выбранным
-        # значением — повторной подстановки нет.
+        # значением — повторной подстановки нет. §3.3 (2.6.1) убрал строку
+        # «Сейчас: …» с экрана вопроса, поэтому значение проверяем по данным.
         await _press(h, "aw_photo_back:")
-        self.assertIn("Карта рядом", h.screen_text())
+        self.assertEqual(
+            _value_text(_details(h, _draft_id(h)), FOOTER_CODE), "Карта рядом"
+        )
         self.assertEqual(_details(h, _draft_id(h)).revision, after_autofill)
 
         # «Пропустить» не перезаписывает значение и не увеличивает ревизию.

@@ -101,7 +101,6 @@ DEFAULTS: dict[str, str] = {
     # --- конструктор: вопрос, календарь, время ------------------------------
     "wizard.question.header": "🧩 Вопрос {step} из {total}: {title}",
     "wizard.question.description_html": "📝 <code>{description}</code>",
-    "wizard.question.optional": "Это поле можно пропустить.",
     "wizard.question.current_value": "Текущее значение: {value}",
     "wizard.question.skipped": (
         "Вы пропустили это поле. Его можно заполнить сейчас или перейти дальше."
@@ -130,7 +129,7 @@ DEFAULTS: dict[str, str] = {
     "wizard.hint.choice_multiple": (
         "Отметьте один или несколько вариантов и нажмите «Готово»."
     ),
-    "wizard.hint.fallback": "Заполните поле. Тип значения: «{title}».",
+    "wizard.hint.fallback": "Укажите значение поля „{title}“.",
     "wizard.number_rule.integer": "целое число",
     "wizard.number_rule.range": "от {min} до {max}",
     "wizard.number_rule.min": "не меньше {min}",
@@ -200,6 +199,11 @@ DEFAULTS: dict[str, str] = {
     "wizard.extras.unavailable": (
         "Не удалось показать дополнительные поля: данные изменились или часть "
         "шаблона больше недоступна. Вернитесь назад и откройте экран заново."
+    ),
+    # Poster 2.6.1 §4: расширенный вариант шаблона выключен — экрана доп.
+    # полей нет. Старая кнопка получает короткий ответ, а не пустой список.
+    "wizard.extras.disabled": (
+        "Расширенный шаблон выключен. Дополнительные поля недоступны."
     ),
     "wizard.ready.collecting": (
         "✅ Всё заполнено. Анонс собирается и автоматически придёт в этот чат."
@@ -1242,9 +1246,9 @@ DEFAULTS: dict[str, str] = {
     "buttons.templates.udalit": "✅ Удалить",
     "buttons.templates.udalit_shablon": "🗑 Удалить шаблон",
     "buttons.templates.uslovnye_chasti": "🧩 Условия расширенного шаблона",
-    "buttons.templates.vklyuchit_dopolnitelnyy_shablon": "➕ Включить дополнительный шаблон",
+    "buttons.templates.vklyuchit_dopolnitelnyy_shablon": "➕ Включить расширенный шаблон",
     "buttons.templates.vosstanovit_standart": "♻️ Восстановить стандарт",
-    "buttons.templates.vyklyuchit_dopolnitelnyy_shablon": "➖ Выключить дополнительный шаблон",
+    "buttons.templates.vyklyuchit_dopolnitelnyy_shablon": "➖ Выключить расширенный шаблон",
     "buttons.wizard.chernovik_sohranen": "✅ Черновик сохранён",
     "buttons.wizard.da_udalit_vse": "🗑 Да, удалить все",
     "buttons.wizard.dopolnitelnye_kirpichiki": "➕ Дополнительные поля",
@@ -2457,8 +2461,8 @@ def text_blocks(blocks: Iterable[object]) -> list[str]:
     Непустые блоки экрана: пустая строка каталога не создаёт разрыв.
 
     Каталог — канон текстов, и владелец вправе оставить строку пустой
-    (`wizard.question.optional`, `wizard.question.missing`,
-    `wizard.extras.intro`). Раньше такой блок попадал в `join` как обычный
+    (`wizard.question.missing`, `wizard.extras.intro`). Раньше такой блок
+    попадал в `join` как обычный
     элемент и давал пустую строку-разделитель или двойной перевод строки.
     Экраны собираются через эту функцию и `join_blocks`, а не через
     `str.join` напрямую.

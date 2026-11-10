@@ -710,10 +710,17 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
         await _choose_personal(h, template_id)
 
         self.assertRegex(h.screen_text(), cat.question_re(1, 8))
-        cat.assert_shows(self, h.screen_text(), "wizard.hint.short_text")
-        # 2.5.5 §3: в каталоге optional/missing пусты — блоков-разделителей
-        # с этими подсказками на экране быть не должно (пустых строк тоже).
-        cat.assert_no_empty_block(self, h.screen_text(), "wizard.question.optional")
+        # §3.3 (2.6.1): у короткого текста без описания и без правил типа
+        # подсказка — универсальный fallback, а не типовая строка.
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.hint.fallback",
+            title="Короткое поле",
+        )
+        cat.assert_not_shows(self, h.screen_text(), "wizard.hint.short_text")
+        # 2.5.5 §3: в каталоге `wizard.question.missing` пуст — блока-разделителя
+        # с этой подсказкой на экране быть не должно (пустых строк тоже).
         cat.assert_no_empty_block(self, h.screen_text(), "wizard.question.missing")
         await h.text("Коротко")
 
@@ -721,7 +728,14 @@ class AnnouncementWizardQuestionTests(unittest.TestCase):
         await h.text("Длинный текст")
 
         self.assertRegex(h.screen_text(), cat.question_re(3, 8))
-        self.assertIn("Выберите дату в календаре", h.screen_text())
+        # §3.3 (2.6.1): у даты без ограничений типовой подсказки нет —
+        # остаётся универсальный fallback; календарь при этом на экране.
+        cat.assert_shows(
+            self,
+            h.screen_text(),
+            "wizard.hint.fallback",
+            title="Дата события",
+        )
         # U2a: компактный календарь уже на вопросе — быстрые даты и месяцы.
         self.assertTrue(_callback(h, "aw_calday"))
         self.assertTrue(_callback(h, "aw_calmonths"))

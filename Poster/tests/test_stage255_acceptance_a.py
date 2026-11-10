@@ -781,7 +781,6 @@ class EmptyCatalogScreenRequirementTests(unittest.TestCase):
 
     def test_11_catalog_premise_is_empty_keys(self) -> None:
         for key in (
-            "wizard.question.optional",
             "wizard.question.missing",
             "wizard.extras.intro",
         ):
@@ -838,19 +837,20 @@ class EmptyCatalogScreenRequirementTests(unittest.TestCase):
 
         question = h.screen_text()
         self.assertNotIn("\n\n\n", question, "пустой блок оставил дыру")
-        cat.assert_no_empty_block(self, question, "wizard.question.optional")
         cat.assert_no_empty_block(self, question, "wizard.question.missing")
+        # Poster 2.6.1 §3: ровно шапка и одна подсказка. У кирпичика без
+        # описания подсказка — универсальный fallback, а не типовая строка.
         self.assertEqual(
             question.split("\n\n"),
             [
                 cat.text("wizard.question.header", step=1, total=1, title="Название"),
-                cat.text("wizard.hint.short_text"),
+                cat.text("wizard.hint.fallback", title="Название"),
             ],
             "пустые блоки оставили лишние строки на живой экране",
         )
 
     @scenario_test
-    async def test_12_composite_screen_keeps_header_description_value(self, h) -> None:
+    async def test_12_composite_screen_keeps_header_and_description(self, h) -> None:
         await h.text("/start")
         place_id, _alias = _seed_place(h)
         specs: list[TemplateSpec] = [
@@ -877,10 +877,12 @@ class EmptyCatalogScreenRequirementTests(unittest.TestCase):
             "wizard.question.description_html",
             description="Инструкция автору",
         )
-        cat.assert_shows(self, question, "wizard.hint.short_text")
+        # §3.3: индивидуальная подсказка — единственная, типовой строки нет.
+        cat.assert_not_shows(self, question, "wizard.hint.short_text")
         self.assertNotIn("\n\n\n", question, "пустой блок оставил дыру")
 
-        # Отвечаем и возвращаемся: заголовок, описание и значение — все видны.
+        # Отвечаем и возвращаемся: та же шапка и то же описание, без
+        # служебной строки «Сейчас: …» (§3.3).
         await h.text("Первое значение")
         back = h.screen_buttons()
         await h.callback(
@@ -894,11 +896,9 @@ class EmptyCatalogScreenRequirementTests(unittest.TestCase):
             "wizard.question.description_html",
             description="Инструкция автору",
         )
-        cat.assert_shows(
-            self, question, "wizard.question.current_value", value="Первое значение"
-        )
+        cat.assert_not_shows(self, question, "wizard.question.current_value")
         self.assertNotIn("\n\n\n", question, "пустой блок оставил дыру")
-        cat.assert_no_empty_block(self, question, "wizard.question.optional")
+        cat.assert_no_empty_block(self, question, "wizard.question.missing")
 
 
 if __name__ == "__main__":

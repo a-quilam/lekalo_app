@@ -345,10 +345,17 @@ class PlaceInviteDeepLinkTests(unittest.TestCase):
         self.assertRegex(
             text, cat.question_re(1), "продолжение начинается с введённого поля"
         )
-        cat.assert_shows(
-            self, text, "wizard.question.current_value", value="Мой концерт"
-        )
+        # §3.3 (2.6.1): сохранённое значение больше не дублируется служебной
+        # строкой «Сейчас: …»; продолжение проверяется по данным черновика.
+        cat.assert_not_shows(self, text, "wizard.question.current_value")
         self.assertNotIn("Значение пока не задано", text)
+        resumed = self._drafts(h, INVITED_TG)[0]
+        texts = [
+            str((value.payload or {}).get("text") or "")
+            for value in resumed.values
+            if value.payload
+        ]
+        self.assertIn("Мой концерт", texts, "ответ потерян при продолжении")
         self.assertEqual(
             h.dialog_state(user_id=INVITED_TG, name=CONVERSATION_NAME), AW_QUESTIONS
         )

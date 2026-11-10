@@ -85,6 +85,7 @@ from announcement_store import (
     delete_announcement,
     extras_available,
     extras_available_for_draft,
+    extras_enabled,
     get_announcement_draft,
     list_announcement_drafts,
     mark_announcement_publication_failed,
@@ -3107,8 +3108,11 @@ async def _render_question(
     # экран. Порядок в чате фиксирован хронологией сообщений, поэтому
     # верхний блок синхронизируется ДО отрисовки нижнего вопроса.
     await _sync_live(update, context, details)
+    # §3.4: номер и всего считаются по фактической последовательности
+    # вопросов — автоподставляемый подвал вопроса не задаёт.
+    step, total = _question_counter(details, fields, index, _user_id(update))
     text = wizard_questions.question_text(
-        field, index, len(fields), editing=editing, error=error, notice=notice
+        field, step - 1, total, editing=editing, error=error, notice=notice
     )
     rows: list[list[InlineKeyboardButton]] = []
 
@@ -3121,9 +3125,17 @@ async def _render_question(
             else _catalog_footers(details, _user_id(update))
         )
         rows.extend(_catalog_question_rows(ui, details, field, entries))
-        if field.code == BRICK_CODE_CURATOR:
+        if (
+            field.code == BRICK_CODE_CURATOR
+            and not wizard_questions.has_description_hint(field)
+        ):
             # §9: ручной ввод контакта доступен всегда — и при непустом
-            # списке, и при пустом.
+            # списке, и при пустом. §3.3 (2.6.1): эта строка каталога —
+            # подсказка, поэтому она добавляется ТОЛЬКО когда у поля нет
+            # собственного описания. Иначе на экране оказались бы две
+            # подсказки (описание «пришлите его контакт: @ник, ссылку…» и
+            # эта строка), а дубль запрещён. Клавиатура выбора и так
+            # показывает варианты.
             hint = (
                 "wizard.catalog.curator_choose_other"
                 if field.status == FIELD_STATUS_VALID
@@ -5062,6 +5074,13 @@ async def _render_extras(
     ui = _ui(context)
     _set_details(ui, details)
     _clear_active(ui)
+    if not extras_enabled(details):
+        # §4 2.6.1: экрана у выключенного расширенного шаблона нет.
+        # Внутренний переход (resume, старый путь навигации) уводит на
+        # следующий шаг, а не показывает пустой список.
+        return await _extras_disabled_next(
+            update, context, details, instance_id=instance_id
+        )
     await _ensure_service_screen_below(update, context, details.delivered_message_ids)
     await _sync_live(update, context, details)
     # Признак «экран не смог построить список»: тогда штатная подпись
@@ -5424,6 +5443,127 @@ def _find_catalog_field(
     return _extra_field_state(details, definition)
 
 
+def _question_autofilled(
+    details, field: AnnouncementFieldState, telegram_user_id: int
+) -> bool:
+    """
+    Задаётся ли по этому полю вопрос пользователю (§3.4).
+
+    Сейчас мастер сам подставляет только единственный подвал справочника
+    (§10.1): `_footer_autofill` записывает его при первом показе поля и сразу
+    переводит дальше, поэтому вопроса пользователь не видит. Признак —
+    «в справочнике ровно один активный подвал», а не наличие строки
+    значения: после подстановки строка уже есть, но вопрос всё равно не
+    задавался, и счётчик не должен от этого расти.
+
+    Пустой справочник вопроса не отменяет (пустой ряд + «Пропустить» —
+    настоящий вопрос), поэтому поле считается. Осознанно удалённый/пропущенный
+    подвал (`empty_optional`) снова становится вопросом: значение не
+    подставляется, автор выбирает его сам, поэтому поле тоже считается.
+    """
+    if field.code != BRICK_CODE_FOOTER:
+        return False
+    if field.status == FIELD_STATUS_SKIPPED:
+        return False
+    return len(_catalog_footers(details, telegram_user_id)) == 1
+
+
+def _question_counter(
+    details,
+    fields: list[AnnouncementFieldState],
+    index: int,
+    telegram_user_id: int,
+) -> tuple[int, int]:
+    """
+    Номер и общее число вопросов, которые пользователь реально проходит.
+
+    Poster 2.6.1 §3.4: счётчик считается по фактической последовательности,
+    а не по длине `fields`. Навигация при этом не меняется: callbacks
+    `aw_qback`/`aw_qskip` по-прежнему адресуют позицию в `fields`, поэтому
+    `index` остаётся индексом списка, а номер для показа вычисляется
+    отдельно.
+
+    Из последовательности исключаются только поля, значение которых мастер
+    подставит сам (`_question_autofilled`). Пропущенные и уже отвеченные
+    вопросы остаются: пользователь их проходит и может вернуться.
+    """
+    shown = [
+        position
+        for position, item in enumerate(fields)
+        if not _question_autofilled(details, item, telegram_user_id)
+    ]
+    if not shown:
+        return index + 1, len(fields)
+    if index in shown:
+        return shown.index(index) + 1, len(shown)
+    # Текущая позиция вне последовательности — так выглядит возврат на
+    # автоподставленный подвал: это экран просмотра значения, а не новый
+    # вопрос. Не выходим за границы счётчика, чтобы «3/2» не появлялось.
+    return min(sum(1 for position in shown if position < index) + 1, len(shown)), len(
+        shown
+    )
+
+
+def _stage_conversation_state(details) -> int:
+    """Состояние диалога, соответствующее текущему этапу черновика."""
+    if details.stage == WizardStage.PLACE:
+        return AW_PLACE
+    if details.stage == WizardStage.TEMPLATE:
+        return AW_TEMPLATE
+    if details.stage == WizardStage.QUESTIONS:
+        return AW_QUESTIONS
+    if details.stage == WizardStage.EXTRAS:
+        return AW_EXTRAS
+    return AW_PREVIEW
+
+
+async def _refuse_extras(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+) -> int:
+    """
+    Короткий отказ старой кнопке доп. полей (§4).
+
+    Расширенный вариант шаблона выключен, поэтому экрана доп. полей нет.
+    Пользователь получает alert поверх текущего экрана: пустого экрана,
+    исключения и смены сообщения не происходит. Состояние диалога остаётся
+    состоянием текущего этапа, чтобы «Назад»/«Пропустить» продолжали
+    работать.
+    """
+    await _answer(update, tr("wizard.extras.disabled"), alert=True)
+    return _stage_conversation_state(details)
+
+
+async def _extras_disabled_next(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+    *,
+    instance_id: int | None = None,
+) -> int:
+    """
+    Доп. поля выключены снимком: мастер просто идёт дальше (§4).
+
+    Внутренние переходы (все вопросы отвечены, нет полей, «Назад» из старого
+    пути) не должны упираться в отказ: у выключенного расширенного шаблона
+    экрана доп. полей нет, и следующий шаг — фотографии (или управление уже
+    доставленным анонсом).
+    """
+    if details.publication_sent or details.stage in {
+        WizardStage.PREVIEW,
+        WizardStage.COMPLETED,
+    }:
+        await _show_announcement_controls(
+            context,
+            ctx.chat(update).id,
+            details,
+            instance=_instance_for(details, instance_id),
+        )
+        return AW_PREVIEW
+    return await _after_questions(update, context, details)
+
+
 async def _enter_extras(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -5438,7 +5578,14 @@ async def _enter_extras(
     `instance_id` передаётся только входом из управления доставленным
     анонсом: по нему путь редактора отделяется от истории конструктора и
     «◀️ Назад» возвращает в управление анонсом, а не в «Текстовые поля».
+
+    Выключенный расширенный вариант шаблона (§4 2.6.1) экрана не имеет:
+    внутренний переход уводит на следующий шаг мастера, а не в пустой список.
     """
+    if not extras_enabled(details):
+        return await _extras_disabled_next(
+            update, context, details, instance_id=instance_id
+        )
     try:
         updated = _ensure_stage(update, context, details, WizardStage.EXTRAS)
     except AnnouncementError as exc:
@@ -9468,6 +9615,10 @@ async def handle_question_callback(
         if guarded is None:
             return await _stale(update, context)
         _ui_data, details = guarded
+        if not extras_enabled(details):
+            # §4 2.6.1: расширенный шаблон выключен — старая кнопка получает
+            # короткий ответ, экран не меняется.
+            return await _refuse_extras(update, context, details)
         await _answer(update)
         return await _enter_extras(update, context, details)
     if action == "aw_preview" and len(parts) == 3:
@@ -9536,6 +9687,8 @@ async def handle_extras_callback(
         if guarded is None:
             return await _stale(update, context)
         _ui_data, details = guarded
+        if not extras_enabled(details):
+            return await _refuse_extras(update, context, details)
         await _answer(update)
         return await _enter_extras(update, context, details)
     if action == "aw_exback" and len(parts) == 3:
@@ -9812,6 +9965,8 @@ async def handle_preview_callback(
         if _edit_blocked(details):
             await _answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
             return await _render_publish_status(update, context, details)
+        if not extras_enabled(details):
+            return await _refuse_extras(update, context, details)
         await _answer(update)
         return await _enter_extras(update, context, details)
 

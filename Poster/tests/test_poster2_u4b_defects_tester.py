@@ -142,9 +142,15 @@ class DuplicateDraftOnSecondStartTests(unittest.TestCase):
             h.screen_text(),
             "введённое значение не должно теряться при повторном открытии ссылки",
         )
-        cat.assert_shows(
-            self, h.screen_text(), "wizard.question.current_value", value="Мой концерт"
-        )
+        # §3.3 (2.6.1): служебной строки «Сейчас: …» на экране вопроса нет,
+        # поэтому сохранённость значения проверяется по данным черновика.
+        cat.assert_not_shows(self, h.screen_text(), "wizard.question.current_value")
+        values = [
+            str((value.payload or {}).get("text") or "")
+            for value in _drafts(h, INVITED_TG)[0].values
+            if value.payload
+        ]
+        self.assertIn("Мой концерт", values, "введённое значение потеряно")
 
 
 @unittest.skipIf(DEFECTS_IMPORT_ERROR, DEFECTS_IMPORT_ERROR or "")
