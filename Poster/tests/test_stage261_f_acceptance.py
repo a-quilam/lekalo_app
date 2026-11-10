@@ -107,6 +107,7 @@ try:
         DATA_LABEL,
         EXTRAS_LABEL,
         MENU_LABEL,
+        TemplateSpec,
         _blocks,
         _control_rows,
         _deliver,
@@ -350,13 +351,9 @@ class RichStructureTests(unittest.TestCase):
         files = [item.get("media") for item in media if isinstance(item, dict)]
         self.assertTrue(files, f"кадры без файла: {media}")
         for item in files:
-            self.assertGreater(
-                getattr(item, "input_file_content", b"")
-                and len(item.input_file_content)
-                or 0,
-                0,
-                "кадр слайд-шоу пуст",
-            )
+            content = getattr(item, "input_file_content", None)
+            self.assertIsNotNone(content, "у кадра нет байтов файла")
+            self.assertTrue(content, "кадр слайд-шоу пуст")
 
     def test_about_has_six_sections_urls_and_bold_marks(self) -> None:
         message = build_about_rich_message().to_dict()
@@ -687,7 +684,7 @@ class WizardQuestionScreenTests(unittest.TestCase):
     async def test_counter_matches_four_and_six_question_templates(self, h) -> None:
         place_id = await _place(h)
         for total in (4, 6):
-            specs = [
+            specs: list[TemplateSpec] = [
                 (f"qx{total}_{index}", f"Поле {index}", "short_text", {})
                 for index in range(1, total + 1)
             ]
@@ -709,7 +706,7 @@ class WizardQuestionScreenTests(unittest.TestCase):
     @scenario_test
     async def test_skip_keeps_total_and_back_shows_step(self, h) -> None:
         place_id = await _place(h)
-        specs = [
+        specs: list[TemplateSpec] = [
             (f"qs{index}", f"Поле {index}", "short_text", {}) for index in range(1, 5)
         ]
         template_id, _revision, _bricks = _seed_personal_template(
