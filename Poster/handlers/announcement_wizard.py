@@ -205,6 +205,14 @@ RESUME_MODE_PHOTO = "photo"
 # Режимы, в которых текст продолжает шаг, и этапы черновика для каждого.
 RESUME_TEXT_STAGES = frozenset({WizardStage.QUESTIONS, WizardStage.EXTRAS})
 
+# 2.6.1 §2.2: какой черновик пользователь СОЗНАТЕЛЬНО сохранил на обзоре
+# («✅ Сохранить черновик»). Нужен потому, что `stage=preview` + `None`
+# означает два разных положения дел: готовый сохранённый анонс и мастер,
+# остановившийся на приёме фотографий (шаг фото наступает раньше обзора).
+# Отметка живёт в `user_states.payload` рядом с resume-снимком: без новых
+# колонок и миграций, переживает рестарт службы.
+SAVED_DRAFTS_PAYLOAD_KEY = "announcement_saved_drafts"
+
 # Poster 2.5 §14: длинные однотипные списки конструктора идут по пять
 # записей на страницу — тем же механизмом, что и остальные списки бота.
 PLACE_PAGE_SIZE = pagination.PAGE_SIZE
@@ -775,6 +783,62 @@ def _resume_snapshot(
     if ui.get("photo_step") and draft_id:
         return {"mode": RESUME_MODE_PHOTO, "draft_id": int(draft_id)}
     return None
+
+
+def _saved_drafts(user_id: int) -> set[int]:
+    """Черновики, сознательно сохранённые автором на обзоре (2.6.1 §2.2)."""
+    payload = screen.load_payload(user_id) or {}
+    stored = payload.get(SAVED_DRAFTS_PAYLOAD_KEY)
+    if not isinstance(stored, list):
+        return set()
+    return {int(item) for item in stored if isinstance(item, int)}
+
+
+def _mark_draft_saved(user_id: int, draft_id: int) -> None:
+    """
+    Запоминает «этот черновик автор сохранил сам», а не просто дошёл до шага.
+
+    Сбой записи не ломает сценарий — выбор тогда просто продолжит шаг
+    мастера, как раньше.
+    """
+    saved = _saved_drafts(user_id)
+    if int(draft_id) in saved:
+        return
+    saved.add(int(draft_id))
+    screen.save_payload_key(user_id, SAVED_DRAFTS_PAYLOAD_KEY, sorted(saved) or None)
+
+
+def _forget_saved_draft(user_id: int, draft_id: int) -> None:
+    """
+    Снимает отметку: дальше состояние анонса читается по `publication_status`.
+
+    Вызывается, как только отправка началась (иначе повторное открытие
+    списка пыталось бы отправить копию поверх незавершённой отправки), а
+    также при удалении записи: id освободившегося черновика не должен
+    «наследовать» чужую отметку.
+    """
+    saved = _saved_drafts(user_id)
+    if int(draft_id) not in saved:
+        return
+    saved.discard(int(draft_id))
+    screen.save_payload_key(user_id, SAVED_DRAFTS_PAYLOAD_KEY, sorted(saved) or None)
+
+
+def _is_saved_draft(user_id: int, details) -> bool:
+    """
+    Черновик СОЗНАТЕЛЬНО сохранён на обзоре и ещё не доставлен (§2.2).
+
+    Одного `stage=preview` мало: этот этап наступает до шага фотографий,
+    поэтому так же выглядит незавершённый мастер, и немедленная отправка
+    завершала бы его за автора (§2.6 — первичный обзор не трогаем).
+    """
+    if details.publication_sent or details.stage != WizardStage.PREVIEW:
+        return False
+    if _edit_blocked(details):
+        # Отправка уже началась: копию поверх неё не создаём даже при
+        # оставшейся отметке (например, процесс упал сразу после `begin`).
+        return False
+    return int(details.draft_id) in _saved_drafts(user_id)
 
 
 def _remember_resume(
@@ -2098,7 +2162,16 @@ async def _open_draft(
     *,
     active_brick_id: int | None = None,
     notice: str | None = None,
+    from_list: bool = False,
 ) -> int:
+    """
+    Открывает черновик по id.
+
+    `from_list` — вызов из «Мои анонсы» (2.6.1 §2.2–2.3): только там
+    сохранённый готовый анонс выдаётся сразу копией. Мастер создания,
+    ссылки и прочие входы маршрут не меняют — там первичный обзор нужен
+    для завершения («Отправить»).
+    """
     user_id = _user_id(update)
     try:
         details = _session_details(user_id, draft_id)
@@ -2125,6 +2198,15 @@ async def _open_draft(
         # (`register_instance` в цепочке доставки), данные не пересобираются
         # в новый логический анонс.
         return await _republish_delivered(update, context, details, notice=notice)
+    if from_list and _is_saved_draft(user_id, details):
+        # §2.2: готовый черновик, который автор сохранил сам, тоже выдаётся
+        # копией сразу — без промежуточного экрана «Обзор анонса» и без
+        # «Обновить». Остальные этапы собирать ещё не из чего.
+        return await _send_saved_preview(update, context, details)
+    # 2.6.1 §2.6: сохранённый НЕдоставленный анонс продолжает свой этап, а
+    # первичный обзор при СОЗДАНИИ не удаляется — он же завершает мастер
+    # («Отправить» на шаге обзора). Ошибочный промежуточный сценарий, который
+    # убирается, — повторное открытие уже ГОТОВОГО анонса (выше).
     return await _render_draft_stage(update, context, details, notice=notice)
 
 
@@ -2154,6 +2236,18 @@ async def _republish_delivered(
     if not _is_private_chat(update):
         await _answer(update, PRIVATE_CHAT_ONLY, alert=True)
         return await _render_private_chat_refusal(update, context, details)
+    # 2.6.1 §2.6: работа с полями (доп. поля, правка вопроса) возвращает
+    # черновик на промежуточный этап (`extras`/`questions`), а доставленный
+    # анонс от этого черновиком не становится. Перед повторной сборкой этап
+    # нормализуется до `completed` — иначе проверка `begin_announcement_
+    # publication` отвечает «Сначала завершите обзор анонса». CAS-конфликт
+    # здесь — обычная гонка с другой сессией: он уходит в стандартную ветку
+    # «экран устарел», а не в падение.
+    try:
+        details = _ensure_stage(update, context, details, WizardStage.COMPLETED)
+    except AnnouncementError as exc:
+        await _answer(update, str(exc), alert=True)
+        return await _resume_current(update, context, notice=str(exc))
     try:
         with SessionLocal() as session:
             publication = begin_announcement_publication(
@@ -2181,6 +2275,94 @@ async def _republish_delivered(
         publication,
         stale_live_ids=(),
     )
+
+
+async def _send_saved_preview(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    details,
+) -> int:
+    """
+    Отправляет сохранённый черновик (`stage=preview`) новой копией (§2.2).
+
+    Отличие от `_republish_delivered` — только отсутствие прежней доставки:
+    этап уже `preview`, поэтому нормализация не нужна, а `begin_announcement_
+    publication` собирает payload как первую версию (`publication_status`
+    равен `None`, `previous_ids` пуст). Дальше — общий путь подтверждённой
+    отправки и регистрации экземпляра, поэтому редактор открывается на самом
+    анонсе, как у доставленного.
+
+    Живой блок мастера (`live_message_ids`) остаётся в чате: это временный
+    интерфейс конструктора, но §2.3 запрещает удалять чужие сообщения, а
+    после успешной доставки он становится архивным снимком. Данные и фото
+    при ошибке не меняются.
+    """
+    user_id = _user_id(update)
+    if not _is_private_chat(update):
+        await _answer(update, PRIVATE_CHAT_ONLY, alert=True)
+        return await _render_private_chat_refusal(update, context, details)
+    try:
+        with SessionLocal() as session:
+            publication = begin_announcement_publication(
+                session,
+                actor_telegram_user_id=user_id,
+                draft_id=details.draft_id,
+                expected_revision=details.revision,
+                today=app_today(),
+            )
+    except (
+        AnnouncementError,
+        TemplateError,
+        TemplateCompileError,
+        BrickError,
+    ) as exc:
+        # Копию собрать нельзя (например, текст не помещается в сообщение).
+        # Пользователь видит конкретную причину на рабочем экране проблемы;
+        # данные и фото остаются в БД и не сбрасываются (§2.6).
+        return await _render_preview_error(update, context, details, str(exc))
+    _set_details(_ui(context), publication.draft)
+    return await _run_announcement_publication(
+        update,
+        context,
+        publication,
+        stale_live_ids=(),
+    )
+
+
+async def _reopen_from_stale_preview(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    parts: Sequence[str],
+) -> int:
+    """
+    Устаревшая кнопка «Обновить» ведёт к актуальному состоянию (§2.2, §2.6).
+
+    Экрана «Обзор анонса» для повторного открытия больше нет, но `aw_preview`
+    остался в истории чата. Ответ зависит от состояния анонса: сохранённый
+    недоставленный черновик отправляется копией (§2.2), во всех остальных
+    случаях работает штатный безопасный путь `_stale` → `_resume_current`
+    (доставленный — главный редактор, промежуточный этап — свой экран).
+    Ничего не удаляется, пустого экрана и падения нет.
+    """
+    try:
+        draft_id = int(parts[1])
+    except (IndexError, ValueError):
+        return await _stale(update, context)
+    try:
+        details = _session_details(_user_id(update), draft_id)
+    except (AnnouncementNotFoundError, AnnouncementActorError, AnnouncementError):
+        return await _stale(update, context)
+    if details.publication_sent:
+        # Доставленный анонс: актуальное состояние — главный редактор
+        # (управление живёт у самого анонса, §2.5).
+        if _instance_for(details) is None:
+            return await _resume_current(update, context)
+        await _answer(update)
+        return await _render_field_list(update, context, details)
+    if _is_saved_draft(_user_id(update), details):
+        await _answer(update)
+        return await _send_saved_preview(update, context, details)
+    return await _stale(update, context)
 
 
 async def _render_draft_stage(
@@ -8402,6 +8584,9 @@ async def _run_announcement_publication(
                 message_ids=sent_ids,
                 fingerprint=_delivery_fingerprint(publication.text, publication.photos),
             )
+        # 2.6.1 §2.2: отметка «сохранён автором» нужна только до первой
+        # подтверждённой доставки — дальше состояние читается по статусу.
+        _forget_saved_draft(user_id, draft_id)
     except Exception as exc:  # noqa: BLE001 — сообщения могли уже уйти
         logger.exception(
             "Telegram подтвердил отправку, но статус анонса #%s не сохранён: %s",
@@ -9188,7 +9373,7 @@ async def handle_place_state_callback(
             draft_id = int(parts[1])
         except ValueError:
             return await _stale(update, context)
-        return await _open_draft(update, context, draft_id)
+        return await _open_draft(update, context, draft_id, from_list=True)
 
     # P3: удаление записи «Мои анонсы» — только с подтверждением. Telegram-
     # сообщения (экран, готовый пост) при этом не удаляются никогда.
@@ -9290,6 +9475,12 @@ async def handle_place_state_callback(
             return await _stale(update, context)
         return await _confirm_place(update, context, place_id, name_id)
 
+    if action == "aw_preview" and len(parts) == 3:
+        # «Обновить» из старого сообщения, нажатая уже на экране списка:
+        # единый безопасный ответ — редактор у доставленного, копия у
+        # сохранённого черновика, иначе актуальный экран (§2.2, §2.6).
+        return await _reopen_from_stale_preview(update, context, parts)
+
     return await _stale(update, context)
 
 
@@ -9298,6 +9489,9 @@ async def handle_template_callback(
 ) -> int:
     parts = _callback_parts(update)
     action = parts[0]
+    if action == "aw_preview" and len(parts) == 3:
+        # Тот же единый ответ, что и в остальных этапах мастера (§2.2, §2.6).
+        return await _reopen_from_stale_preview(update, context, parts)
     if action == "aw_cont" and len(parts) == 3:
         if not all(item.isdigit() for item in parts[1:]):
             return await _stale(update, context)
@@ -9626,7 +9820,8 @@ async def handle_question_callback(
             return await _stale(update, context)
         guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
         if guarded is None:
-            return await _stale(update, context)
+            # Устаревшая кнопка «Обновить»: единый безопасный ответ.
+            return await _reopen_from_stale_preview(update, context, parts)
         _ui_data, details = guarded
         await _answer(update)
         return await _render_preview(update, context, details)
@@ -9829,7 +10024,8 @@ async def handle_extras_callback(
             return await _stale(update, context)
         guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
         if guarded is None:
-            return await _stale(update, context)
+            # Устаревшая кнопка «Обновить»: единый безопасный ответ.
+            return await _reopen_from_stale_preview(update, context, parts)
         _ui_data, details = guarded
         await _answer(update)
         return await _render_preview(update, context, details)
@@ -9887,6 +10083,10 @@ async def handle_preview_callback(
         except AnnouncementError as exc:
             await _answer(update, str(exc), alert=True)
             return await _resume_current(update, context, notice=str(exc))
+        # 2.6.1 §2.2: автор сохранил черновик сам — выбор этого анонса в
+        # «Мои анонсы» обязан прислать готовую копию сразу, а не вернуть его
+        # на шаг фотографий (этап у обоих состояний один и тот же).
+        _mark_draft_saved(_user_id(update), updated.draft_id)
         await _answer(update, tr("alerts.wizard.chernovik_sohranen"))
         return await _render_preview(
             update,
@@ -9918,7 +10118,8 @@ async def handle_preview_callback(
     if action == "aw_preview" and len(parts) == 3:
         guarded = _guided()
         if guarded is None:
-            return await _stale(update, context)
+            # Устаревшая кнопка «Обновить»: единый безопасный ответ.
+            return await _reopen_from_stale_preview(update, context, parts)
         _ui_data, details = guarded
         await _answer(update)
         return await _render_preview(update, context, details, preview_only=True)
@@ -10418,6 +10619,7 @@ async def _delete_announcement_entry(
         await _answer(update, _short(exc, 300), alert=True)
         return await _render_my_announcements(update, context)
     # Удалённая запись больше не может быть активным черновиком диалога.
+    _forget_saved_draft(user_id, draft_id)
     ui = _ui(context)
     if ui.get("draft_id") == draft_id:
         ui["draft_id"] = None

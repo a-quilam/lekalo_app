@@ -222,10 +222,19 @@ class PhotoStepWiringTests(unittest.TestCase):
         _place, _template, bricks = await _to_photo_step(h, value="Черновик")
         draft = _latest_draft(h)
 
+        # Значение сохранено уже до возврата: проверяем по БД, а не по экрану.
+        before_back = _details(h, draft.id).value_for(bricks["main"])
+        assert before_back is not None and before_back.payload is not None
+        self.assertEqual(before_back.payload["text"], "Черновик")
+
         await h.callback(_callback(h, "aw_photo_back"))
         self.assertRegex(h.screen_text(), cat.question_re(1, 1))
-        self.assertIn("Черновик", h.screen_text())
         stored = _details(h, draft.id)
+        # Контракт 2.6.1 §3.3: экран вопроса не показывает «Сейчас: {value}»,
+        # поэтому сохранность значения проверяется по БД.
+        stored_value = stored.value_for(bricks["main"])
+        assert stored_value is not None and stored_value.payload is not None
+        self.assertEqual(stored_value.payload["text"], "Черновик")
         self.assertEqual(stored.photos, ())
         self.assertIsNone(stored.publication_status)
         self.assertEqual(h.posts(), [])
