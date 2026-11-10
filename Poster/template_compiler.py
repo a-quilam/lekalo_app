@@ -37,7 +37,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -310,7 +310,12 @@ def _is_system_date(definition: Any) -> bool:
     return scope is None or scope == BRICK_SCOPE_SYSTEM
 
 
-def _brick_text(value: Any, definition: BrickDefinition) -> str:
+def _brick_text(
+    value: Any,
+    definition: BrickDefinition,
+    *,
+    today: date | None = None,
+) -> str:
     """
     Стабильный текст значения кирпичика с строгой валидацией.
 
@@ -318,13 +323,23 @@ def _brick_text(value: Any, definition: BrickDefinition) -> str:
     не подменяется молча на short_text, ошибки данных не превращаются
     в правдоподобный, но некорректный анонс.
 
+    `today` — контролируемая дата операции (Poster 2.6.1 §9.2): правила
+    даты (`horizon_months`/`min_date`/`max_date`) проверяются по ней же,
+    что и сохранение значения, а не по новому «сегодня». `None` оставляет
+    прежнее поведение — `validate_brick_value` берёт `app_today()`.
+
     Poster 2.5 §17: системный кирпичик даты (`[дата]`, scope=system)
     выводится как `ДД.ММ (дн)` — год остаётся только во внутреннем
     хранении `payload["date"]` = ДД.ММ.ГГГГ. Пользовательский кирпичик
     типа date сохраняет прежний формат: правило относится только к
     системному `[дата]`.
     """
-    result = validate_brick_value(definition.value_type, value, rules=definition.rules)
+    result = validate_brick_value(
+        definition.value_type,
+        value,
+        rules=definition.rules,
+        today=today,
+    )
     if not result.is_valid:
         raise TemplateCompileError(
             f"Значение кирпичика «{definition.code}» некорректно: {result.error}"
@@ -404,6 +419,8 @@ def _brick_value_empty(
     brick_id: int,
     values_by_id: Mapping[int, Any],
     definitions_by_id: Mapping[int, BrickDefinition],
+    *,
+    today: date | None = None,
 ) -> bool:
     """
     Пусто ли значение кирпичика для рендера и для условных частей (§41).
@@ -412,6 +429,9 @@ def _brick_value_empty(
     обязаны считать пустым одно и то же. Пусто — нет значения в
     `values_by_id`, `None`, строка из пробелов или значение, у которого
     после подстановки нет видимого текста (`""`, `<b></b>`).
+
+    `today` прокидывается в проверку значения (Poster 2.6.1 §9.2), чтобы
+    решение «пусто/непусто» для даты совпадало с рендером.
     """
     if brick_id not in values_by_id:
         return True
@@ -427,13 +447,17 @@ def _brick_value_empty(
             f"Определение кирпичика #{brick_id} не найдено: "
             "нельзя подменить тип значения на short_text."
         )
-    return not visible_announcement_text(_escape_html(_brick_text(value, definition)))
+    return not visible_announcement_text(
+        _escape_html(_brick_text(value, definition, today=today))
+    )
 
 
 def _render_node(
     node: Any,
     values_by_id: Mapping[int, Any],
     definitions_by_id: Mapping[int, BrickDefinition],
+    *,
+    today: date | None = None,
 ) -> _Rendered:
     """
     Визуализирует один узел, подставляя значения кирпичиков.
@@ -471,21 +495,25 @@ def _render_node(
             # текст экранирован) — повторно не экранируем.
             text = str(value)
         else:
-            text = _escape_html(_brick_text(value, definition))
+            text = _escape_html(_brick_text(value, definition, today=today))
         return _Rendered(
             html=text,
             has_brick=True,
             bricks_empty=not visible_announcement_text(text),
         )
     if isinstance(node, LinkNode):
-        label = _render_children(node.label, values_by_id, definitions_by_id)
+        label = _render_children(
+            node.label, values_by_id, definitions_by_id, today=today
+        )
         has_brick = label.has_brick
         bricks_empty = label.bricks_empty if label.has_brick else True
         if not label.html:
             # Защита от пустой подписи в уже сохранённых данных: ссылки без
             # текста Telegram показать не может, а терять адрес нельзя.
             # Такая пара скобок выводится обычным текстом (§42-В).
-            return _render_empty_label_link(node, values_by_id, definitions_by_id)
+            return _render_empty_label_link(
+                node, values_by_id, definitions_by_id, today=today
+            )
         if isinstance(node.url, BrickNode):
             if node.url.brick_id is None:
                 raise TemplateCompileError(
@@ -538,7 +566,9 @@ def _render_node(
             has_newline=label.has_newline,
         )
     if isinstance(node, FormatNode):
-        inner = _render_children(node.children, values_by_id, definitions_by_id)
+        inner = _render_children(
+            node.children, values_by_id, definitions_by_id, today=today
+        )
         tag = _FORMAT_TAGS.get(node.marker)
         html = f"<{tag}>{inner.html}</{tag}>" if tag else inner.html
         return _Rendered(
@@ -556,6 +586,8 @@ def _render_children(
     children: Iterable[Any],
     values_by_id: Mapping[int, Any],
     definitions_by_id: Mapping[int, BrickDefinition],
+    *,
+    today: date | None = None,
 ) -> _Rendered:
     """Объединяет результаты дочерних узлов."""
     html: list[str] = []
@@ -563,7 +595,7 @@ def _render_children(
     bricks_empty = True
     has_newline = False
     for child in children:
-        rendered = _render_node(child, values_by_id, definitions_by_id)
+        rendered = _render_node(child, values_by_id, definitions_by_id, today=today)
         html.append(rendered.html)
         has_brick = has_brick or rendered.has_brick
         if rendered.has_brick:
@@ -581,6 +613,8 @@ def _render_empty_label_link(
     node: LinkNode,
     values_by_id: Mapping[int, Any],
     definitions_by_id: Mapping[int, BrickDefinition],
+    *,
+    today: date | None = None,
 ) -> _Rendered:
     """
     Ссылка без подписи выводится обычным текстом в скобках.
@@ -600,7 +634,9 @@ def _render_empty_label_link(
             raise TemplateCompileError(
                 f"Определение кирпичика #{node.url.brick_id} не найдено."
             )
-        url_rendered = _render_node(node.url, values_by_id, definitions_by_id)
+        url_rendered = _render_node(
+            node.url, values_by_id, definitions_by_id, today=today
+        )
         if not url_rendered.bricks_empty:
             return _Rendered(
                 html=f"({url_rendered.html})",
@@ -649,6 +685,8 @@ def _render_text_lines(
     tokens: Sequence[Any],
     values_by_id: Mapping[int, Any],
     definitions_by_id: Mapping[int, BrickDefinition],
+    *,
+    today: date | None = None,
 ) -> list[_Line]:
     """
     Рендерит текст построчно, сохраняя границы строк исходного шаблона.
@@ -670,7 +708,7 @@ def _render_text_lines(
         current = _Line()
 
     for token in tokens:
-        rendered = _render_node(token, values_by_id, definitions_by_id)
+        rendered = _render_node(token, values_by_id, definitions_by_id, today=today)
         if isinstance(token, TextNode):
             # Литеральный текст — единственный узел, который безопасно
             # делить на строки: вне разметки нет открытых тегов.
@@ -1021,6 +1059,7 @@ def render_template(
     definitions_by_id: Mapping[int, BrickDefinition],
     *,
     use_extended: bool = False,
+    today: date | None = None,
 ) -> str:
     """
     Собирает итоговый HTML-анонс из уже связанных текстов шаблона.
@@ -1029,13 +1068,25 @@ def render_template(
     Если выбран расширенный текст (`use_extended=True`) и он есть в
     шаблоне, рендерится он; иначе — канонический `content`. Строки с
     токенами, отрендерившимися пустыми, скрываются целиком.
+
+    `today` — та же контролируемая дата, с которой значения сохранялись
+    (Poster 2.6.1 §9.2): правила даты проверяются по ней, а не по новому
+    «сегодня» на границе суток. `None` — `validate_brick_value` сам берёт
+    `app_today()`, как было до этапа.
+
+    §9.3: часовой пояс площадки моделью данных не определяется (`Place`
+    хранит город произвольной строкой), поэтому единый `APP_TZ` служит
+    «сегодня» и при создании анонса, и в календаре, и в относительных
+    датах, и в границах допустимого диапазона.
     """
     tokens = tokens_by_text.get(TEMPLATE_CONTENT)
     if use_extended:
         tokens = tokens_by_text.get(TEMPLATE_EXTENDED_CONTENT, tokens)
     if not tokens:
         return ""
-    return _assemble_text(_render_text_lines(tokens, values_by_id, definitions_by_id))
+    return _assemble_text(
+        _render_text_lines(tokens, values_by_id, definitions_by_id, today=today)
+    )
 
 
 # Техническая заглушка Telegram: пустое сообщение отправить нельзя.
@@ -1104,6 +1155,7 @@ def render_announcement(
     *,
     has_photos: bool = False,
     use_extended: bool = False,
+    today: date | None = None,
 ) -> str:
     """
     Единый рендер анонса для живого блока и итоговой отправки.
@@ -1125,6 +1177,7 @@ def render_announcement(
         values_by_id,
         definitions_by_id,
         use_extended=use_extended,
+        today=today,
     )
     if visible_announcement_text(html):
         return html

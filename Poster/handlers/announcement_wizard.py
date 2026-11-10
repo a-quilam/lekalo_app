@@ -4653,6 +4653,7 @@ def _extra_definition(details, extra, telegram_user_id: int):
             session,
             actor_telegram_user_id=telegram_user_id,
             draft_id=details.draft_id,
+            today=app_today(),
         )
     return payload.definitions_by_id[extra.brick_id]
 
@@ -5173,6 +5174,7 @@ def _extras_with_definitions(details, telegram_user_id: int):
             session,
             actor_telegram_user_id=telegram_user_id,
             draft_id=details.draft_id,
+            today=app_today(),
         )
     return [
         (extra, payload.definitions_by_id[extra.brick_id]) for extra in details.extras
@@ -5201,6 +5203,7 @@ def _extras_entries(details, telegram_user_id: int):
             session,
             actor_telegram_user_id=telegram_user_id,
             draft_id=details.draft_id,
+            today=app_today(),
         )
     candidates = list(extra_candidate_brick_ids(snapshot))
     chosen = {extra.brick_id: extra for extra in details.extras}
@@ -5616,6 +5619,7 @@ def _find_catalog_field(
                 session,
                 actor_telegram_user_id=telegram_user_id,
                 draft_id=details.draft_id,
+                today=app_today(),
             )
     except AnnouncementError:
         return None

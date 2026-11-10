@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING
 
 from telegram.error import TelegramError
@@ -49,6 +50,7 @@ from delivery import (
     send_announcement_post,
 )
 from template_compiler import render_announcement
+from utils.parsers import app_today
 
 if TYPE_CHECKING:  # pragma: no cover — только для типов, без циклического импорта
     from telegram import Bot
@@ -93,6 +95,7 @@ def render_live_text(
     draft_id: int,
     has_photos: bool = False,
     session_factory=None,
+    today: date | None = None,
 ) -> str:
     """
     Собирает текст верхнего блока из текущего черновика.
@@ -101,13 +104,20 @@ def render_live_text(
     блок и готовый анонс не могут разойтись. Техническая `.` появляется
     только при полностью пустом видимом тексте и отсутствии фото; значения
     кирпичиков не меняются.
+
+    `today` — дата операции (Poster 2.6.1 §9.2); по умолчанию — `app_today()`
+    в момент сборки. Один вызов использует одно значение: принятая дата
+    доходит и до условных частей, и до валидации кирпичиков при рендере.
     """
     factory = session_factory or SessionLocal
+    if today is None:
+        today = app_today()
     with factory() as session:
         payload = build_announcement_render_payload(
             session,
             actor_telegram_user_id=telegram_user_id,
             draft_id=draft_id,
+            today=today,
         )
     return render_announcement(
         payload.tokens_by_text,
@@ -115,6 +125,7 @@ def render_live_text(
         payload.definitions_by_id,
         has_photos=has_photos,
         use_extended=payload.use_extended,
+        today=today,
     )
 
 

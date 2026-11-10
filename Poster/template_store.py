@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import select
@@ -2232,6 +2232,7 @@ def render_template_version(
     template_id: int,
     values_by_id: Mapping[int, Any],
     version: int | None = None,
+    today: date | None = None,
 ) -> str:
     """
     Компилирует сохранённую версию шаблона в HTML-анонс.
@@ -2243,6 +2244,9 @@ def render_template_version(
     Никакого разрешения brick_id по текстовому коду при выполнении:
     отсутствующая привязка — ошибка, а не автоматический выбор другого
     кирпичика.
+
+    `today` — контролируемая дата операции (Poster 2.6.1 §9.2), уходит в
+    проверку значений при рендере; `None` — `app_today()`.
     """
     actor = _require_actor_user(session, actor_telegram_user_id)
     template = _readable_template_row(session, actor, template_id)
@@ -2267,13 +2271,14 @@ def render_template_version(
         },
         values_by_id=values_by_id,
         definitions_by_id=definitions,
+        today=today,
     )
     tokens_by_text = {
         text_name: parse_template(raw) for text_name, raw in texts.items()
     }
     for tokens in tokens_by_text.values():
         _restore_bindings_on_tokens(tokens, bindings_by_code)
-    return render_template(tokens_by_text, values_by_id, definitions)
+    return render_template(tokens_by_text, values_by_id, definitions, today=today)
 
 
 def _apply_conditional_texts(
@@ -2283,6 +2288,7 @@ def _apply_conditional_texts(
     texts: Mapping[str, str],
     values_by_id: Mapping[int, Any],
     definitions_by_id: Mapping[int, BrickDefinition],
+    today: date | None = None,
 ) -> dict[str, str]:
     """
     Вырезает условные части (§38–45) из исходных текстов ДО разбора.
@@ -2302,7 +2308,9 @@ def _apply_conditional_texts(
             continue
 
         def _is_empty(brick_id: int) -> bool:
-            return _brick_value_empty(brick_id, values_by_id, definitions_by_id)
+            return _brick_value_empty(
+                brick_id, values_by_id, definitions_by_id, today=today
+            )
 
         result[text_name] = apply_conditional_parts(raw, rules, is_empty=_is_empty)
     return result
@@ -2314,6 +2322,7 @@ def render_template_snapshot(
     actor_telegram_user_id: int | None,
     snapshot_id: int,
     values_by_id: Mapping[int, Any],
+    today: date | None = None,
 ) -> str:
     """
     Компилирует сохранённый snapshot шаблона в HTML-анонс.
@@ -2361,4 +2370,4 @@ def render_template_snapshot(
     definitions = _load_brick_definitions(session, brick_ids)
     for tokens in tokens_by_text.values():
         _restore_bindings_on_tokens(tokens, bindings_by_code)
-    return render_template(tokens_by_text, values_by_id, definitions)
+    return render_template(tokens_by_text, values_by_id, definitions, today=today)

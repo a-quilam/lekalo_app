@@ -2980,6 +2980,7 @@ def build_announcement_render_payload(
     *,
     actor_telegram_user_id: int | None,
     draft_id: int,
+    today: date | None = None,
 ) -> AnnouncementRenderPayload:
     """
     Формирует связанные тексты и значения для `template_compiler.render_template`.
@@ -2991,6 +2992,13 @@ def build_announcement_render_payload(
     канонического текста — legacy append-fallback удалён. Строки значений
     в базе при этом сохраняются, экран доп. полей честно сообщает, что
     дополнительных полей в шаблоне нет.
+
+    `today` — контролируемая дата операции (Poster 2.6.1 §9.2). Она нужна
+    условным частям: пустота кирпичика-даты определяется той же проверкой,
+    что и у рендера, и должна считаться по сохранённой дате, а не по
+    новому «сегодня». Часовой пояс площадки модель данных не хранит
+    (`Place` — произвольная строка города), поэтому §9.3 выбирает единый
+    `APP_TZ` для всех анонсов: `None` означает `app_today()`.
     """
     actor = _require_actor(session, actor_telegram_user_id)
     row = _load_owned_draft(session, actor, draft_id)
@@ -3039,6 +3047,7 @@ def build_announcement_render_payload(
         snapshot=snapshot,
         values_by_id=values_by_id,
         definitions_by_id=definitions,
+        today=today,
     )
     tokens_by_text = snapshot_tokens_by_text(snapshot, texts=texts)
     prepared: dict[str, tuple[Any, ...]] = {
@@ -3066,6 +3075,7 @@ def _conditional_snapshot_texts(
     snapshot: AnnouncementTemplateSnapshot,
     values_by_id: Mapping[int, object],
     definitions_by_id: Mapping[int, BrickDefinition],
+    today: date | None = None,
 ) -> dict[str, str]:
     """
     Исходные тексты снимка с вырезанными условными частями (§38–45).
@@ -3091,6 +3101,7 @@ def _conditional_snapshot_texts(
         rules_by_section=_frozen_snapshot_rules(session, snapshot.snapshot_id),
         values_by_id=values_by_id,
         definitions_by_id=definitions_by_id,
+        today=today,
     )
 
 
@@ -3134,12 +3145,18 @@ def _apply_rules_to_texts(
     rules_by_section: Mapping[str, Sequence["ConditionalRule"]],
     values_by_id: Mapping[int, object],
     definitions_by_id: Mapping[int, BrickDefinition],
+    today: date | None = None,
 ) -> dict[str, str]:
     """Вырезает условные части по уже выбранным правилам каждой секции."""
     from template_compiler import _brick_value_empty, apply_conditional_parts
 
     def _is_empty(brick_id: int) -> bool:
-        return _brick_value_empty(brick_id, values_by_id, definitions_by_id)
+        return _brick_value_empty(
+            brick_id,
+            values_by_id,
+            definitions_by_id,
+            today=today,
+        )
 
     result: dict[str, str] = {}
     for text_name, raw in raw_texts.items():
@@ -3183,6 +3200,7 @@ def build_announcement_fields(
         session,
         actor_telegram_user_id=actor_telegram_user_id,
         draft_id=draft_id,
+        today=today,
     )
     known = place_context_values(
         display_name=row.place_display_name,
@@ -3277,6 +3295,7 @@ def build_announcement_preview(
         session,
         actor_telegram_user_id=actor_telegram_user_id,
         draft_id=draft_id,
+        today=today,
     )
     # `html` — то, что реально уйдёт в Telegram (пустой анонс → `.`,
     # §5.6). Готовность считается по тексту БЕЗ заглушки: иначе пустой
@@ -3287,6 +3306,7 @@ def build_announcement_preview(
         payload.values_by_id,
         payload.definitions_by_id,
         use_extended=use_extended,
+        today=today,
     )
     html = render_announcement(
         payload.tokens_by_text,
@@ -3294,6 +3314,7 @@ def build_announcement_preview(
         payload.definitions_by_id,
         has_photos=bool(details.photos),
         use_extended=use_extended,
+        today=today,
     )
     snapshot_brick_count = (
         len(details.template_snapshot.brick_ids)
