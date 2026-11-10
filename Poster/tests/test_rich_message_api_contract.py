@@ -35,6 +35,8 @@ import json
 import unittest
 from typing import Any
 
+from telegram import InputFile
+
 from help_rich import build_help_rich_message
 from rich_message import (
     InputRichBlockDetails,
@@ -45,6 +47,7 @@ from rich_message import (
     InputRichMessage,
     InputRichTextUrl,
     RichMessageError,
+    _hoist_input_files,
     rich_text_plain,
     validate_rich_message,
 )
@@ -147,9 +150,22 @@ class HelpRichOfficialSchemaTests(unittest.TestCase):
         self.payload = _payload()
 
     def test_payload_is_json_and_single_way(self) -> None:
+        """
+        Итоговый `rich_message` — JSON: файлы слайд-шоу выносятся отдельно.
+
+        В `photo.media` лежат живые `InputFile` (их загружает
+        `send_rich_message`), поэтому JSON-представление берётся ПОСЛЕ
+        штатного hoisting — ровно в той форме, что уходит в Bot API
+        (`attach://rich_media_N` вместо объекта).
+        """
         self.assertEqual(list(self.payload), ["blocks"], "ровно один способ")
-        encoded = json.dumps(self.payload, ensure_ascii=False)
-        self.assertEqual(json.loads(encoded), self.payload, "не JSON-структура")
+        files: list[tuple[str, InputFile]] = []
+        hoisted = _hoist_input_files(self.payload, files)
+        encoded = json.dumps(hoisted, ensure_ascii=False)
+        self.assertEqual(json.loads(encoded), hoisted, "не JSON-структура")
+        # Без медиа payload обязан быть JSON сразу — лишних объектов нет.
+        if not files:
+            self.assertEqual(json.loads(json.dumps(self.payload)), self.payload)
 
     def test_heading_is_official_heading_block(self) -> None:
         heading = _blocks(self.payload)[0]

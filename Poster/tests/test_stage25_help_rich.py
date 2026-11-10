@@ -249,7 +249,9 @@ class HelpStructureTests(unittest.TestCase):
                     parts.extend(_list_item_texts(child))
             return "\n".join(parts)
 
-        self.assertIn("Для анонса площадки", text_of("Создание анонса"))
+        self.assertIn(
+            "Бот использует её стандартный шаблон", text_of("Создание анонса")
+        )
         self.assertIn("справочник площадок", text_of("Площадки"))
         self.assertIn("расширенном варианте", text_of("Дополнительные поля"))
         self.assertIn("до десяти картинок", text_of("Фотографии"))

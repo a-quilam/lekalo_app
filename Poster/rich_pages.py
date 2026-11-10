@@ -46,6 +46,7 @@ from utils.rich_content import (
     Block,
     BoldPart,
     DetailsBlock,
+    DividerBlock,
     LinkPart,
     ListBlock,
     ParagraphBlock,
@@ -124,7 +125,14 @@ def _slideshow(block: SlideshowBlock) -> InputRichBlockSlideshow | None:
         photos.append(
             # `InputFile` (а не строка пути) — штатный способ загрузки:
             # `send_rich_message` поднимает файл на верхний уровень запроса.
-            InputRichBlockPhoto(photo=InputMediaPhoto(media=InputFile(str(path))))
+            # ВАЖНО: `telegram.InputFile(str)` считает строку СОДЕРЖИМОЙ
+            # файла и отправляет её UTF-8-байты, то есть текст пути. Поэтому
+            # читаем байты PNG и передаём имя файла (вместе с MIME-типом).
+            InputRichBlockPhoto(
+                photo=InputMediaPhoto(
+                    media=InputFile(path.read_bytes(), filename=path.name)
+                )
+            )
         )
     for item in missing:
         logger.warning(
@@ -151,6 +159,8 @@ def _block(block: Block) -> RichBlock | None:
         )
     if isinstance(block, TableBlock):
         return _table(block)
+    if isinstance(block, DividerBlock):
+        return InputRichBlockDivider()
     if isinstance(block, QuoteBlock):
         quote_blocks: list[RichBlock] = [InputRichBlockParagraph(text=block.text)]
         return InputRichBlockBlockQuotation(

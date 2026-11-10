@@ -19,6 +19,7 @@
 - `list` — маркированный список (пункт — строка или части абзаца);
 - `table` — компактная Rich-таблица: `header`, `rows`, `compact`;
 - `quote` — Rich-цитата: строка или `{text, credit}`;
+- `divider` — разделитель крупных смысловых блоков без содержимого;
 - `details` — вложенный раскрываемый блок `{summary, blocks}`;
 - `slideshow` — настоящее слайд-шоу: список `{id, file}`.
 
@@ -51,7 +52,9 @@ PATH_ENV_VARIABLE = "RICH_CONTENT_PATH"
 PAGE_KEYS = frozenset({"help", "about"})
 SECTION_KEYS = frozenset({"id", "title", "blocks"})
 PAGE_FIELDS = frozenset({"title", "intro", "hint", "sections"})
-BLOCK_KEYS = frozenset({"paragraph", "list", "table", "quote", "details", "slideshow"})
+BLOCK_KEYS = frozenset(
+    {"paragraph", "list", "table", "quote", "divider", "details", "slideshow"}
+)
 TABLE_KEYS = frozenset({"header", "rows", "compact"})
 QUOTE_KEYS = frozenset({"text", "credit"})
 DETAILS_KEYS = frozenset({"summary", "blocks"})
@@ -117,6 +120,11 @@ class QuoteBlock:
 
 
 @dataclass(frozen=True)
+class DividerBlock:
+    """Разделитель крупных смысловых блоков (`InputRichBlockDivider`)."""
+
+
+@dataclass(frozen=True)
 class DetailsBlock:
     summary: str
     blocks: tuple["Block", ...] = field(default_factory=tuple)
@@ -135,7 +143,13 @@ class SlideshowBlock:
 
 
 Block = (
-    ParagraphBlock | ListBlock | TableBlock | QuoteBlock | DetailsBlock | SlideshowBlock
+    ParagraphBlock
+    | ListBlock
+    | TableBlock
+    | QuoteBlock
+    | DividerBlock
+    | DetailsBlock
+    | SlideshowBlock
 )
 
 
@@ -287,6 +301,11 @@ def _parse_block(value: Any, *, where: str) -> Block:
         return _parse_table(payload, where=f"{where}.table")
     if kind == "quote":
         return _parse_quote(payload, where=f"{where}.quote")
+    if kind == "divider":
+        # Разделитель не несёт содержимого: поле должно быть пустым.
+        if payload not in (None, ""):
+            raise RichContentError(f"{where}.divider: разделитель без содержимого.")
+        return DividerBlock()
     if kind == "details":
         return _parse_details(payload, where=f"{where}.details")
     return _parse_slideshow(payload, where=f"{where}.slideshow")

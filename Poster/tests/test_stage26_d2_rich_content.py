@@ -42,11 +42,16 @@ from typing import Any
 from unittest import mock
 
 import yaml
+from telegram import InputFile
 
 from about_rich import build_about_rich_message
 from help_rich import build_help_rich_message
 from migrations import DEFAULT_MIGRATIONS, LATEST_VERSION, run_migrations
-from rich_message import validate_rich_message
+from rich_message import (
+    InputRichBlockDetails,
+    InputRichBlockSlideshow,
+    validate_rich_message,
+)
 from rich_pages import page_message
 from tests.stage19a_helpers import make_engine, temp_db_path
 from utils import ui_texts
@@ -54,6 +59,7 @@ from utils.rich_content import (
     Block,
     BoldPart,
     DetailsBlock,
+    DividerBlock,
     LinkPart,
     ListBlock,
     ParagraphBlock,
@@ -98,13 +104,15 @@ ABOUT_SECTION_TITLES = (
 # и названия закреплены отдельной проверкой.
 HELP_PHRASES: dict[str, tuple[str, ...]] = {
     "Создание анонса": (
-        "Для анонса площадки бот использует её стандартный шаблон и уже "
-        "известные сведения: адрес, ссылки и прочее.",
-        "Пока вы отвечаете на вопросы, бот собирает пост. После создания его "
-        "можно отредактировать.",
+        "Анонс площадки. Бот использует её стандартный шаблон и уже известные "
+        "сведения: адрес, ссылки и прочее.",
+        "Личный шаблон. Можно создавать анонсы без привязки к какой-либо " "площадке.",
+        "Редактирование. Пока вы отвечаете на вопросы, бот собирает пост. "
+        "После создания его можно отредактировать.",
     ),
     "Площадки": (
-        "В «Лекале» есть общий справочник площадок.",
+        "В «Лекале» есть общий справочник площадок. Каждой можно задать "
+        "город, адрес, ссылки и свой шаблон анонсов.",
         "Добавьте площадку один раз — и организаторам больше не придётся "
         "всякий раз вбивать одни и те же сведения.",
     ),
@@ -116,11 +124,16 @@ HELP_PHRASES: dict[str, tuple[str, ...]] = {
     ),
     "Дополнительные поля": (
         "Не каждому мероприятию нужны цена, регистрация или список " "выступающих.",
+        "Расширенный шаблон включает администратор площадки. Тогда бот может "
+        "собирать анонсы в простом или расширенном варианте, в зависимости "
+        "от заполненных полей.",
         "Один шаблон — разные случаи.",
     ),
+    # §13.5: компактный маркированный список из трёх пунктов. Текст
+    # склеивается из частей пункта (строка + жирное выделение).
     "Фотографии": (
-        "К анонсу можно добавить до десяти картинок. Рекомендую одну, "
-        "квадратную (1:1).",
+        "К анонсу можно добавить до десяти картинок.",
+        "Рекомендую одну квадратную (1:1).",
         "Картинки можно менять и после создания поста.",
     ),
     "Редактирование и публикация": (
@@ -235,16 +248,42 @@ def _part_text(part: TextPart) -> str:
     raise AssertionError(f"неизвестная часть абзаца: {part!r}")
 
 
+def _rich_text_plain(value: Any) -> str:
+    """Плоский текст готового `RichText` из словаря Bot API."""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_rich_text_plain(item) for item in value)
+    if isinstance(value, dict):
+        return _rich_text_plain(value.get("text", ""))
+    return ""
+
+
+def _bold_texts(value: Any) -> list[str]:
+    """Тексты жирных частей готового `RichText` (в порядке появления)."""
+    if isinstance(value, str):
+        return []
+    if isinstance(value, list):
+        return [text for item in value for text in _bold_texts(item)]
+    if isinstance(value, dict):
+        return [str(value.get("text"))] if value.get("type") == "bold" else []
+    return []
+
+
 def _block_texts(block: Block) -> list[str]:
     """Весь читаемый текст блока каталога (без маркеров разметки)."""
     if isinstance(block, ParagraphBlock):
-        return [_part_text(part) for part in block.parts]
+        # Части абзаца склеиваются: жирное выделение внутри фразы не должно
+        # разрывать проверяемую дословную формулировку.
+        return ["".join(_part_text(part) for part in block.parts)]
     if isinstance(block, ListBlock):
-        return [_part_text(part) for item in block.items for part in item]
+        return ["".join(_part_text(part) for part in item) for item in block.items]
     if isinstance(block, TableBlock):
         return [*block.header, *(cell for row in block.rows for cell in row)]
     if isinstance(block, QuoteBlock):
         return [block.text, *([block.credit] if block.credit else [])]
+    if isinstance(block, DividerBlock):
+        return []
     if isinstance(block, DetailsBlock):
         return [
             block.summary,
@@ -450,6 +489,101 @@ class HelpContentTests(unittest.TestCase):
             ],
         )
 
+    def test_section_13_1_has_three_bold_led_paragraphs(self) -> None:
+        """§13.1: три самостоятельных абзаца, каждый начинается выделением."""
+        children = _details_child(self.payload, "Создание анонса")
+        self.assertEqual(
+            [child["type"] for child in children],
+            ["paragraph"] * 3,
+            "§13.1: ровно три отдельных абзаца",
+        )
+        expected = [
+            "Анонс площадки.",
+            "Личный шаблон.",
+            "Редактирование.",
+        ]
+        for child, bold_text in zip(children, expected):
+            text = child["text"]
+            self.assertIsInstance(text, list, "абзац должен состоять из частей")
+            first = text[0]
+            self.assertEqual(first.get("type"), "bold", "абзац начинается жирным")
+            self.assertEqual(first.get("text"), bold_text)
+
+    def test_section_13_2_highlights_inside_paragraphs(self) -> None:
+        """§13.2: жирные фразы внутри абзацев, а не весь абзац."""
+        children = _details_child(self.payload, "Площадки")
+        self.assertEqual([child["type"] for child in children], ["paragraph"] * 3)
+        first_bold = _bold_texts(children[0]["text"])
+        second_bold = _bold_texts(children[1]["text"])
+        self.assertEqual(first_bold, ["общий справочник площадок"])
+        self.assertEqual(second_bold, ["Добавьте площадку один раз"])
+
+    def test_section_13_5_is_marked_list_of_three_items(self) -> None:
+        """§13.5: компактный Rich-список из трёх пунктов с выделениями."""
+        children = _details_child(self.payload, "Фотографии")
+        self.assertEqual(
+            [child["type"] for child in children],
+            ["list"],
+            "§13.5: раздел — список, а не слипшийся абзац",
+        )
+        items = children[0]["items"]
+        self.assertEqual(len(items), 3, "§13.5: ровно три пункта")
+        paragraphs = [item["blocks"][0] for item in items]
+        self.assertTrue(all(item["type"] == "paragraph" for item in paragraphs))
+
+        texts = ["".join(_rich_text_plain(part["text"])) for part in paragraphs]
+        self.assertEqual(
+            texts,
+            [
+                "К анонсу можно добавить до десяти картинок.",
+                "Рекомендую одну квадратную (1:1).",
+                "Картинки можно менять и после создания поста.",
+            ],
+        )
+        bold_texts = [_bold_texts(item["text"]) for item in paragraphs]
+        self.assertEqual(bold_texts[0], ["до десяти картинок"])
+        self.assertEqual(bold_texts[1], ["одну квадратную (1:1)"])
+        self.assertEqual(bold_texts[2], [], "третий пункт без выделения")
+
+    def test_section_13_5_list_item_parts_are_rich_text(self) -> None:
+        """Пункт списка — массив `RichText`, как и абзац (§13.5)."""
+        children = _details_child(self.payload, "Фотографии")
+        for item in children[0]["items"]:
+            self.assertEqual(set(item), {"blocks"})
+            for paragraph in item["blocks"]:
+                self.assertEqual(set(paragraph), {"type", "text"})
+
+    def test_section_13_7_dividers_frame_the_comparison(self) -> None:
+        """§13.7: перед сравнением и после него — визуальные разделители."""
+        children = _details_child(self.payload, "Как написать хороший анонс")
+        kinds = [child["type"] for child in children]
+        self.assertEqual(
+            kinds.count("divider"),
+            2,
+            "§13.7: ровно два разделителя — до и после блока цитат",
+        )
+        first_quote = kinds.index("blockquote")
+        last_quote = len(kinds) - 1 - kinds[::-1].index("blockquote")
+        self.assertEqual(kinds[first_quote - 1], "divider", "divider ПЕРЕД цитатами")
+        self.assertEqual(kinds[last_quote + 1], "divider", "divider ПОСЛЕ цитат")
+        for child in children:
+            if child["type"] == "divider":
+                self.assertEqual(set(child), {"type"}, "у divider нет полей")
+
+    def test_section_13_6_highlights_sentence_and_section_name(self) -> None:
+        """§13.6: выделено только предложение совета и «Мои анонсы»."""
+        children = _details_child(self.payload, "Редактирование и публикация")
+        bold_texts: list[str] = []
+        for child in children:
+            if child["type"] == "paragraph":
+                bold_texts.extend(_bold_texts(child["text"]))
+        self.assertIn(
+            "Советую не копировать текст из бота, а пересылать готовое сообщение.",
+            bold_texts,
+        )
+        self.assertIn("Мои анонсы", bold_texts)
+        self.assertEqual(len(bold_texts), 2, "§13.6: других выделений нет")
+
     def test_help_has_no_clickable_links(self) -> None:
         self.assertEqual(_page_links(self.page), [])
 
@@ -505,6 +639,35 @@ class AboutContentTests(unittest.TestCase):
             for phrase in phrases:
                 with self.subTest(section=title, phrase=phrase):
                     self.assertIn(phrase, text)
+
+    def test_rare_bold_highlights_per_section(self) -> None:
+        """§1.4: редкие смысловые выделения, «На что я надеюсь» — без них."""
+        expected = {
+            "Зачем я это сделал": [
+                "хороший анонс должен с первого взгляда давать понять, что за "
+                "мероприятие, когда и где оно проходит"
+            ],
+            "Как я делал «Лекало»": ["Я делал проект один, с помощью DeepSeek и GLM"],
+            "Что получилось": ["собирать собственные шаблоны из кирпичиков"],
+            "На что я надеюсь": [],
+            "Открытый код": ["Опенсорс — моя принципиальная позиция."],
+            # Просьбу о СБП владелец уже утвердил жирной — она остаётся.
+            "Как помочь и связаться": [
+                "Если хотите поддержать меня рублём — напишите в Telegram, "
+                "расскажу, как задонатить по СБП."
+            ],
+        }
+        children = _payload_details(self.payload)
+        by_title = {child["summary"]: child["blocks"] for child in children}
+        for title, bold_texts in expected.items():
+            found = [
+                text
+                for block in by_title[title]
+                if block["type"] == "paragraph"
+                for text in _bold_texts(block["text"])
+            ]
+            with self.subTest(section=title):
+                self.assertEqual(found, bold_texts)
 
     def test_four_clickable_links_in_expected_sections(self) -> None:
         urls = _payload_urls(self.payload)
@@ -608,9 +771,9 @@ class MissingMediaTests(unittest.TestCase):
         """
         Реальное состояние `assets/rich/`: сборка честно отражает наличие PNG.
 
-        Пока оригиналов владельца нет, справка уходит без слайд-шоу; когда
-        файлы появятся, блок соберётся. Проверка держит оба случая — она не
-        требует «дырки» в проекте и не сломается после добавления картинок.
+        Оригиналы владельца лежат в проекте и отслеживаются Git, поэтому
+        рабочая ветка — «файлы есть»: слайд-шоу собирается без WARNING.
+        Ветка «файлов нет» остаётся: каталог сам по себе не требует медиа.
         """
         page = load_catalog().help
         root = Path(__file__).resolve().parent.parent
@@ -635,9 +798,68 @@ class MissingMediaTests(unittest.TestCase):
             with self.assertNoLogs("rich_pages", level="WARNING"):
                 payload = page_message(page).to_dict()
             children = _details_child(payload, "Редактирование и публикация")
+            slideshows = [child for child in children if child["type"] == "slideshow"]
+            self.assertEqual(len(slideshows), 1)
             self.assertEqual(
-                len([child for child in children if child["type"] == "slideshow"]), 1
+                len(slideshows[0]["blocks"]),
+                2,
+                "§1.5: в слайд-шоу оба утверждённых кадра",
             )
+
+    def test_slideshow_uploads_png_bytes_not_a_path(self) -> None:
+        """
+        §1.5: в Telegram едут настоящие PNG, а не текст пути к ним.
+
+        `telegram.InputFile(str)` трактует строку как СОДЕРЖИМОЕ файла и
+        отправляет её UTF-8-байты. Поэтому сборка обязана передавать байты
+        картинки и её имя: проверяется и размер, и PNG-сигнатура, и то, что
+        имя/MIME не превратились в «application.octet-stream».
+        """
+        page = load_catalog().help
+        root = Path(__file__).resolve().parent.parent
+        section = _sections_by_title(page)["Редактирование и публикация"]
+        slideshow = next(
+            block for block in section.blocks if isinstance(block, SlideshowBlock)
+        )
+        if any(not (root / slide.file).is_file() for slide in slideshow.slides):
+            self.skipTest("оригиналы PNG отсутствуют в проекте")
+
+        built = page_message(page)
+        details = [
+            block
+            for block in built.blocks or ()
+            if isinstance(block, InputRichBlockDetails)
+            and block.summary == "Редактирование и публикация"
+        ]
+        self.assertEqual(len(details), 1)
+        slides = [
+            child
+            for child in details[0].blocks
+            if isinstance(child, InputRichBlockSlideshow)
+        ]
+        self.assertEqual(len(slides), 1)
+
+        uploaded = [photo.photo.media for photo in slides[0].blocks]
+        self.assertEqual(len(uploaded), 2, "§1.5: два кадра в утверждённом порядке")
+        for media, slide in zip(uploaded, slideshow.slides):
+            with self.subTest(slide=slide.id):
+                self.assertIsInstance(
+                    media,
+                    InputFile,
+                    "слайд должен грузиться файлом, а не строкой file_id",
+                )
+                assert isinstance(media, InputFile)  # для mypy
+                content = media.input_file_content
+                self.assertIsInstance(content, bytes)
+                assert isinstance(content, bytes)  # для mypy
+                self.assertEqual(
+                    content,
+                    (root / slide.file).read_bytes(),
+                    "отправляемое содержимое расходится с PNG на диске",
+                )
+                self.assertTrue(content.startswith(b"\x89PNG\r\n\x1a\n"))
+                self.assertEqual(media.filename, (root / slide.file).name)
+                self.assertEqual(media.mimetype, "image/png")
 
     def test_missing_png_builds_section_without_media(self) -> None:
         path = self._catalog_without_media()
@@ -656,7 +878,11 @@ class MissingMediaTests(unittest.TestCase):
             [child for child in children if child["type"] == "slideshow"],
             "без файлов блок слайд-шоу не отправляется",
         )
-        texts = [child["text"] for child in children if child["type"] == "paragraph"]
+        texts = [
+            _rich_text_plain(child["text"])
+            for child in children
+            if child["type"] == "paragraph"
+        ]
         self.assertIn(
             "Лучше сначала отправить анонс в «Избранное» или отложку канала, "
             "чтобы внести последние правки.",
@@ -690,6 +916,12 @@ class RichCatalogFailFastTests(unittest.TestCase):
     def test_unknown_block_type_raises(self) -> None:
         data = _catalog_mapping()
         data["help"]["sections"][0]["blocks"] = [{"marquee": "текст"}]
+        self._build_with(yaml.safe_dump(data, allow_unicode=True))
+
+    def test_divider_with_payload_raises(self) -> None:
+        """Разделитель не имеет содержимого: текст в `divider` — ошибка схемы."""
+        data = _catalog_mapping()
+        data["help"]["sections"][0]["blocks"] = [{"divider": "текст"}]
         self._build_with(yaml.safe_dump(data, allow_unicode=True))
 
     def test_missing_page_raises(self) -> None:

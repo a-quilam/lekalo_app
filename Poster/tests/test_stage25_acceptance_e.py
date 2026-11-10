@@ -46,6 +46,7 @@ from __future__ import annotations
 import re
 import unittest
 
+from telegram import InputFile
 from telegram.error import BadRequest, NetworkError, RetryAfter
 from telegram.ext import CommandHandler, ConversationHandler
 
@@ -53,7 +54,7 @@ from tests import ui_texts_expect as cat
 
 try:
     from help_rich import build_help_rich_message
-    from rich_message import validate_rich_message
+    from rich_message import _hoist_input_files, validate_rich_message
     from tests.integration_harness import (
         HARNESS_IMPORT_ERROR,
         inline_buttons,
@@ -648,10 +649,39 @@ class HelpPayloadIsolationTests(unittest.TestCase):
     """Содержимое справки собирается из каталога, а не из сети/нейросети."""
 
     def test_builder_is_static_and_repeatable(self) -> None:
-        first = build_help_rich_message().to_dict()
-        second = build_help_rich_message().to_dict()
+        """
+        Две сборки справки дают одинаковый payload и одинаковые медиа.
+
+        Сравнивать `to_dict()` напрямую нельзя: в `photo.media` лежат живые
+        `InputFile` (нужны для hoisting в `send_rich_message`), а у них нет
+        `__eq__` — dict-сравнение упирается в identity объекта. Честное
+        сравнение — по ДЕТЕРМИНИРОВАННОМУ представлению: после
+        `_hoist_input_files` в payload стоят стабильные `attach://rich_media_N`,
+        а сами файлы сверяются попарно по имени и содержимому.
+        """
+        first_files: list[tuple[str, InputFile]] = []
+        first = _hoist_input_files(build_help_rich_message().to_dict(), first_files)
+        second_files: list[tuple[str, InputFile]] = []
+        second = _hoist_input_files(build_help_rich_message().to_dict(), second_files)
+
         self.assertEqual(first, second, "содержимое справки нестабильно")
         self.assertNotIsInstance(first, str)
+
+        self.assertEqual(
+            [name for name, _ in first_files],
+            [name for name, _ in second_files],
+            "набор медиа справки нестабилен",
+        )
+        self.assertEqual(
+            [(file.filename, file.mimetype) for _, file in first_files],
+            [(file.filename, file.mimetype) for _, file in second_files],
+        )
+        self.assertEqual(
+            [file.input_file_content for _, file in first_files],
+            [file.input_file_content for _, file in second_files],
+            "содержимое картинок справки нестабильно",
+        )
+        self.assertTrue(first_files, "в справке должны быть файлы слайд-шоу")
 
     def test_details_are_real_objects_without_shared_state(self) -> None:
         first = build_help_rich_message()
