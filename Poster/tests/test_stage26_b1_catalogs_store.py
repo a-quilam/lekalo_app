@@ -85,21 +85,21 @@ class Migration31Tests(unittest.TestCase):
         self.engine = make_engine(self.path)
         self.addCleanup(self.engine.dispose)
 
-    def test_latest_version_is_thirty_two(self) -> None:
-        self.assertEqual(LATEST_VERSION, 32)
+    def test_latest_version_is_thirty_three(self) -> None:
+        self.assertEqual(LATEST_VERSION, 33)
         self.assertEqual(
             (DEFAULT_MIGRATIONS[-2].version, DEFAULT_MIGRATIONS[-2].name),
-            (31, MIGRATION_31_NAME),
+            (32, "system_brick_hints"),
         )
         self.assertEqual(
             (DEFAULT_MIGRATIONS[-1].version, DEFAULT_MIGRATIONS[-1].name),
-            (32, "system_brick_hints"),
+            (33, "contact_brick_hint"),
         )
-        self.assertEqual([m.version for m in DEFAULT_MIGRATIONS], list(range(1, 33)))
+        self.assertEqual([m.version for m in DEFAULT_MIGRATIONS], list(range(1, 34)))
 
     def test_fresh_database_creates_both_tables_and_indexes(self) -> None:
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-        self.assertEqual(_journal(self.path)[-2], (31, MIGRATION_31_NAME))
+        self.assertEqual(_journal(self.path)[-2], (32, "system_brick_hints"))
         tables = table_names(self.path)
         self.assertIn("curator_entries", tables)
         self.assertIn("footer_entries", tables)
@@ -144,7 +144,7 @@ class Migration31Tests(unittest.TestCase):
             },
             "миграция 31 только добавочная",
         )
-        self.assertEqual(_journal(self.path)[-2], (31, MIGRATION_31_NAME))
+        self.assertEqual(_journal(self.path)[-2], (32, "system_brick_hints"))
         self.assertEqual(_sql(self.path, "PRAGMA foreign_key_check"), [])
 
     def test_migrated_schema_equals_fresh_create_all(self) -> None:

@@ -4512,6 +4512,51 @@ MIGRATION_32_SYSTEM_BRICK_HINTS = Migration(
 )
 
 
+# --- Версия 33: финальное описание кирпичика «контакт» (релиз 1.0.0) --------
+#
+# Миграция 32 дала кирпичику `контакт` пример «в формате площадки»
+# (t.me/iddeleted, t.me/vozdvizhenka), который в релизе «Лекала» 1.0.0
+# заменён короткой универсальной подсказкой. Текст миграции 32 не
+# изменяется (журнал и контрольные суммы исторических версий неизменяемы):
+# финальное описание ставит отдельная миграция.
+#
+# UPDATE условный: перезаписывается ТОЛЬКО точный текст миграции 32 (и
+# пустое описание). Описание, отредактированное владельцем или
+# суперадмином на иное значение, как и в миграции 32, не трогается —
+# повторная инициализация не откатывает правку. Код системного кирпичика
+# неизменяем, выборка по коду и `scope='system'` безопасна; пользовательские
+# кирпичики, шаблоны и анонсы не затрагиваются.
+
+_M33_CONTACT_DESCRIPTION = (
+    "Напишите контакт для гостей по вопросам мероприятия. "
+    "Можно указать @ник, t.me/ник или имя с гиперссылкой."
+)
+
+
+def _m33_contact_description_update() -> str:
+    """Идемпотентная замена подсказки миграции 32 у кирпичика «контакт»."""
+    # Текст берётся из таблицы миграции 32: не дублируем литерал, а сама
+    # миграция 32 остаётся побайтово прежней (checksum считается по SQL).
+    previous = dict(_M32_DESCRIPTIONS)["контакт"]
+    return f"""
+        UPDATE bricks
+        SET description = {_migration_18_literal(_M33_CONTACT_DESCRIPTION)},
+            updated_at = CURRENT_TIMESTAMP
+        WHERE code = {_migration_18_literal("контакт")}
+          AND scope = 'system'
+          AND (description IS NULL
+               OR description = {_migration_18_literal(previous)})
+        """
+
+
+MIGRATION_33_CONTACT_BRICK_HINT = Migration(
+    version=33,
+    name="contact_brick_hint",
+    statements=(_m33_contact_description_update(),),
+    requires_tables=("bricks",),
+)
+
+
 DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_1_USERS_PLACES,
     MIGRATION_2_PLACE_CONTACTS_UI,
@@ -4545,6 +4590,7 @@ DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
     MIGRATION_30_STANDARD_TEMPLATE_EXTENDED,
     MIGRATION_31_CURATOR_FOOTER_CATALOGS,
     MIGRATION_32_SYSTEM_BRICK_HINTS,
+    MIGRATION_33_CONTACT_BRICK_HINT,
 )
 
 LATEST_VERSION = DEFAULT_MIGRATIONS[-1].version if DEFAULT_MIGRATIONS else 0

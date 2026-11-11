@@ -111,6 +111,7 @@ class BrickSchemaTests(BrickDatabaseTestCase):
                 (30, "standard_template_extended"),
                 (31, "curator_footer_catalogs"),
                 (32, "system_brick_hints"),
+                (33, "contact_brick_hint"),
             ],
         )
         # 9 кирпичиков миграции 6 + системный `[адрес]` миграции 15

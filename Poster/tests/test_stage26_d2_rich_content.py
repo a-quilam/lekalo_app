@@ -249,6 +249,13 @@ MIGRATION_30_HINTS: dict[str, str] = {
     "подвал": "Выберите напоминание, которое появится внизу анонса.",
 }
 
+# Релиз «Лекала» 1.0.0: финальное описание кирпичика «контакт» —
+# ставится миграцией 33, миграция 32 хранит прежний текст.
+MIGRATION_33_CONTACT_HINT = (
+    "Напишите контакт для гостей по вопросам мероприятия. "
+    "Можно указать @ник, t.me/ник или имя с гиперссылкой."
+)
+
 COND_HINT_KEY = "templates.cond.hint"
 COND_HINT = (
     "Если кирпичик не заполнен, можно скрыть связанную с ним строку или "
@@ -1113,18 +1120,34 @@ class SystemBrickHintsMigrationTests(unittest.TestCase):
         )
         return {str(code): description for code, description in rows}
 
-    def test_migration_32_is_last(self) -> None:
-        self.assertEqual(LATEST_VERSION, 32)
+    def test_migration_33_is_last(self) -> None:
+        self.assertEqual(LATEST_VERSION, 33)
         self.assertEqual(
             (DEFAULT_MIGRATIONS[-1].version, DEFAULT_MIGRATIONS[-1].name),
-            (32, "system_brick_hints"),
+            (33, "contact_brick_hint"),
         )
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
 
     def test_migration_32_sets_verbatim_hints(self) -> None:
-        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
+        # Историческая проверка §16: после миграции 32 описание «контакта» —
+        # ещё прежний текст (финальный ставит миграция 33).
+        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:32]), 32)
         descriptions = self._descriptions()
         for code, expected in MIGRATION_32_HINTS.items():
+            with self.subTest(code=code):
+                self.assertEqual(descriptions.get(code), expected)
+
+    def test_migration_33_sets_final_contact_hint(self) -> None:
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
+        descriptions = self._descriptions()
+        self.assertEqual(descriptions.get("контакт"), MIGRATION_33_CONTACT_HINT)
+        # Прочие описания §16 миграцию 33 не затрагивает.
+        for code, expected in MIGRATION_32_HINTS.items():
+            if code == "контакт":
+                continue
+            with self.subTest(code=code):
+                self.assertEqual(descriptions.get(code), expected)
+        for code, expected in MIGRATION_30_HINTS.items():
             with self.subTest(code=code):
                 self.assertEqual(descriptions.get(code), expected)
 
@@ -1174,6 +1197,27 @@ class SystemBrickHintsMigrationTests(unittest.TestCase):
         self.assertEqual(
             descriptions.get("время_начала"), MIGRATION_32_HINTS["время_начала"]
         )
+
+    def test_owner_edited_contact_hint_survives_migration_33(self) -> None:
+        # Правка описания «контакта» владельцем не откатывается повторной
+        # инициализацией (рестартом) после миграции 33.
+        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:31]), 31)
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute(
+                "UPDATE bricks SET description = 'Мой формат контакта' "
+                "WHERE code = 'контакт' AND scope = 'system'"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
+        descriptions = self._descriptions()
+        self.assertEqual(descriptions.get("контакт"), "Мой формат контакта")
+        self.assertNotEqual(descriptions.get("контакт"), MIGRATION_33_CONTACT_HINT)
+        # Повторный запуск — идемпотентен, правка по-прежнему на месте.
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
+        self.assertEqual(descriptions, self._descriptions())
 
 
 if __name__ == "__main__":

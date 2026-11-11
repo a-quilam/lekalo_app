@@ -295,25 +295,27 @@ class MigrationEighteenContentTests(_Base):
         # (`announcement_instances`), D1 — 27 (`template_conditional_parts`),
         # этап B — 29 (`user_event_log_reports`), «Лекало» 2.6 A1 — 30
         # (`standard_template_extended`), B1 — 31 (`curator_footer_catalogs`),
-        # этап D2 — 32 (`system_brick_hints`); записи 18 остаются на своём
+        # этап D2 — 32 (`system_brick_hints`), релиз 1.0.0 — 33
+        # (`contact_brick_hint`); записи 18 остаются на своём
         # месте.
-        self.assertEqual(LATEST_VERSION, 32)
+        self.assertEqual(LATEST_VERSION, 33)
         versions = _sql(
             self.path,
             "SELECT version, name FROM schema_migrations ORDER BY version",
         )
         self.assertIn((18, "builtin_templates_v3"), versions)
         self.assertEqual(
-            versions[-9], (24, "template_content_and_extras_without_sections")
+            versions[-10], (24, "template_content_and_extras_without_sections")
         )
-        self.assertEqual(versions[-8], (25, "single_address_brick"))
-        self.assertEqual(versions[-7], (26, "announcement_instances"))
-        self.assertEqual(versions[-6], (27, "template_conditional_parts"))
-        self.assertEqual(versions[-5], (28, "template_snapshot_conditional_parts"))
-        self.assertEqual(versions[-4], (29, "user_event_log_reports"))
-        self.assertEqual(versions[-3], (30, "standard_template_extended"))
-        self.assertEqual(versions[-2], (31, "curator_footer_catalogs"))
-        self.assertEqual(versions[-1], (32, "system_brick_hints"))
+        self.assertEqual(versions[-9], (25, "single_address_brick"))
+        self.assertEqual(versions[-8], (26, "announcement_instances"))
+        self.assertEqual(versions[-7], (27, "template_conditional_parts"))
+        self.assertEqual(versions[-6], (28, "template_snapshot_conditional_parts"))
+        self.assertEqual(versions[-5], (29, "user_event_log_reports"))
+        self.assertEqual(versions[-4], (30, "standard_template_extended"))
+        self.assertEqual(versions[-3], (31, "curator_footer_catalogs"))
+        self.assertEqual(versions[-2], (32, "system_brick_hints"))
+        self.assertEqual(versions[-1], (33, "contact_brick_hint"))
 
     def test_untouched_initial_copy_gets_v4_and_new_name(self) -> None:
         rows = self.versions(1)

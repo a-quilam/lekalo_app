@@ -148,18 +148,18 @@ class Migration29Tests(unittest.TestCase):
         finally:
             engine.dispose()
 
-    def test_latest_version_is_thirty_two(self) -> None:
-        self.assertEqual(LATEST_VERSION, 32)
+    def test_latest_version_is_thirty_three(self) -> None:
+        self.assertEqual(LATEST_VERSION, 33)
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        # Этап A1 добавил миграцию 30, B1 — 31, этап D2 — 32: журнал
-        # заканчивается, а сама запись 29 остаётся на своём месте.
+        # Этап A1 добавил миграцию 30, B1 — 31, этап D2 — 32, релиз 1.0.0 —
+        # 33: журнал заканчивается, а сама запись 29 остаётся на своём месте.
         self.assertEqual(
             _journal(self.path)[-4:],
             [
-                (29, MIGRATION_29_NAME),
                 (30, MIGRATION_30_NAME),
                 (31, MIGRATION_31_NAME),
                 (32, "system_brick_hints"),
+                (33, "contact_brick_hint"),
             ],
         )
 

@@ -115,6 +115,7 @@ class MigrationMechanismTests(unittest.TestCase):
                 (30, "standard_template_extended"),
                 (31, "curator_footer_catalogs"),
                 (32, "system_brick_hints"),
+                (33, "contact_brick_hint"),
             ],
         )
 
@@ -231,6 +232,7 @@ class MigrationMechanismTests(unittest.TestCase):
                 (30, "standard_template_extended"),
                 (31, "curator_footer_catalogs"),
                 (32, "system_brick_hints"),
+                (33, "contact_brick_hint"),
             ],
         )
 
