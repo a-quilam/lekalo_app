@@ -6,3 +6,7 @@
 drafts.db
 
 responsible_person.db
+
+*.bak
+*.owner-backup
+*.replaced-*

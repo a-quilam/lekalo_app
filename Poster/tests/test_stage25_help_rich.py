@@ -221,11 +221,11 @@ class HelpStructureTests(unittest.TestCase):
             titles,
             [
                 "Создание анонса",
+                "Редактирование и публикация",
                 "Площадки",
                 "Шаблоны и кирпичики",
                 "Дополнительные поля",
                 "Фотографии",
-                "Редактирование и публикация",
                 "Как написать хороший анонс",
                 "Управление площадкой",
                 "Ошибки и предложения",
@@ -249,13 +249,12 @@ class HelpStructureTests(unittest.TestCase):
                     parts.extend(_list_item_texts(child))
             return "\n".join(parts)
 
-        self.assertIn(
-            "Бот использует её стандартный шаблон", text_of("Создание анонса")
-        )
-        self.assertIn("справочник площадок", text_of("Площадки"))
-        self.assertIn("расширенном варианте", text_of("Дополнительные поля"))
-        self.assertIn("до десяти картинок", text_of("Фотографии"))
-        self.assertIn("Мои анонсы", text_of("Редактирование и публикация"))
+        self.assertIn("стандартный шаблон", text_of("Создание анонса"))
+        self.assertIn("Моих анонсах", text_of("Создание анонса"))
+        self.assertIn("справочник", text_of("Площадки"))
+        self.assertIn("расширенный", text_of("Дополнительные поля"))
+        self.assertIn("до десяти изображений", text_of("Фотографии"))
+        self.assertIn("Перешлите готовый пост", text_of("Редактирование и публикация"))
         self.assertIn("/report", text_of("Ошибки и предложения"))
 
     def test_section_texts_come_from_yaml_catalog(self) -> None:
@@ -355,7 +354,19 @@ class HelpStructureTests(unittest.TestCase):
         for section in page.sections:
             for block in section.blocks:
                 if isinstance(block, ParagraphBlock):
-                    chunks = [part for part in block.parts if isinstance(part, str)]
+                    # Команда может стоять и в жирной части абзаца (§13.9).
+                    chunks = [
+                        part.text if isinstance(part, BoldPart) else part
+                        for part in block.parts
+                        if isinstance(part, (str, BoldPart))
+                    ]
+                elif isinstance(block, ListBlock):
+                    chunks = [
+                        part.text if isinstance(part, BoldPart) else part
+                        for item in block.items
+                        for part in item
+                        if isinstance(part, (str, BoldPart))
+                    ]
                 elif isinstance(block, QuoteBlock):
                     chunks = [block.text]
                 else:

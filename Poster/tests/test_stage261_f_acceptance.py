@@ -147,6 +147,7 @@ ABOUT_URLS = (
     "https://github.com/a-quilam/lekalo_app",
     "https://t.me/a_quilam",
     "https://kommuverse.ru/@mush",
+    "https://yoomoney.ru/fundraise/1LFG7EPRP2C.261110",
 )
 
 # §1.5: порядок оригинальных PNG в одном Rich Message.
@@ -294,11 +295,28 @@ class RichStructureTests(unittest.TestCase):
                     )
 
         creation = self._section(message, "Создание анонса")
-        self.assertEqual(len(creation), 3, "три самостоятельных абзаца (§1.3.1)")
-        for child in creation:
-            self.assertEqual(child.get("type"), "paragraph")
+        self.assertEqual(
+            _types(creation),
+            ["paragraph", "list", "divider", "paragraph", "paragraph"],
+            "§1.3.1: вступление, список способов, разделитель и два абзаца",
+        )
+        methods = creation[1].get("items") or []
+        self.assertEqual(len(methods), 2, "два способа создания анонса")
+        for item in methods:
+            paragraph = item["blocks"][0]
+            parts = _rich_parts(paragraph)
+            self.assertEqual(
+                parts[0].get("type"), "bold", "пункт списка начинается выделением"
+            )
+        for child, expected_bold in zip(creation[3:], ["Дальше бот задаст вопросы"]):
             bold = [part for part in _rich_parts(child) if part.get("type") == "bold"]
-            self.assertEqual(len(bold), 1, "у каждого абзаца одно смысловое выделение")
+            self.assertEqual(len(bold), 1, "у абзаца одно смысловое выделение")
+            self.assertEqual(str(bold[0].get("text")), expected_bold)
+        self.assertEqual(
+            [part for part in _rich_parts(creation[4]) if part.get("type") == "bold"],
+            [],
+            "финальный абзац — без выделений",
+        )
 
     def test_help_has_list_table_quotes_dividers_and_slideshow(self) -> None:
         message = build_help_rich_message().to_dict()
@@ -320,8 +338,8 @@ class RichStructureTests(unittest.TestCase):
         self.assertIs(tables[0].get("is_bordered"), True)
         self.assertEqual(
             _types(templates),
-            ["paragraph", "paragraph", "table", "paragraph"],
-            "таблица между двумя абзацами (§1.3.3)",
+            ["list", "table", "divider", "paragraph"],
+            "§1.3.3: список определений, таблица, разделитель и абзац",
         )
 
         good = self._section(message, "Как написать хороший анонс")
@@ -398,9 +416,10 @@ class RichStructureTests(unittest.TestCase):
             return out
 
         self.assertTrue(bold_texts("Открытый код"), "опенсорс выделен жирным")
-        self.assertTrue(
-            [text for text in bold_texts("Как помочь и связаться") if "СБП" in text],
-            "просьба о поддержке осталась жирной",
+        self.assertEqual(
+            bold_texts("Как помочь и связаться"),
+            ["Поддержать разработку:"],
+            "призыв к поддержке остался жирным",
         )
         self.assertEqual(bold_texts("На что я надеюсь"), [], "лишних выделений нет")
 

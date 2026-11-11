@@ -10,9 +10,12 @@ Poster 2.5.4 §7 + §9 (тест H) — НЕЗАВИСИМАЯ приёмка «
    а не обычный `sendMessage` с текстом: заголовок, подсказка, разделитель
    и ШЕСТЬ свёрнутых разделов; в разделах есть абзацы;
 3. ссылки — кликабельные объекты `type: "url"` с короткой подписью, а не
-   «голый» текст адреса: «РанДом Культуры», GitHub, автор проекта, Мастодон;
-4. у «Как помочь и связаться» нет донат-кнопки/платёжной ссылки (СБП —
-   словами), у сообщения ровно одна кнопка — «◀️ К помощи»;
+   «голый» текст адреса: «РанДом Культуры», GitHub, ЮMoney, автор проекта,
+   Мастодон;
+4. у «Как помочь и связаться» пять ссылок всего по странице, но в самом
+   разделе три (ЮMoney, Telegram автора, Мастодон) и строка о сборе
+   «0 из 15 000 ₽»; донат-КНОПКИ по-прежнему нет — у сообщения ровно одна
+   кнопка «◀️ К помощи»;
 5. «К помощи» возвращает справку, «Назад» на ней — на ТОТ ЖЕ экран-источник
    (меню, раздел, текущий шаг черновика); исходный экран/черновик не теряется;
 6. в чате не остаётся двух конкурирующих клавиатур: прежний Rich Message
@@ -98,7 +101,14 @@ GITHUB_URL = "https://github.com/a-quilam/lekalo_app"
 AUTHOR_URL = "https://t.me/a_quilam"
 RANDOM_CULTURE_URL = "https://t.me/random_culture"
 MASTODON_URL = "https://kommuverse.ru/@mush"
-EXPECTED_URLS = {GITHUB_URL, AUTHOR_URL, RANDOM_CULTURE_URL, MASTODON_URL}
+YOOMONEY_URL = "https://yoomoney.ru/fundraise/1LFG7EPRP2C.261110"
+EXPECTED_URLS = {
+    GITHUB_URL,
+    AUTHOR_URL,
+    RANDOM_CULTURE_URL,
+    MASTODON_URL,
+    YOOMONEY_URL,
+}
 RESUME_PAYLOAD_KEY = "announcement_resume"
 RICH_TEMP_PAYLOAD_KEY = "rich_temp"
 
@@ -329,8 +339,8 @@ class AboutStructureTests(unittest.TestCase):
         urls = [url for block in blocks for url in _block_urls(block)]
         self.assertEqual(
             len(urls),
-            4,
-            "ровно четыре ссылки: «РанДом Культуры», GitHub, автор, Мастодон",
+            5,
+            "ровно пять ссылок: «РанДом Культуры», GitHub, ЮMoney, " "автор, Мастодон",
         )
         self.assertEqual({item["url"] for item in urls}, EXPECTED_URLS)
         for item in urls:
@@ -346,31 +356,36 @@ class AboutStructureTests(unittest.TestCase):
             self.assertLess(len(label), 40, "подпись ссылки слишком длинная")
 
     @scenario_test
-    async def test_no_donation_button_or_link(self, h: Harness) -> None:
+    async def test_support_links_and_no_donation_buttons(self, h: Harness) -> None:
         await h.text("/start")
         await h.callback("help")
         await h.callback(ABOUT_DATA)
         record = _rich(h)[-1]
         blocks = _blocks(record["rich_message"])
 
-        # §14.6: донатов через кнопку или прямую платёжную ссылку нет —
-        # только предложение написать в Telegram и «задонатить по СБП»
-        # словами. Ссылки раздела ведут в Telegram автора и Мастодон.
+        # §14.6 (редакция 2.6.1): владелец одобрил прямую ссылку ЮMoney и
+        # строку о сборе. Inline-кнопок с донатом по-прежнему нет.
         support = next(
             block for block in blocks if block.get("summary") == SECTION_TITLES[-1]
         )
-        text = _block_texts(support).lower()
-        self.assertIn("сбп", text, "§14.6: СБП упомянут словами")
+        block_text = _block_texts(support)
+        self.assertIn("СБП", block_text, "§14.6: СБП упомянут словами")
+        self.assertIn(
+            "0 из 15 000 ₽",
+            block_text,
+            "§14.6: показан прогресс сбора на разработку",
+        )
         self.assertEqual(
             {url["url"] for url in _block_urls(support)},
-            {AUTHOR_URL, MASTODON_URL},
-            "§14.6: только Telegram автора и Мастодон, платёжных ссылок нет",
+            {YOOMONEY_URL, AUTHOR_URL, MASTODON_URL},
+            "§14.6: в разделе поддержки ЮMoney, Telegram автора и Мастодон",
         )
 
         buttons = inline_buttons(record["reply_markup"])
         for label, data in buttons:
             self.assertNotIn("донат", label.lower())
             self.assertNotIn("donate", (data or "").lower())
+            self.assertNotIn("yoomoney", (data or "").lower())
         self.assertEqual(
             buttons,
             [(TO_HELP_LABEL, TO_HELP_DATA)],

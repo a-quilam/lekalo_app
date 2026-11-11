@@ -366,7 +366,7 @@ class MainMenuTests(unittest.TestCase):
         # Раздел 1 (§13.1), «Мои анонсы» (§13.6) и «Управление площадкой»
         # (§13.8) — реальные фрагменты нового текста, а не подписи кнопок.
         self.assertIn("Создание анонса", text)
-        self.assertIn("Мои анонсы", text)
+        self.assertIn("Моих анонсах", text)
         self.assertIn("Управление площадкой", text)
 
         # §13.3: настоящая Rich-таблица «В шаблоне» / «В анонсе».
@@ -383,8 +383,11 @@ class MainMenuTests(unittest.TestCase):
             ["В шаблоне", "В анонсе"],
         )
 
-        # Утверждённый текст не упоминает подписей старых кнопок меню.
-        self.assertNotIn("Создать по личному шаблону", text)
+        # Утверждённый текст не упоминает подписей старых кнопок меню; новые
+        # способы создания («по личному шаблону») — часть текста 2.6.1.
+        self.assertIn("Создать по личному шаблону", text)
+        self.assertNotIn("/new_wizard", text)
+        self.assertNotIn("/drafts", text)
 
 
 @unittest.skipIf(

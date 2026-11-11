@@ -224,10 +224,11 @@ class MainMenuEntryTests(unittest.TestCase):
         text = _rich_plain_text(payload)
         self.assertEqual(payload["blocks"][0]["text"], "Помощь")
         self.assertIn("Создание анонса", text)
-        self.assertIn("Мои анонсы", text)
-        self.assertNotIn("📍 Создать для площадки", text)
+        self.assertIn("Моих анонсах", text)
+        # Редакция 2.6.1: справка описывает оба способа создания анонса.
+        self.assertIn("Создать для площадки", text)
+        self.assertIn("Создать по личному шаблону", text)
         self.assertNotIn("пять кнопок", text.lower())
-        self.assertNotIn("Создать по личному шаблону", text)
 
 
 # --- B. Экран выбора площадки -----------------------------------------------

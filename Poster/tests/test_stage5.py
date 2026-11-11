@@ -367,12 +367,13 @@ class MainMenuKeyboardTests(unittest.TestCase):
         # §13: заголовок и ключевые разделы утверждённого текста.
         self.assertEqual(payload["blocks"][0]["text"], "Помощь")
         self.assertIn("Создание анонса", text)
-        self.assertIn("Мои анонсы", text)
+        self.assertIn("Моих анонсах", text)
         self.assertIn("Управление площадкой", text)
         self.assertIn("В шаблоне", text)
         self.assertIn("В анонсе", text)
-        # Утверждённый текст не перечисляет старые команды и кнопки.
-        for legacy in ("/new_wizard", "/drafts", "Создать по личному шаблону"):
+        # Утверждённый текст не перечисляет старые команды: кнопочные
+        # подписи вроде «Создать по личному шаблону» — уже часть справки.
+        for legacy in ("/new_wizard", "/drafts"):
             self.assertNotIn(legacy, text)
         # Подмены Rich Message обычным sendMessage нет (§54).
         self.assertEqual(bot.calls, [])

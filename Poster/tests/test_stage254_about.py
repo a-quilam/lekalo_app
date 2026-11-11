@@ -198,22 +198,34 @@ class AboutStructureTests(unittest.TestCase):
         text = _block_texts(self.payload)
         self.assertIn("Лекало", text)
         self.assertIn("РанДома Культуры", text)
-        # §14.6: просьба о поддержке — жирный абзац про СБП и две ссылки
-        # (Telegram автора и Мастодон), отдельной донат-кнопки/ссылки нет.
+        # §14.6: просьба о поддержке — жирный абзац, сбор «0 из 15 000 ₽» и
+        # три ссылки (ЮMoney, Telegram автора и Мастодон).
         support = next(
             b for b in self.blocks if b.get("summary") == "Как помочь и связаться"
         )
-        support_text = _texts(support["blocks"])
+        support_text = _block_texts({"blocks": support["blocks"]})
         self.assertIn("СБП", support_text)
-        support_urls = {
-            item["url"]
-            for child in support["blocks"]
-            for item in _urls(child.get("text", ""))
-        }
+        self.assertIn("0 из 15 000 ₽", support_text)
+        support_urls: set[str] = set()
+
+        def collect_urls(blocks: list[dict[str, Any]]) -> None:
+            for block in blocks:
+                support_urls.update(
+                    item["url"] for item in _urls(block.get("text", ""))
+                )
+                collect_urls(block.get("blocks") or [])
+                for block_item in block.get("items") or []:
+                    collect_urls(block_item.get("blocks") or [])
+
+        collect_urls(support["blocks"])
         self.assertEqual(
             support_urls,
-            {AUTHOR_URL, "https://kommuverse.ru/@mush"},
-            "в разделе поддержки две ссылки: Telegram и Мастодон",
+            {
+                AUTHOR_URL,
+                "https://kommuverse.ru/@mush",
+                "https://yoomoney.ru/fundraise/1LFG7EPRP2C.261110",
+            },
+            "в разделе поддержки три ссылки: ЮMoney, Telegram и Мастодон",
         )
 
     def test_links_are_clickable_with_short_labels(self) -> None:
