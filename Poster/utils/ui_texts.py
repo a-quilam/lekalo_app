@@ -1102,7 +1102,7 @@ DEFAULTS: dict[str, str] = {
     "bricks.proposal_scope.mesto": "📍 Место",
     "bricks.proposal_scope.vsya_sistema": "🌍 Вся система",
     "bricks.proposal_scope.vybrannyy_kirpichik_bolshe": "Выбранный кирпичик больше недоступен. Начните предложение заново.",
-    "bricks.proposal_select_brick.snachala_sozdayte_lichnyy": "Сначала создайте личный кирпичик. После этого его можно предложить для места или всей системы.",
+    "bricks.proposal_select_brick.snachala_sozdayte_lichnyy": "Сначала создайте свой кирпичик.",
     "bricks.proposal_select_place.vyberite_mesto": "Выберите место",
     "bricks.proposal_withdraw_confirm.otozvat": "✅ Отозвать",
     "bricks.proposal_withdraw_confirm.otozvat_predlozhenie": "Отозвать предложение?",

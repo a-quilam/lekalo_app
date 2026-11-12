@@ -26,18 +26,27 @@ import json
 import os
 import shutil
 import sqlite3
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
+from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
 
 import database
+import migrations
 from base import Base
 from migrations import (
     DEFAULT_MIGRATIONS,
     LATEST_VERSION,
     MIGRATION_1_0_0_BASELINE,
+    BackupError,
     IncompatibleSchemaError,
+    Migration,
+    MigrationError,
+    create_database_backup,
     run_migrations,
 )
 from tests.stage19a_helpers import connect, make_engine, temp_db_path
@@ -125,6 +134,15 @@ def bricks(path: str) -> list[dict]:
         ]
     finally:
         connection.close()
+
+
+def has_table(path: str, name: str) -> bool:
+    """Есть ли таблица: проверка откаченной транзакции (журнала может не быть)."""
+    return scalar(
+        path,
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = ?",
+        (name,),
+    ) == (1,)
 
 
 class _TempDatabase(unittest.TestCase):
@@ -472,6 +490,198 @@ class BaselineIncompatibilityTests(_TempDatabase):
             os.path.realpath(configured_path),
             os.path.realpath(real),
             "тесты настроены на рабочую базу",
+        )
+
+
+# —— инварианты механизма миграций ------------------------------------------
+
+
+class MigrationMechanismInvariantsTests(_TempDatabase):
+    """
+    Инварианты самого механизма (не исторических схем).
+
+    Проверяется то, что не зависит от конкретного набора DDL: атомарность
+    запуска, сохранение уже зафиксированной версии, требования к базе,
+    конкурентная безопасность, обязательность копии и её WAL-полнота.
+    """
+
+    @staticmethod
+    def _failing_second_migration() -> Migration:
+        """Версия 2: первый шаг валиден, второй гарантированно ломается."""
+        return Migration(
+            version=2,
+            name="failing_step",
+            statements=(
+                "CREATE TABLE probe_after_rollback (id INTEGER PRIMARY KEY)",
+                "THIS IS NOT VALID SQL",
+            ),
+        )
+
+    def test_failed_step_rolls_back_whole_run(self) -> None:
+        """Сбой шага второй миграции: ни журнала, ни таблиц первой версии."""
+        # База не пустая: пользовательские данные обязаны пережить откат.
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute(
+                "CREATE TABLE legacy_marker (id INTEGER PRIMARY KEY, note TEXT)"
+            )
+            connection.execute("INSERT INTO legacy_marker (note) VALUES ('было')")
+            connection.commit()
+        finally:
+            connection.close()
+
+        custom = (MIGRATION_1_0_0_BASELINE, self._failing_second_migration())
+
+        with self.assertRaises(MigrationError) as caught:
+            run_migrations(self.engine, custom)
+        self.assertIn("failing_step", str(caught.exception))
+
+        # ROLLBACK отменяет и журнал, и все DDL: база осталась как до запуска.
+        self.assertFalse(has_table(self.path, "schema_migrations"))
+        self.assertFalse(has_table(self.path, "users"))
+        self.assertFalse(has_table(self.path, "bricks"))
+        self.assertFalse(has_table(self.path, "probe_after_rollback"))
+        self.assertEqual(scalar(self.path, "SELECT note FROM legacy_marker"), ("было",))
+
+    def test_applied_version_survives_failed_later_migration(self) -> None:
+        """Версия 1 остаётся зафиксированной, данные целы после сбоя версии 2."""
+        run_migrations(self.engine)
+        connection = connect(self.path)
+        try:
+            connection.execute(
+                "INSERT INTO users (id, telegram_user_id, created_at) "
+                "VALUES (1, 777001, CURRENT_TIMESTAMP)"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        self.assertEqual(journal(self.path), [(1, BASELINE_NAME)])
+
+        custom = (MIGRATION_1_0_0_BASELINE, self._failing_second_migration())
+        with self.assertRaises(MigrationError):
+            run_migrations(self.engine, custom)
+
+        self.assertEqual(journal(self.path), [(1, BASELINE_NAME)])
+        self.assertEqual(
+            scalar(self.path, "SELECT telegram_user_id FROM users WHERE id = 1"),
+            (777001,),
+        )
+        self.assertEqual(scalar(self.path, "SELECT count(*) FROM bricks"), (13,))
+        self.assertFalse(has_table(self.path, "probe_after_rollback"))
+
+    def test_memory_database_is_rejected(self) -> None:
+        """Анонимная SQLite не подходит: журнал и копия требуют файла."""
+        engine = create_engine("sqlite:///:memory:")
+        self.addCleanup(engine.dispose)
+
+        with self.assertRaises(MigrationError) as caught:
+            run_migrations(engine)
+
+        message = str(caught.exception)
+        self.assertIn("требуют файловую", message)
+        self.assertIn(":memory:", message)
+
+    def test_concurrent_runs_apply_baseline_once(self) -> None:
+        """
+        Шесть одновременных запусков на одном файле: одна запись журнала.
+
+        Это то, ради чего `BEGIN IMMEDIATE` берётся до чтения журнала: без
+        блокировки каждый поток увидел бы пустой журнал и попытался создать
+        схему. `create_all` здесь не нужен: базовая версия создаёт всю схему,
+        а конкурирующий `create_all` добавляет только гонку проверки/создания.
+        """
+        # Файла ещё нет: гонка должна начаться с пустой базы.
+        self.assertFalse(os.path.exists(self.path))
+
+        barrier = threading.Barrier(6)
+
+        def worker() -> None:
+            worker_engine = make_engine(self.path)
+            try:
+                barrier.wait(timeout=30)
+                run_migrations(worker_engine)
+            finally:
+                worker_engine.dispose()
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = [pool.submit(worker) for _ in range(6)]
+            for future in futures:
+                # Любое исключение потока всплывает здесь: все обязаны пройти.
+                future.result()
+
+        self.assertEqual(journal(self.path), [(1, BASELINE_NAME)])
+        self.assertEqual(scalar(self.path, "SELECT count(*) FROM bricks"), (13,))
+        self.assertEqual(
+            scalar(self.path, "PRAGMA integrity_check"),
+            ("ok",),
+        )
+
+    def test_backup_error_prevents_any_change(self) -> None:
+        """Неудачная копия: миграция не начинается, схема и журнал прежние."""
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute(
+                "CREATE TABLE legacy_marker (id INTEGER PRIMARY KEY, note TEXT)"
+            )
+            connection.execute("INSERT INTO legacy_marker (note) VALUES ('было')")
+            connection.commit()
+        finally:
+            connection.close()
+        before = sqlite_master(self.path)
+
+        with mock.patch.object(
+            migrations,
+            "create_database_backup",
+            side_effect=BackupError("нет места для копии"),
+        ) as backup:
+            with self.assertRaises(BackupError) as caught:
+                run_migrations(self.engine)
+        self.assertIn("нет места", str(caught.exception))
+        backup.assert_called_once_with(self.path)
+
+        self.assertEqual(sqlite_master(self.path), before)
+        self.assertFalse(has_table(self.path, "schema_migrations"))
+        self.assertFalse(has_table(self.path, "users"))
+        self.assertEqual(scalar(self.path, "SELECT note FROM legacy_marker"), ("было",))
+
+    def test_wal_tail_is_copied_and_user_copies_are_kept(self) -> None:
+        """
+        Копия включает WAL-хвост; чужие файлы копий не удаляются.
+
+        Прямое копирование основного файла потеряло бы зафиксированную, но
+        ещё не чекпойнтнутую строку — поэтому используется Backup API.
+        """
+        writer = sqlite3.connect(self.path)
+        self.addCleanup(writer.close)
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("CREATE TABLE wal_probe (id INTEGER PRIMARY KEY, note TEXT)")
+        writer.execute("INSERT INTO wal_probe (note) VALUES ('в WAL')")
+        writer.commit()
+        # Соединение не закрыто: SQLite не выполнил чекпойнт в основной файл.
+        wal_file = Path(self.path + "-wal")
+        self.assertTrue(wal_file.exists(), "WAL-файл не создан")
+        self.assertGreater(wal_file.stat().st_size, 0)
+
+        first_copy = create_database_backup(self.path)
+        self.assertEqual(
+            scalar(str(first_copy), "SELECT note FROM wal_probe"), ("в WAL",)
+        )
+
+        # Копия пользователя с похожим именем не должна пострадать.
+        user_copy = Path(self.path).with_name(
+            f"{Path(self.path).name}.backup-20260101T000000Z-test"
+        )
+        user_copy.write_bytes(b"user copy")
+        self.addCleanup(user_copy.unlink)
+
+        second_copy = create_database_backup(self.path)
+
+        self.assertEqual(user_copy.read_bytes(), b"user copy")
+        self.assertTrue(first_copy.exists())
+        self.assertTrue(second_copy.exists())
+        self.assertNotEqual(first_copy, second_copy)
+        self.assertEqual(
+            scalar(str(second_copy), "SELECT note FROM wal_probe"), ("в WAL",)
         )
 
 
