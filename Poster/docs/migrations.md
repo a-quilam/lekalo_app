@@ -9,10 +9,12 @@
 
 `MIGRATION_1_0_0_BASELINE` создаёт с нуля всю схему релиза 1.0.0:
 
-* 31 таблица (`users`, `places`, `place_names`, `bricks`, `templates`,
-  `template_versions`, `template_snapshots`, `announcement_drafts`,
-  `announcement_instances`, `brick_proposals`, `curator_entries`,
-  `footer_entries`, `user_event_log`, `reports`, `user_states` и др.);
+* 31 пользовательская таблица (`users`, `places`, `place_names`, `bricks`,
+  `templates`, `template_versions`, `template_snapshots`,
+  `announcement_drafts`, `announcement_instances`, `brick_proposals`,
+  `curator_entries`, `footer_entries`, `user_event_log`, `reports`,
+  `user_states` и др.), всего вместе с журналом `schema_migrations` —
+  32 таблицы в базе;
 * 66 индексов, включая частичные уникальные (`ux_place_names_one_canonical`,
   `ux_place_admins_one_active`, `ux_admin_transfers_one_pending_place`,
   `ux_admin_transfers_token_hash`);
