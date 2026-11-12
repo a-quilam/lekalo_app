@@ -45,7 +45,7 @@ VISITOR_TG = 23_910_004
 
 
 class TemplateDatabaseTestCase(unittest.TestCase):
-    """Временная база Stage 23: миграции 1–12, чистая Session на каждый тест."""
+    """Временная база 1.0.0: чистая Session на каждый тест."""
 
     def setUp(self) -> None:
         self._patchers: list[Any] = [

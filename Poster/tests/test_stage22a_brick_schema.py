@@ -2,7 +2,7 @@
 """
 Stage 22A: реальные ограничения SQLite для реестра кирпичиков.
 
-Временный файл, миграции 1–6, настоящие UNIQUE/CHECK/FK/триггеры. Реальная
+Временный файл, базовая схема 1.0.0, настоящие UNIQUE/CHECK/FK/триггеры. Реальная
 Poster/post_bot.db не открывается.
 """
 
@@ -76,49 +76,9 @@ class BrickSchemaTests(BrickDatabaseTestCase):
             )
 
     def test_migrations_seed_exactly_thirteen_stable_system_bricks(self) -> None:
-        self.assertEqual(
-            self.journal(),
-            [
-                (1, "users_places_place_names"),
-                (2, "place_contacts_and_ui_state"),
-                (3, "place_admins_and_admin_ui_state"),
-                (4, "place_edit_log"),
-                (5, "admin_transfers"),
-                (6, "bricks_registry"),
-                (7, "brick_management"),
-                (8, "templates_versions_snapshots"),
-                (9, "template_binding_codes"),
-                (10, "template_sessions"),
-                (11, "brick_proposals"),
-                (12, "announcement_wizard"),
-                (13, "announcement_photos_publication"),
-                (14, "announcement_redelivery"),
-                (15, "brick_description_and_address"),
-                (16, "announcement_draft_origin"),
-                (17, "archive_legacy_drafts"),
-                (18, "builtin_templates_v3"),
-                (19, "brick_code_conflicts"),
-                (20, "brick_proposal_description"),
-                (21, "place_city"),
-                (22, "builtin_templates_v4"),
-                (23, "place_invite_links"),
-                (24, "template_content_and_extras_without_sections"),
-                (25, "single_address_brick"),
-                (26, "announcement_instances"),
-                (27, "template_conditional_parts"),
-                (28, "template_snapshot_conditional_parts"),
-                (29, "user_event_log_reports"),
-                (30, "standard_template_extended"),
-                (31, "curator_footer_catalogs"),
-                (32, "system_brick_hints"),
-                (33, "contact_brick_hint"),
-            ],
-        )
-        # 9 кирпичиков миграции 6 + системный `[адрес]` миграции 15
-        # (Poster 2.0 S1) + `[город]` миграции 21 (Poster 2.0 U1a) −
-        # `адрес_места`, устранённый миграцией 25 (Poster 2.4 P1), +
-        # `условие_входа`/`куратор`/`подвал` миграции 30 (этап A1).
-        # Каталог и БД обязаны совпадать по коду и порядку.
+        self.assertEqual(self.journal(), [(1, "baseline_1_0_0")])
+        # Каталог и БД обязаны совпадать по коду и порядку: базовая версия
+        # 1.0.0 сидирует ровно тринадцать системных кирпичиков.
         definitions = list_system_bricks(self.session)
         self.assertEqual(len(definitions), 13)
         self.assertEqual(
@@ -130,10 +90,8 @@ class BrickSchemaTests(BrickDatabaseTestCase):
             [item.code for item in SYSTEM_BRICKS],
         )
         for actual, expected in zip(definitions, SYSTEM_BRICKS, strict=True):
-            # На чистой базе миграция 15 вставляет `[адрес]` сразу за
-            # миграцией 6, поэтому ID совпадают с каталогом. В существующей
-            # базе номер мог быть другим (`MAX(id)+1`), поэтому основная
-            # сверка — по коду.
+            # Базовая версия вставляет кирпичики в порядке каталога, поэтому
+            # ID совпадают; основная сверка — по коду и полям.
             self.assertEqual(actual.code, expected.code)
             self.assertEqual(actual.title, expected.title)
             self.assertEqual(actual.value_type, expected.value_type)

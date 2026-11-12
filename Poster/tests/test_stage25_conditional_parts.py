@@ -1,6 +1,6 @@
 # tests/test_stage25_conditional_parts.py
 """
-Poster 2.5, этап D1 — условные части шаблонов (spec §38–45, миграция 27).
+Poster 2.5, этап D1 — условные части шаблонов (spec §38–45).
 
 Контракт:
 
@@ -66,9 +66,6 @@ from template_store import (
 from tests.stage19a_helpers import make_engine, temp_db_path
 from tests.stage27_helpers import OWNER_TG, AnnouncementDatabaseTestCase
 
-MIGRATION_27_NAME = "template_conditional_parts"
-MIGRATION_28_NAME = "template_snapshot_conditional_parts"
-
 
 def _journal(path: str) -> list[tuple[int, str]]:
     connection = sqlite3.connect(path)
@@ -92,11 +89,11 @@ def _sql(path: str, statement: str, params: tuple = ()) -> list[tuple]:
         connection.close()
 
 
-# --- миграция 27 ------------------------------------------------------------
+# --- базовая схема -----------------------------------------------------------
 
 
-class Migration27Tests(unittest.TestCase):
-    """Чистая установка, апгрейд с v26 и ограничения таблицы."""
+class BaselineConditionalPartsTests(unittest.TestCase):
+    """Чистая установка и ограничения условных частей."""
 
     def setUp(self) -> None:
         self.path = temp_db_path("poster-25-d1-migr-")
@@ -111,14 +108,8 @@ class Migration27Tests(unittest.TestCase):
 
     def test_fresh_install_has_conditional_parts_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 33)
-        # 2.5.1 добавила 28 (`template_snapshot_conditional_parts`), этап B —
-        # 29 (`user_event_log_reports`), «Лекало» 2.6 — 30/31, этап D2 — 32,
-        # релиз 1.0.0 — 33; проверяется позиция именно 27: сразу после 26.
-        self.assertEqual(
-            _journal(self.path)[-8:-6],
-            [(26, "announcement_instances"), (27, MIGRATION_27_NAME)],
-        )
+        self.assertEqual(LATEST_VERSION, 1)
+        self.assertEqual(_journal(self.path), [(1, "baseline_1_0_0")])
         columns = {
             str(row[1]): (str(row[2]).upper(), int(row[3]), row[4])
             for row in _sql(self.path, "PRAGMA table_info(template_conditional_parts)")
@@ -153,41 +144,6 @@ class Migration27Tests(unittest.TestCase):
         self.assertEqual(_sql(self.path, "PRAGMA foreign_key_check"), [], "FK целы")
         self.assertEqual(
             _sql(self.path, "PRAGMA integrity_check"), [("ok",)], "целостность"
-        )
-
-    def test_upgrade_from_v26_adds_only_conditional_parts(self) -> None:
-        """Upgrade-путь: база v26 получает ровно одну новую таблицу."""
-        self.assertEqual(self.migrate(DEFAULT_MIGRATIONS[:26]), 26)
-        before = {
-            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
-        }
-        self.assertNotIn("template_conditional_parts", before)
-        # Проверяется вклад ИМЕННО 27: до 28 база доводится отдельным шагом,
-        # иначе в добавочный набор попали бы объекты следующей миграции.
-        self.assertEqual(self.migrate(DEFAULT_MIGRATIONS[:27]), 27)
-        after = {
-            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
-        }
-        self.assertEqual(
-            after - before,
-            {
-                "template_conditional_parts",
-                "ix_template_conditional_parts_version_section",
-            },
-            "миграция только добавочная",
-        )
-        self.assertEqual(_journal(self.path)[-1], (27, MIGRATION_27_NAME))
-        # 2.5.1 доводит базу до 28; повторный прогон по-прежнему no-op.
-        self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertIn((28, MIGRATION_28_NAME), _journal(self.path))
-        latest = {
-            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
-        }
-        self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(
-            {str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")},
-            latest,
-            "повторный запуск ничего не меняет",
         )
 
     def test_table_enforces_section_status_and_occurrence(self) -> None:

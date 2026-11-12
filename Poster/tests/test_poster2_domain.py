@@ -2,11 +2,12 @@
 """
 Poster 2.0 S1: домен единого входа и личного шаблона без площадки.
 
-Проверяются миграции 15/16 на заполненной временной БД (данные, FK,
-триггеры, идемпотентность), сохранность прежних черновиков, анонс по личному
-шаблону без `place_id`, разовое место без записи в справочник,
-автоподстановка только в кирпичики снимка, идемпотентность первого личного
-шаблона, системный `[адрес]`, IDOR и optimistic locking.
+Проверяется схема анонса и кирпичиков на заполненной временной БД (данные,
+FK, триггеры, идемпотентность повторной инициализации), сохранность прежних
+черновиков, анонс по личному шаблону без `place_id`, разовое место без
+записи в справочник, автоподстановка только в кирпичики снимка,
+идемпотентность первого личного шаблона, системный `[адрес]`, IDOR и
+optimistic locking.
 
 Реальная `Poster/post_bot.db`, `.env`, Telegram и сеть не используются:
 каждый тест поднимает собственный временный SQLite-файл.
@@ -52,7 +53,7 @@ from brick_store import (
     list_system_bricks,
     update_personal_brick,
 )
-from migrations import DEFAULT_MIGRATIONS, LATEST_VERSION, run_migrations
+from migrations import LATEST_VERSION, run_migrations
 from models import Brick, Place
 from template_store import (
     ensure_initial_personal_template,
@@ -78,14 +79,13 @@ SENT_PROGRESS = {
 EMPTY_PROGRESS = {"fingerprint": "fp-legacy", "step": 0, "total": 0}
 
 
-def _seed_version_thirteen(path: str) -> None:
+def _seed_filled_database(path: str) -> None:
     """
-    Заполняет БД версии 13 связанными строками до миграций 15/16.
+    Заполняет базу 1.0.0 связанными строками.
 
     Пишутся реальные пользователь/место/название, два доставленных черновика
-    (с адресами доставки и без), значение и дополнительный кирпичик. Это и
-    есть «заполненная временная БД»: миграция 16 перестраивает таблицу, и
-    данные обязаны пережить перестройку.
+    (с адресами доставки и без), значение и дополнительный кирпичик: данные
+    обязаны пережить повторную инициализацию без потерь.
     """
     connection = sqlite3.connect(path)
     try:
@@ -129,8 +129,7 @@ def _seed_version_thirteen(path: str) -> None:
                 """,
                 (draft_id, json.dumps(progress, sort_keys=True)),
             )
-        # Значение и дополнительный кирпичик ссылаются на системные brick_id
-        # миграции 6 — их сохраняет и миграция 16.
+        # Значение и дополнительный кирпичик ссылаются на системные brick_id.
         connection.execute(
             "INSERT INTO announcement_values "
             "(id, draft_id, brick_id, state, value_json, created_at, updated_at) "
@@ -139,10 +138,8 @@ def _seed_version_thirteen(path: str) -> None:
         )
         connection.execute(
             "INSERT INTO announcement_extras "
-            "(id, draft_id, brick_id, section, position, occurrence, "
-            " created_at, updated_at) "
-            "VALUES (1, 1, 9, 'footer', 'end', 1, "
-            "'2026-01-02 09:11:00', '2026-01-02 09:11:00')"
+            "(id, draft_id, brick_id, occurrence, created_at, updated_at) "
+            "VALUES (1, 1, 9, 1, '2026-01-02 09:11:00', '2026-01-02 09:11:00')"
         )
         connection.commit()
     finally:
@@ -157,23 +154,23 @@ def _scalar(path: str, statement: str):
         connection.close()
 
 
-class _MigrationTestCase(unittest.TestCase):
-    """Временная БД версии 13 с данными; тесты — только в наследниках."""
+class _FilledDatabaseTestCase(unittest.TestCase):
+    """База 1.0.0 с данными; тесты — только в наследниках."""
 
     def setUp(self) -> None:
         self.path = temp_db_path("poster2-migrations-")
         self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
         self.engine = make_engine(self.path)
         self.addCleanup(self.engine.dispose)
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:13]), 13)
-        _seed_version_thirteen(self.path)
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
+        _seed_filled_database(self.path)
 
 
-class MigrationFifteenAndSixteenTests(_MigrationTestCase):
-    """Миграции 15–17 на заполненной временной БД версии 13."""
+class AnnouncementSchemaContractTests(_FilledDatabaseTestCase):
+    """Схема анонса на заполненной базе 1.0.0: данные, ограничения, триггеры."""
 
-    def test_migration_keeps_rows_links_checks_and_passes_integrity(self) -> None:
-        self.assertEqual(LATEST_VERSION, 33)
+    def test_reinit_keeps_rows_links_checks_and_passes_integrity(self) -> None:
+        self.assertEqual(LATEST_VERSION, 1)
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
 
         connection = sqlite3.connect(self.path)
@@ -190,7 +187,7 @@ class MigrationFifteenAndSixteenTests(_MigrationTestCase):
                 ).fetchone()[0],
                 LATEST_VERSION,
             )
-            # Таблицы-копии миграции 16 удалены: остатков перестройки нет.
+            # Временных таблиц-копий не остаётся.
             tables = {
                 row[0]
                 for row in connection.execute(
@@ -225,8 +222,8 @@ class MigrationFifteenAndSixteenTests(_MigrationTestCase):
                 ).fetchall(),
                 [(1, 1, "valid")],
             )
-            # Миграция 24 убрала секции и позиции: строка доп. кирпичика
-            # сохранилась, а порядок определяется id и occurrence.
+            # Секций и позиций нет: строка доп. кирпичика сохранилась, а
+            # порядок определяется id и occurrence.
             self.assertEqual(
                 connection.execute(
                     "SELECT draft_id, brick_id, occurrence FROM announcement_extras"
@@ -327,54 +324,12 @@ class MigrationFifteenAndSixteenTests(_MigrationTestCase):
         finally:
             connection.close()
 
-    def test_address_brick_gets_free_id_when_user_brick_took_ten(self) -> None:
-        # База версии 14: пользовательский кирпичик уже занял id=10, поэтому
-        # жёсткий `id=10` в миграции 15 дал бы UNIQUE constraint failed.
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:14]), 14)
-        connection = sqlite3.connect(self.path)
-        try:
-            connection.execute(
-                "INSERT INTO bricks (id, code, title, type, scope, source, "
-                "rules_json, status, owner_user_id, created_by_user_id, "
-                "created_at, updated_at, revision) "
-                "VALUES (10, 'свой', 'Свой кирпичик', 'short_text', 'personal', "
-                "'ask', NULL, 'active', 1, 1, '2026-01-02 00:00:00', "
-                "'2026-01-02 00:00:00', 1)"
-            )
-            connection.commit()
-        finally:
-            connection.close()
 
-        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-        self.session = sessionmaker(bind=self.engine, expire_on_commit=False)()
-        self.addCleanup(self.session.close)
+class LegacyDraftCompatibilityTests(_FilledDatabaseTestCase):
+    """Доставленные анонсы читаются сервисом без потерь.
 
-        address = get_system_brick(self.session, "адрес")
-        self.assertIsNotNone(address)
-        assert address is not None
-        self.assertEqual(address.id, 11)
-        self.assertEqual(address.scope, "system")
-        self.assertEqual(address.source, "place")
-        user_brick = self.session.get(Brick, 10)
-        self.assertIsNotNone(user_brick)
-        assert user_brick is not None
-        self.assertEqual(user_brick.code, "свой")
-        # Пользовательские строки миграции не переписывают: описание личного
-        # кирпичика осталось пустым.
-        self.assertIsNone(user_brick.description)
-        # §16 (этап D2, миграция 32): системное `название` получает реальную
-        # подсказку, а не остаётся с NULL.
-        first_brick = self.session.get(Brick, 1)
-        assert first_brick is not None
-        self.assertEqual(first_brick.description, "Напишите название мероприятия.")
-
-
-class LegacyDraftCompatibilityTests(_MigrationTestCase):
-    """Доставленные анонсы после всех миграций читаются сервисом без потерь.
-
-    «Легаси» здесь — не таблица `drafts` (она ушла в архив миграцией 17), а
-    строки `announcement_drafts` без живых адресов медиаблока, как их
-    оставляли версии до Stage 14.
+    «Легаси» здесь — строки `announcement_drafts` без живых адресов
+    медиаблока, как их оставляли прежние версии.
     """
 
     def setUp(self) -> None:
@@ -662,7 +617,7 @@ class InitialPersonalTemplateTests(AnnouncementDatabaseTestCase):
         self._delete_template(initial.template_id)
         self.assertEqual(list_personal_templates(self.session, OWNER_TG), [])
 
-        # Рестарт процесса (новые движок/сессия и повторный прогон миграций)
+        # Рестарт процесса (новый движок/сессия и повторная инициализация)
         # не создаёт шаблон заново: самовосстановления нет.
         restarted = make_engine(self.path)
         self.addCleanup(restarted.dispose)
@@ -714,31 +669,33 @@ class InitialPersonalTemplateTests(AnnouncementDatabaseTestCase):
 
 
 class AddressCodeCollisionTests(unittest.TestCase):
-    """Миграция 15 не падает, если код `адрес` уже занят несистемным кирпичиком."""
+    """Код `адрес` может быть занят несистемным кирпичиком легаси-базы."""
 
     _LEGACY_SQL = {
         "personal": (
             "INSERT INTO bricks (id, code, title, type, scope, source, "
             "rules_json, status, owner_user_id, created_by_user_id, "
             "created_at, updated_at, revision) VALUES "
-            "(10, 'адрес', 'Мой адрес', 'short_text', 'personal', 'ask', NULL, "
+            "({brick_id}, 'адрес', 'Мой адрес', 'short_text', 'personal', 'ask', NULL, "
             "'{status}', 1, 1, '2026-01-02 00:00:00', '2026-01-02 00:00:00', 1)"
         ),
         "place": (
             "INSERT INTO bricks (id, code, title, type, scope, source, "
             "rules_json, status, place_id, created_by_user_id, "
             "created_at, updated_at, revision) VALUES "
-            "(10, 'адрес', 'Адрес площадки', 'short_text', 'place', 'ask', NULL, "
+            "({brick_id}, 'адрес', 'Адрес площадки', 'short_text', 'place', 'ask', NULL, "
             "'{status}', 1, 1, '2026-01-02 00:00:00', '2026-01-02 00:00:00', 1)"
         ),
     }
 
-    def _migrate_with_legacy_address(self, scope: str, status: str) -> None:
+    LEGACY_ID = 101
+
+    def _reinit_with_legacy_address(self, scope: str, status: str) -> None:
         self.path = temp_db_path("poster2-address-collision-")
         self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
         self.engine = make_engine(self.path)
         self.addCleanup(self.engine.dispose)
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:14]), 14)
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
 
         connection = sqlite3.connect(self.path)
         try:
@@ -752,12 +709,22 @@ class AddressCodeCollisionTests(unittest.TestCase):
                 "INSERT INTO places (id, created_by_user_id, created_at, address) "
                 "VALUES (1, 1, '2026-01-01 00:00:00', 'ул. Старая, 7')"
             )
-            connection.execute(self._LEGACY_SQL[scope].format(status=status))
+            # Легаси-база не знала триггера резервирования кодов: снимаем его
+            # на время вставки и возвращаем исходный текст из sqlite_master.
+            trigger_sql = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                "AND name='trg_bricks_reserve_codes_insert'"
+            ).fetchone()[0]
+            connection.execute("DROP TRIGGER trg_bricks_reserve_codes_insert")
+            connection.execute(
+                self._LEGACY_SQL[scope].format(status=status, brick_id=self.LEGACY_ID)
+            )
+            connection.execute(trigger_sql)
             connection.commit()
         finally:
             connection.close()
 
-        # Главное утверждение дефекта: миграция проходит, а не падает с
+        # Повторная инициализация проходит, а не падает с
         # `system brick code is reserved`.
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
 
@@ -771,9 +738,13 @@ class AddressCodeCollisionTests(unittest.TestCase):
             )
             # Легаси-строка сохранена без изменений: id, код, область, статус.
             legacy = connection.execute(
-                "SELECT id, code, scope, status, title FROM bricks WHERE id = 10"
+                "SELECT id, code, scope, status, title FROM bricks WHERE id = ?",
+                (self.LEGACY_ID,),
             ).fetchone()
-            self.assertEqual(legacy, (10, "адрес", scope, status, legacy[4]))
+            assert legacy is not None
+            self.assertEqual(
+                legacy, (self.LEGACY_ID, "адрес", scope, status, legacy[4])
+            )
             # Системный кирпичик создан отдельной строкой с собственным ID.
             system_row = connection.execute(
                 "SELECT id, code, title, source FROM bricks "
@@ -781,7 +752,7 @@ class AddressCodeCollisionTests(unittest.TestCase):
             ).fetchall()
             self.assertEqual(len(system_row), 1)
             self.assertEqual(system_row[0][1:], ("адрес", "Адрес", "place"))
-            self.assertNotEqual(system_row[0][0], 10)
+            self.assertNotEqual(system_row[0][0], self.LEGACY_ID)
             # Триггер резервирования восстановлен дословно.
             trigger = connection.execute(
                 "SELECT sql FROM sqlite_master WHERE type='trigger' "
@@ -807,7 +778,7 @@ class AddressCodeCollisionTests(unittest.TestCase):
         place_id = 1 if scope == "place" else None
         legacy_view = get_visible_brick(
             self.session,
-            10,
+            self.LEGACY_ID,
             viewer_telegram_user_id=OWNER_TG,
             place_id=place_id,
             include_archived=True,
@@ -817,17 +788,17 @@ class AddressCodeCollisionTests(unittest.TestCase):
         self.assertEqual(legacy_view.scope, scope)
         self.assertEqual(legacy_view.status, status)
 
-    def test_personal_address_code_active_migrates(self) -> None:
-        self._migrate_with_legacy_address("personal", "active")
+    def test_personal_address_code_active_survives_reinit(self) -> None:
+        self._reinit_with_legacy_address("personal", "active")
 
-    def test_personal_address_code_archived_migrates(self) -> None:
-        self._migrate_with_legacy_address("personal", "archived")
+    def test_personal_address_code_archived_survives_reinit(self) -> None:
+        self._reinit_with_legacy_address("personal", "archived")
 
-    def test_place_address_code_active_migrates(self) -> None:
-        self._migrate_with_legacy_address("place", "active")
+    def test_place_address_code_active_survives_reinit(self) -> None:
+        self._reinit_with_legacy_address("place", "active")
 
     def test_reserved_code_trigger_still_blocks_new_system_code(self) -> None:
-        self._migrate_with_legacy_address("personal", "active")
+        self._reinit_with_legacy_address("personal", "active")
         # Инвариант future-записей не ослаблен: новый системный код поверх
         # несистемного по-прежнему запрещён триггером.
         connection = sqlite3.connect(self.path)
@@ -852,13 +823,13 @@ class AddressCodeCollisionTests(unittest.TestCase):
             connection.close()
 
     def test_legacy_owner_can_rename_but_not_create_new_reserved_code(self) -> None:
-        self._migrate_with_legacy_address("personal", "active")
+        self._reinit_with_legacy_address("personal", "active")
         # Владелец легаси-кирпичика меняет название, не меняя свой код:
         # обещание docs/migrations.md (S1) обязано выполняться.
         updated = update_personal_brick(
             self.session,
             actor_telegram_user_id=OWNER_TG,
-            brick_id=10,
+            brick_id=self.LEGACY_ID,
             expected_revision=1,
             code="адрес",
             title="Адрес студии",
@@ -906,7 +877,7 @@ class AddressCodeCollisionTests(unittest.TestCase):
         # Системный `[адрес]` пользователю не принадлежит и не редактируется.
         system = get_system_brick(self.session, "адрес")
         assert system is not None
-        self.assertNotEqual(system.id, 10)
+        self.assertNotEqual(system.id, self.LEGACY_ID)
         own_system = update_personal_brick(
             self.session,
             actor_telegram_user_id=OWNER_TG,
@@ -924,9 +895,8 @@ class AddressBrickAndDescriptionTests(AnnouncementDatabaseTestCase):
 
     def test_address_brick_is_system_and_renders_from_place_card(self) -> None:
         codes = [brick.code for brick in list_system_bricks(self.session)]
-        # Poster 2.4 P1: адресный кирпичик ОДИН — легаси `адрес_места`
-        # устранён миграцией 25. A1 (миграция 30): добавлены
-        # `[условие_входа]`/`[куратор]`/`[подвал]` — системных определений 13
+        # Адресный кирпичик ОДИН (легаси `адрес_места` нет), а вместе с
+        # `[условие_входа]`/`[куратор]`/`[подвал]` системных определений 13
         # (id 1–14, номер 6 не существует).
         self.assertEqual(len(codes), 13)
         self.assertEqual(

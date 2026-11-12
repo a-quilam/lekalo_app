@@ -2,7 +2,7 @@
 """
 Stage 26: схема предложений кирпичиков и её настоящие SQLite-ограничения.
 
-Временная база, миграции 1–11. Проверяются CHECK/FK/индексы/триггеры:
+Временная база 1.0.0. Проверяются CHECK/FK/индексы/триггеры:
 неизменяемый снимок, окончательность решения, запрет удаления истории,
 права источника и узкое исключение для продвижения личного кода в системный.
 Реальная Poster/post_bot.db не открывается.
@@ -82,41 +82,9 @@ class BrickProposalSchemaTests(BrickDatabaseTestCase):
                 values,
             )
 
-    def test_migration_12_follows_brick_proposals_and_has_constraints(self) -> None:
-        self.assertEqual(LATEST_VERSION, 33)
-        # Миграция 11 остаётся на своём месте; 15/16 добавлены Poster 2.0 S1,
-        # 17 — S5, 18 — Poster 2.1 R2, 19 — Poster 2.1 R3, 20 — R4,
-        # 21/22 — Poster 2.0 U1a, 23 — U4b, 24 — Poster 2.3 H2,
-        # 25 — Poster 2.4 P1, 26–32 — этапы C/D, 33 — релиз 1.0.0; порядок
-        # журнала не переставлен.
-        self.assertEqual(
-            self.journal()[-23:],
-            [
-                (11, "brick_proposals"),
-                (12, "announcement_wizard"),
-                (13, "announcement_photos_publication"),
-                (14, "announcement_redelivery"),
-                (15, "brick_description_and_address"),
-                (16, "announcement_draft_origin"),
-                (17, "archive_legacy_drafts"),
-                (18, "builtin_templates_v3"),
-                (19, "brick_code_conflicts"),
-                (20, "brick_proposal_description"),
-                (21, "place_city"),
-                (22, "builtin_templates_v4"),
-                (23, "place_invite_links"),
-                (24, "template_content_and_extras_without_sections"),
-                (25, "single_address_brick"),
-                (26, "announcement_instances"),
-                (27, "template_conditional_parts"),
-                (28, "template_snapshot_conditional_parts"),
-                (29, "user_event_log_reports"),
-                (30, "standard_template_extended"),
-                (31, "curator_footer_catalogs"),
-                (32, "system_brick_hints"),
-                (33, "contact_brick_hint"),
-            ],
-        )
+    def test_schema_has_brick_proposals_and_constraints(self) -> None:
+        self.assertEqual(LATEST_VERSION, 1)
+        self.assertEqual(self.journal(), [(1, "baseline_1_0_0")])
         connection = connect(self.path)
         try:
             columns = {

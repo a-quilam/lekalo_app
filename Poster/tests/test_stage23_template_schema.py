@@ -2,7 +2,7 @@
 """
 Stage 23: настоящие ограничения SQLite для шаблонов, версий и снимков.
 
-Временный файл, миграции 1–12, реальные UNIQUE/CHECK/FK/триггеры. Проверяется,
+Временный файл, базовая схема 1.0.0, реальные UNIQUE/CHECK/FK/триггеры. Проверяется,
 что историю нельзя переписать, стандарт нельзя удалить, а привязка живёт по
 постоянному brick_id. Реальная Poster/post_bot.db не открывается.
 """
@@ -27,7 +27,7 @@ from tests.stage23_helpers import (
 
 
 class TemplateSchemaTests(TemplateDatabaseTestCase):
-    """Схема миграции 8: таблицы, индексы, триггеры и backfill."""
+    """Схема шаблонов: таблицы, индексы, триггеры и backfill."""
 
     def journal(self) -> list[tuple[int, str]]:
         connection = connect(self.path)
@@ -51,22 +51,12 @@ class TemplateSchemaTests(TemplateDatabaseTestCase):
         ).one()
         return int(row[0])
 
-    # --- журнал миграций ---------------------------------------------------
+    # --- журнал инициализации ----------------------------------------------
 
     def test_template_migrations_apply_and_are_idempotent(self) -> None:
         self.assertEqual(self.migrations_applied, LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 33)
-        self.assertIn((12, "announcement_wizard"), self.journal())
-        self.assertIn((13, "announcement_photos_publication"), self.journal())
-        self.assertIn((8, "templates_versions_snapshots"), self.journal())
-        self.assertIn((9, "template_binding_codes"), self.journal())
-        self.assertIn((10, "template_sessions"), self.journal())
-        self.assertIn((11, "brick_proposals"), self.journal())
-        self.assertIn((15, "brick_description_and_address"), self.journal())
-        self.assertIn((16, "announcement_draft_origin"), self.journal())
-        self.assertIn((17, "archive_legacy_drafts"), self.journal())
-        self.assertIn((18, "builtin_templates_v3"), self.journal())
-        self.assertIn((19, "brick_code_conflicts"), self.journal())
+        self.assertEqual(LATEST_VERSION, 1)
+        self.assertEqual(self.journal(), [(1, "baseline_1_0_0")])
 
         tables = set(self.engine.dialect.get_table_names(self.engine.connect()))
         self.assertTrue(

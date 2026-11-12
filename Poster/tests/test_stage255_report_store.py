@@ -4,8 +4,8 @@
 
 Проверяется фундамент системы репортов, без UI и команды `/report`:
 
-- миграция 29 накатывается на свежую базу и на копию базы версии 28,
-  добавляя ТОЛЬКО `user_event_log`, `reports` и их индексы;
+- базовая версия 1.0.0 создаёт `user_event_log`, `reports` и их индексы
+  с нужными колонками, NULL-ностью, CHECK и значением по умолчанию;
 - `report_store` — CRUD, пагинация «новые к старым», счётчик `active`,
   двойное архивирование (второй UPDATE не меняет строку), `save_reply`
   только для действующего, `record_notification` без дублей;
@@ -46,11 +46,6 @@ from report_store import (
     save_reply,
 )
 from tests.stage19a_helpers import make_engine, temp_db_path
-
-MIGRATION_28_NAME = "template_snapshot_conditional_parts"
-MIGRATION_29_NAME = "user_event_log_reports"
-MIGRATION_30_NAME = "standard_template_extended"
-MIGRATION_31_NAME = "curator_footer_catalogs"
 
 USER_TG = 77_500_001
 OTHER_TG = 77_500_002
@@ -118,7 +113,7 @@ def _journal(path: str) -> list[tuple[int, str]]:
 
 
 class _DatabaseCase(unittest.TestCase):
-    """Временная база с миграциями 1–29 и фабрика сессий."""
+    """Временная база 1.0.0 и фабрика сессий."""
 
     def setUp(self) -> None:
         self.path = temp_db_path("poster-255-")
@@ -131,11 +126,11 @@ class _DatabaseCase(unittest.TestCase):
         self.addCleanup(self.session.close)
 
 
-# --- миграция 29 ------------------------------------------------------------
+# --- базовая схема -----------------------------------------------------------
 
 
-class Migration29Tests(unittest.TestCase):
-    """Свежая установка и апгрейд с версии 28."""
+class BaselineSchemaTests(unittest.TestCase):
+    """Свежая установка на базовой версии."""
 
     def setUp(self) -> None:
         self.path = temp_db_path("poster-255-migr-")
@@ -148,20 +143,10 @@ class Migration29Tests(unittest.TestCase):
         finally:
             engine.dispose()
 
-    def test_latest_version_is_thirty_three(self) -> None:
-        self.assertEqual(LATEST_VERSION, 33)
+    def test_journal_holds_single_baseline(self) -> None:
+        self.assertEqual(LATEST_VERSION, 1)
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        # Этап A1 добавил миграцию 30, B1 — 31, этап D2 — 32, релиз 1.0.0 —
-        # 33: журнал заканчивается, а сама запись 29 остаётся на своём месте.
-        self.assertEqual(
-            _journal(self.path)[-4:],
-            [
-                (30, MIGRATION_30_NAME),
-                (31, MIGRATION_31_NAME),
-                (32, "system_brick_hints"),
-                (33, "contact_brick_hint"),
-            ],
-        )
+        self.assertEqual(_journal(self.path), [(1, "baseline_1_0_0")])
 
     def test_fresh_install_has_event_log_and_reports(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
@@ -236,51 +221,6 @@ class Migration29Tests(unittest.TestCase):
         self.assertEqual(report_columns["status"][2], "'active'")
         self.assertIn("ix_reports_status_created", _indexes(self.path, "reports"))
         self.assertEqual(_sql(self.path, "PRAGMA integrity_check"), [("ok",)])
-
-    def test_upgrade_from_v28_adds_only_new_objects(self) -> None:
-        self.assertEqual(self.migrate(DEFAULT_MIGRATIONS[:28]), 28)
-        before = {
-            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
-        }
-        self.assertNotIn("user_event_log", before)
-        self.assertNotIn("reports", before)
-        # Вклад ИМЕННО 29: до 30 база доводится отдельным шагом, иначе в
-        # добавочный набор попали бы объекты следующих миграций.
-        self.assertEqual(self.migrate(DEFAULT_MIGRATIONS[:29]), 29)
-        after = {
-            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
-        }
-        self.assertEqual(
-            after - before,
-            {
-                "user_event_log",
-                "reports",
-                "ix_user_event_log_user_created",
-                "ix_user_event_log_created",
-                "ix_reports_status_created",
-            },
-            "миграция только добавочная",
-        )
-        self.assertEqual(_journal(self.path)[-1], (29, MIGRATION_29_NAME))
-        # Дальнейшие миграции (30 — колонки, 31 — справочники) добавляются
-        # поверх; повторный запуск уже ничего не меняет.
-        self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(
-            {str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")},
-            after
-            | {
-                "curator_entries",
-                "ix_curator_entries_place_status",
-                "ix_curator_entries_owner_status",
-                "trg_curator_entries_id_immutable",
-                "footer_entries",
-                "ux_footer_entries_place_name",
-                "ux_footer_entries_owner_name",
-                "ix_footer_entries_place_status",
-                "ix_footer_entries_owner_status",
-                "trg_footer_entries_id_immutable",
-            },
-        )
 
     def test_reports_status_check_and_default(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)

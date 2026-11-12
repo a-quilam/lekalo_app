@@ -4,7 +4,7 @@
 
 Проверяется без UI и Telegram-обработчиков:
 
-- миграция 31 на чистой базе (1..31), повторный прогон без дублей, XOR-область
+- базовая версия 1.0.0 на чистой базе, повторный прогон без дублей, XOR-область
   (`place_id` либо `owner_user_id`), индексы и уникальность названий подвалов;
 - `catalogs_store`: создание/чтение/редактирование с сохранением
   форматирования (entities → безопасный HTML, переносы строк), архивирование
@@ -73,10 +73,10 @@ def _indexes(path: str, table: str) -> set[str]:
     }
 
 
-# --- миграция 31 ------------------------------------------------------------
+# --- базовая схема -----------------------------------------------------------
 
 
-class Migration31Tests(unittest.TestCase):
+class BaselineCatalogsTests(unittest.TestCase):
     """Чистая база, повторный прогон и ограничения схемы."""
 
     def setUp(self) -> None:
@@ -85,21 +85,16 @@ class Migration31Tests(unittest.TestCase):
         self.engine = make_engine(self.path)
         self.addCleanup(self.engine.dispose)
 
-    def test_latest_version_is_thirty_three(self) -> None:
-        self.assertEqual(LATEST_VERSION, 33)
+    def test_latest_version_is_baseline(self) -> None:
+        self.assertEqual(LATEST_VERSION, 1)
         self.assertEqual(
-            (DEFAULT_MIGRATIONS[-2].version, DEFAULT_MIGRATIONS[-2].name),
-            (32, "system_brick_hints"),
+            [(m.version, m.name) for m in DEFAULT_MIGRATIONS],
+            [(1, "baseline_1_0_0")],
         )
-        self.assertEqual(
-            (DEFAULT_MIGRATIONS[-1].version, DEFAULT_MIGRATIONS[-1].name),
-            (33, "contact_brick_hint"),
-        )
-        self.assertEqual([m.version for m in DEFAULT_MIGRATIONS], list(range(1, 34)))
 
     def test_fresh_database_creates_both_tables_and_indexes(self) -> None:
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-        self.assertEqual(_journal(self.path)[-2], (32, "system_brick_hints"))
+        self.assertEqual(_journal(self.path), [(1, "baseline_1_0_0")])
         tables = table_names(self.path)
         self.assertIn("curator_entries", tables)
         self.assertIn("footer_entries", tables)
@@ -117,35 +112,6 @@ class Migration31Tests(unittest.TestCase):
         )
         self.assertEqual(_sql(self.path, "PRAGMA foreign_key_check"), [])
         self.assertEqual(_sql(self.path, "PRAGMA integrity_check"), [("ok",)])
-
-    def test_upgrade_from_v30_adds_only_catalog_objects(self) -> None:
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:30]), 30)
-        before = {
-            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
-        }
-        self.assertNotIn("curator_entries", before)
-        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-        after = {
-            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
-        }
-        self.assertEqual(
-            after - before,
-            {
-                "curator_entries",
-                "ix_curator_entries_place_status",
-                "ix_curator_entries_owner_status",
-                "trg_curator_entries_id_immutable",
-                "footer_entries",
-                "ux_footer_entries_place_name",
-                "ux_footer_entries_owner_name",
-                "ix_footer_entries_place_status",
-                "ix_footer_entries_owner_status",
-                "trg_footer_entries_id_immutable",
-            },
-            "миграция 31 только добавочная",
-        )
-        self.assertEqual(_journal(self.path)[-2], (32, "system_brick_hints"))
-        self.assertEqual(_sql(self.path, "PRAGMA foreign_key_check"), [])
 
     def test_migrated_schema_equals_fresh_create_all(self) -> None:
         from base import Base
@@ -181,7 +147,7 @@ class Migration31Tests(unittest.TestCase):
                 self.assertEqual(
                     schema(self.path, table),
                     schema(fresh_path, table),
-                    "колонки, индексы и FK после миграции = модели",
+                    "колонки, индексы и FK после инициализации = модели",
                 )
 
     def test_repeat_run_is_idempotent(self) -> None:
@@ -191,7 +157,7 @@ class Migration31Tests(unittest.TestCase):
         self.assertEqual(
             _sql(self.path, "SELECT name, sql FROM sqlite_master ORDER BY name"), before
         )
-        self.assertEqual(len(_journal(self.path)), LATEST_VERSION)
+        self.assertEqual(len(_journal(self.path)), 1)
 
     def test_scope_xor_check(self) -> None:
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)

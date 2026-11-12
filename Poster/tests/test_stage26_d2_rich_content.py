@@ -24,7 +24,8 @@
    `RichContentError` при загрузке и сборке, НЕ тихий откат на старый текст;
 10. в `ui_texts.yaml`/`DEFAULTS` нет дублей длинного содержимого
     `help.rich.*`/`about.rich.*`, кроме служебных `*.rich.unavailable`;
-11. миграция 32 даёт системным кирпичикам дословные подсказки §16;
+11. базовая схема 1.0.0 сидирует системным кирпичикам дословные подсказки
+    §16;
 12. `templates.cond.hint` равен дословному тексту §17.
 
 Реальная сеть, Telegram, `.env` и `post_bot.db` не используются: только
@@ -223,7 +224,7 @@ ABOUT_PHRASES: dict[str, tuple[str, ...]] = {
     ),
 }
 
-# §16 дословно: пять описаний, которые пишет миграция 32.
+# §16 дословно: пять описаний, которые сидирует базовая схема.
 MIGRATION_32_HINTS: dict[str, str] = {
     "название": "Напишите название мероприятия.",
     "дата": "Выберите дату мероприятия или напишите её.",
@@ -236,7 +237,7 @@ MIGRATION_32_HINTS: dict[str, str] = {
     ),
 }
 
-# §16 дословно: три описания, которые уже были получены миграцией 30.
+# §16 дословно: три описания из более ранней редакции §16.
 MIGRATION_30_HINTS: dict[str, str] = {
     "условие_входа": (
         "Напишите условия входа. Например: «Вход бесплатный, без "
@@ -250,7 +251,7 @@ MIGRATION_30_HINTS: dict[str, str] = {
 }
 
 # Релиз «Лекала» 1.0.0: финальное описание кирпичика «контакт» —
-# ставится миграцией 33, миграция 32 хранит прежний текст.
+# базовая схема хранит именно его.
 MIGRATION_33_CONTACT_HINT = (
     "Напишите контакт для гостей по вопросам мероприятия. "
     "Можно указать @ник, t.me/ник или имя с гиперссылкой."
@@ -1103,8 +1104,8 @@ def _sql(path: str, statement: str, params: tuple = ()) -> list[tuple]:
         connection.close()
 
 
-class SystemBrickHintsMigrationTests(unittest.TestCase):
-    """§16: реальные описания системных кирпичиков, а не универсальные."""
+class SystemBrickHintsBaselineTests(unittest.TestCase):
+    """§16: базовое сидирование ставит реальные описания системных кирпичиков."""
 
     def setUp(self) -> None:
         self.path = temp_db_path("poster-26-d2-migr-")
@@ -1120,28 +1121,20 @@ class SystemBrickHintsMigrationTests(unittest.TestCase):
         )
         return {str(code): description for code, description in rows}
 
-    def test_migration_33_is_last(self) -> None:
-        self.assertEqual(LATEST_VERSION, 33)
+    def test_latest_version_is_baseline(self) -> None:
+        self.assertEqual(LATEST_VERSION, 1)
         self.assertEqual(
-            (DEFAULT_MIGRATIONS[-1].version, DEFAULT_MIGRATIONS[-1].name),
-            (33, "contact_brick_hint"),
+            [(migration.version, migration.name) for migration in DEFAULT_MIGRATIONS],
+            [(1, "baseline_1_0_0")],
         )
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
 
-    def test_migration_32_sets_verbatim_hints(self) -> None:
-        # Историческая проверка §16: после миграции 32 описание «контакта» —
-        # ещё прежний текст (финальный ставит миграция 33).
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:32]), 32)
-        descriptions = self._descriptions()
-        for code, expected in MIGRATION_32_HINTS.items():
-            with self.subTest(code=code):
-                self.assertEqual(descriptions.get(code), expected)
-
-    def test_migration_33_sets_final_contact_hint(self) -> None:
+    def test_final_descriptions_are_seeded_verbatim(self) -> None:
+        # Финальные тексты релиза 1.0.0: «контакт» — последняя редакция,
+        # остальные — тексты §16 без изменений.
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
         descriptions = self._descriptions()
         self.assertEqual(descriptions.get("контакт"), MIGRATION_33_CONTACT_HINT)
-        # Прочие описания §16 миграцию 33 не затрагивает.
         for code, expected in MIGRATION_32_HINTS.items():
             if code == "контакт":
                 continue
@@ -1181,7 +1174,7 @@ class SystemBrickHintsMigrationTests(unittest.TestCase):
         self.assertEqual(self._descriptions(), before)
 
     def test_owner_edited_description_is_not_overwritten(self) -> None:
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:31]), 31)
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
         connection = sqlite3.connect(self.path)
         try:
             connection.execute(
@@ -1198,10 +1191,10 @@ class SystemBrickHintsMigrationTests(unittest.TestCase):
             descriptions.get("время_начала"), MIGRATION_32_HINTS["время_начала"]
         )
 
-    def test_owner_edited_contact_hint_survives_migration_33(self) -> None:
+    def test_owner_edited_contact_hint_survives_reinit(self) -> None:
         # Правка описания «контакта» владельцем не откатывается повторной
-        # инициализацией (рестартом) после миграции 33.
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:31]), 31)
+        # инициализацией (рестартом).
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
         connection = sqlite3.connect(self.path)
         try:
             connection.execute(

@@ -32,9 +32,9 @@ S8. Используемый (привязанный к версии шабло�
 S9. Отклонение и отзыв предложения не меняют исходный личный кирпичик.
 S10. Конфликт кода даёт статус `conflict` без изменений; повторное решение
     уже решённого предложения — `already_decided`.
-S11. Миграция устраняет `адрес_места`: строка bricks id=6 отсутствует,
+S11. Базовой схеме не нужен `адрес_места`: строка bricks id=6 отсутствует,
     системный код «адрес» один, привязки/значения на id=6 удалены,
-    FK/integrity целы (и для апгрейда базы 24, и для чистой установки).
+    FK/integrity целы на чистой установке.
 
 Требуемый доменный API (документируется здесь, а не выдумывается в
 приватных деталях): `brick_store.update_brick_description(session, *,
@@ -88,7 +88,7 @@ try:
         list_system_bricks,
         update_personal_brick,
     )
-    from migrations import DEFAULT_MIGRATIONS, LATEST_VERSION, run_migrations
+    from migrations import LATEST_VERSION, run_migrations
     from models import (
         Brick,
         BrickProposal,
@@ -1033,25 +1033,8 @@ class Poster24ModelTests(unittest.TestCase):
         self.assertEqual(proposal_count(h), 2)
 
     # ==================================================================
-    # S11. Миграция: «адрес_места» устранён, FK/integrity целы
+    # S11. «адрес_места» отсутствует, FK/integrity целы
     # ==================================================================
-
-    def test_s11a_migration_removes_legacy_address_brick(self) -> None:
-        """S11: апгрейд базы версии 24 без строки bricks id=6."""
-        path = temp_db_path("poster-24-p1-migration-")
-        self.addCleanup(shutil.rmtree, os.path.dirname(path), True)
-        engine = make_engine(path)
-        self.addCleanup(engine.dispose)
-        self.assertEqual(run_migrations(engine, DEFAULT_MIGRATIONS[:24]), 24)
-        self.assertGreater(
-            LATEST_VERSION,
-            24,
-            "требуется новая миграция Poster 2.4, устраняющая «адрес_места»",
-        )
-        self._seed_version_24(path)
-        self.assertEqual(run_migrations(engine), LATEST_VERSION)
-        self._assert_no_legacy_address(path)
-        self.assertEqual(run_migrations(engine), LATEST_VERSION)
 
     def test_s11b_fresh_install_has_single_address_brick(self) -> None:
         """S11: чистая установка сразу без «адрес_места», ровно один «адрес»."""
@@ -1063,58 +1046,6 @@ class Poster24ModelTests(unittest.TestCase):
         self._assert_no_legacy_address(path)
 
     # --- помощники S11 ----------------------------------------------------
-
-    def _seed_version_24(self, path: str) -> None:
-        """Данные, которые миграция обязана обработать без потери целостности."""
-        connection = sqlite3.connect(path)
-        try:
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute(
-                "INSERT INTO users (id, telegram_user_id, created_at) "
-                "VALUES (1, 940001, '2026-01-01 00:00:00')"
-            )
-            connection.execute(
-                "INSERT INTO places (id, created_by_user_id, created_at) "
-                "VALUES (1, 1, '2026-01-01 00:00:00')"
-            )
-            connection.execute(
-                "INSERT INTO announcement_drafts "
-                "(id, author_user_id, place_id, place_display_name, origin, "
-                " stage, revision, created_at, updated_at) "
-                "VALUES (1, 1, 1, 'Старая площадка', 'place', 'place', 1, "
-                "'2026-01-01 00:00:00', '2026-01-01 00:00:00')"
-            )
-            connection.execute(
-                "INSERT INTO announcement_values "
-                "(id, draft_id, brick_id, state, value_json, created_at, updated_at) "
-                "VALUES (1, 1, 6, 'valid', '{\"text\": \"ул. Старая, 1\"}', "
-                "'2026-01-01 00:00:00', '2026-01-01 00:00:00')"
-            )
-            connection.execute(
-                "INSERT INTO templates "
-                "(id, kind, owner_user_id, name, revision, created_by_user_id, "
-                " created_at, updated_at) "
-                "VALUES (1, 'personal', 1, 'Старый шаблон', 1, 1, "
-                "'2026-01-01 00:00:00', '2026-01-01 00:00:00')"
-            )
-            connection.execute(
-                "INSERT INTO template_versions "
-                "(id, template_id, version, content, extended_content, "
-                " created_by_user_id, created_at, builtin_version) "
-                "VALUES (1, 1, 1, '[адрес_места] и [адрес]', NULL, 1, "
-                "'2026-01-01 00:00:00', NULL)"
-            )
-            connection.execute(
-                "INSERT INTO template_version_bricks "
-                "(template_version_id, brick_id, code) VALUES (1, 6, 'адрес_места')"
-            )
-            connection.execute(
-                "INSERT INTO template_version_bricks "
-                "(template_version_id, brick_id, code) VALUES (1, 10, 'адрес')"
-            )
-            connection.commit()
-        finally:
-            connection.close()
 
     def _assert_no_legacy_address(self, path: str) -> None:
         """Контракт: ровно один системный «адрес»; «адрес_места» нет нигде."""

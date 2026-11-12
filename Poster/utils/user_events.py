@@ -35,9 +35,10 @@ Retention: строки старше `RETENTION_DAYS` удаляются по `c
 Фоновых потоков нет — очистка запускается из самого `event_log` раз в
 `CLEANUP_EVERY` записей (счётчик модуля, без таймеров и заданий PTB).
 
-Таблица создаётся миграцией 29 и намеренно описана только Core-таблицей:
-в `models.py` её нет, чтобы `create_all` не создавал её в обход журнала
-миграций (как `announcement_instances` и `brick_conflicts`).
+Таблица создаётся базовой схемой 1.0.0 и намеренно описана только
+Core-таблицей: в `models.py` её нет, чтобы `create_all` не создавал её в
+обход журнала версий схемы (как `announcement_instances` и
+`brick_conflicts`).
 """
 
 from __future__ import annotations
@@ -89,7 +90,7 @@ SNAPSHOT_PERIOD = timedelta(hours=1)
 
 _METADATA = MetaData()
 
-# Таблица уже существует (миграция 29): локальная metadata, к Base не
+# Таблица уже существует (базовая схема 1.0.0): локальная metadata, к Base не
 # подключена — `create_all` её не увидит.
 user_event_log = Table(
     "user_event_log",

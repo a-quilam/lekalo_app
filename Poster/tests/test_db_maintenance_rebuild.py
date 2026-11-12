@@ -8,7 +8,7 @@ Rebuild-очистка тестовой БД (утверждённый конт�
 пользовательские шаблоны, предложение, черновик и готовый анонс) механизм
 обслуживания обязан оставить ровно системные объекты:
 
-- журнал миграций: полный, 1..актуальная версия кода (не зашита);
+- журнал версий схемы: полный, 1..актуальная версия кода (не зашита);
 - системные кирпичики: коды совпадают с каталогом brick_types (не зашит);
 - ВСЕ несистемные счётчики — нулевые (контракт: ни одной тестовой записи);
 - встроенный стандартный шаблон — эталон кода (BUILTIN_TEMPLATE), строка
@@ -56,7 +56,7 @@ TODAY = date(2026, 5, 1)
 
 
 def table_counts(path: "str | Path") -> dict[str, int]:
-    """Счётчики всех таблиц временной базы (кроме журнала миграций)."""
+    """Счётчики всех таблиц временной базы (кроме журнала версий схемы)."""
     connection = connect(str(path))
     try:
         names = [
@@ -90,9 +90,8 @@ class RebuildCleanupTestCase(AnnouncementDatabaseTestCase):
 
     def setUp(self) -> None:
         super().setUp()
-        # Таблицы моделей вне миграций (user_states, *_sessions) создаёт
-        # create_all — тот же шаг штатного init_db; helpers Stage 23/27
-        # применяют только миграции.
+        # `create_all` — тот же шаг штатного init_db; на базе 1.0.0 он
+        # no-op, но фикстура повторяет порядок инициализации.
         from base import Base
 
         Base.metadata.create_all(bind=self.engine)
@@ -319,7 +318,7 @@ class RebuildCleanupTests(RebuildCleanupTestCase):
                 self.assertEqual(count, 0, f"{table} содержит тестовые данные")
 
     def test_migration_journal_is_complete(self) -> None:
-        """Схема новой базы: полный журнал 1..актуальная версия кода."""
+        """Схема новой базы: полный журнал версий 1..актуальная версия кода."""
         connection = connect(self.path)
         try:
             versions = [

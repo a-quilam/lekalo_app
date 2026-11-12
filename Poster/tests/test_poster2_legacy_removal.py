@@ -13,8 +13,6 @@ Poster 2.0, S5: удаление легаси-мастера поста.
   `handlers/callbacks.py` нет;
 - устаревший callback `create_post` не запускает мастер и не трогает
   живые сессии;
-- миграция 17 архивирует `drafts`, идемпотентна и не задевает живые
-  таблицы;
 - `import bot` собирается без удалённых модулей.
 
 Все сценарии — FakeBot, `Application.process_update` и временная SQLite.
@@ -27,23 +25,15 @@ import ast
 import importlib
 import importlib.util
 import io
-import json
 import os
-import shutil
 import tokenize
 import unittest
 from pathlib import Path
 
-from base import Base
-from migrations import LATEST_VERSION, run_migrations
 from place_store import create_place
 from tests.integration_harness import HARNESS_IMPORT_ERROR, scenario_test
 from tests.stage19a_helpers import (
     APP_DIR,
-    connect,
-    make_engine,
-    table_names,
-    temp_db_path,
 )
 from user_store import get_or_create_user
 
@@ -290,137 +280,6 @@ class LegacyCallbackTests(unittest.TestCase):
 
         self.assertIsNone(h.dialog_state())
         self.assertIn("Мои анонсы", answer_text(h))
-
-
-class LegacyArchiveMigrationTests(unittest.TestCase):
-    """Миграция 17: архив, идемпотентность и сохранность живых таблиц."""
-
-    def setUp(self) -> None:
-        self.path = temp_db_path("poster-s5-legacy-")
-        self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
-        self.engine = make_engine(self.path)
-        self.addCleanup(self.engine.dispose)
-
-    def _init_like_production(self) -> None:
-        """Ровно `init_db()`: миграции, затем недостающие таблицы моделей."""
-        run_migrations(self.engine)
-        Base.metadata.create_all(bind=self.engine)
-
-    def _create_legacy_schema(self) -> None:
-        with self.engine.begin() as connection:
-            connection.exec_driver_sql("""
-                CREATE TABLE drafts (
-                    id INTEGER NOT NULL PRIMARY KEY,
-                    user_id INTEGER NOT NULL,
-                    title VARCHAR(255),
-                    text TEXT,
-                    image VARCHAR(255),
-                    photos TEXT,
-                    formats TEXT,
-                    created_at DATETIME NOT NULL
-                )
-                """)
-            connection.exec_driver_sql(
-                "INSERT INTO drafts (id, user_id, title, text, image, photos, "
-                "formats, created_at) VALUES "
-                "(1, 42, 'Прежний черновик', 'Текст', 'file-1', "
-                "'[\"file-1\"]', '{\"title\": \"x\"}', '2026-01-01 10:00:00')"
-            )
-
-    def test_migration_seventeen_archives_readable_copy(self) -> None:
-        self._create_legacy_schema()
-
-        self._init_like_production()
-
-        tables = table_names(self.path)
-        self.assertNotIn("drafts", tables)
-        self.assertIn("legacy_drafts_backup", tables)
-        connection = connect(self.path)
-        try:
-            row = connection.execute(
-                "SELECT title, text, image, photos, formats, created_at "
-                "FROM legacy_drafts_backup WHERE id = 1"
-            ).fetchone()
-        finally:
-            connection.close()
-        self.assertEqual(row["title"], "Прежний черновик")
-        self.assertEqual(row["text"], "Текст")
-        self.assertEqual(row["image"], "file-1")
-        self.assertEqual(json.loads(row["photos"]), ["file-1"])
-        self.assertEqual(json.loads(row["formats"]), {"title": "x"})
-        self.assertEqual(row["created_at"], "2026-01-01 10:00:00")
-
-    def test_migration_seventeen_is_idempotent(self) -> None:
-        self._create_legacy_schema()
-        self._init_like_production()
-        versions = self._journal()
-        # Poster 2.1 R2 добавила миграцию 18: архив остаётся на месте,
-        # последней в журнале теперь идёт обновление встроенного шаблона.
-        self.assertIn((17, "archive_legacy_drafts"), versions)
-        self.assertEqual(
-            versions[-1],
-            (LATEST_VERSION, "contact_brick_hint"),
-        )
-
-        # Повторные запуски (рестарты) архив не переименовывают и не теряют.
-        for _ in range(2):
-            self._init_like_production()
-        self.assertEqual(self._journal(), versions)
-        self.assertEqual(
-            self._scalar("SELECT count(*) FROM legacy_drafts_backup"), (1,)
-        )
-
-    def test_live_tables_are_untouched_by_archive(self) -> None:
-        self._create_legacy_schema()
-        self._init_like_production()
-
-        tables = table_names(self.path)
-        for table in (
-            "users",
-            "places",
-            "place_names",
-            "place_admins",
-            "templates",
-            "bricks",
-            "announcement_drafts",
-            "user_states",
-        ):
-            with self.subTest(table=table):
-                self.assertIn(table, tables)
-        # Живые таблицы созданы пустыми: архив их не заполняет.
-        self.assertEqual(self._scalar("SELECT count(*) FROM announcement_drafts"), (0,))
-        self.assertEqual(self._scalar("SELECT count(*) FROM user_states"), (0,))
-
-    def test_fresh_database_has_no_archive(self) -> None:
-        self._init_like_production()
-        tables = table_names(self.path)
-        self.assertNotIn("drafts", tables)
-        self.assertNotIn("legacy_drafts_backup", tables)
-        self.assertIn((17, "archive_legacy_drafts"), self._journal())
-        self.assertEqual(
-            self._journal()[-1],
-            (LATEST_VERSION, "contact_brick_hint"),
-        )
-
-    def _journal(self) -> list[tuple[int, str]]:
-        connection = connect(self.path)
-        try:
-            return [
-                (int(row["version"]), str(row["name"]))
-                for row in connection.execute(
-                    "SELECT version, name FROM schema_migrations ORDER BY version"
-                )
-            ]
-        finally:
-            connection.close()
-
-    def _scalar(self, sql: str):
-        connection = connect(self.path)
-        try:
-            row = connection.execute(sql).fetchone()
-            return None if row is None else tuple(row)
-        finally:
-            connection.close()
 
 
 if __name__ == "__main__":

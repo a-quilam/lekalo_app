@@ -1,33 +1,44 @@
 # migrations.py
 """
-Нумерованные миграции схемы SQLite (Stage 19A/19B).
+Схема SQLite Poster: единая базовая инициализация 1.0.0 и механизм версий.
 
 Механизм свой, а не Alembic: проект — однофайловая SQLite-база с полностью
-ручными, добавочными изменениями схемы. Alembic добавил бы зависимость,
-каталог версий и autogenerate, который для SQLite всё равно требует ручной
-проверки. Здесь достаточно журнала `schema_migrations` и списка DDL-шагов:
+ручными изменениями схемы. Alembic добавил бы зависимость, каталог версий и
+autogenerate, который для SQLite всё равно требует ручной проверки. Здесь
+достаточно журнала `schema_migrations` и списка DDL-шагов:
 
-- каждая миграция применяется ровно один раз (журнал версий);
+- каждая версия применяется ровно один раз (журнал версий);
 - повторный запуск ничего не делает (идемпотентность);
-- журнал хранит контрольную сумму DDL: изменённую задним числом миграцию
+- журнал хранит контрольную сумму DDL: изменённую задним числом версию
   механизм отказывается применять к базе, где она уже записана;
 - неизвестная/более новая версия или разрыв журнала = несовместимая схема;
-- все ожидающие миграции применяются в ОДНОЙ транзакции SQLite
+- все ожидающие версии применяются в ОДНОЙ транзакции SQLite
   (`BEGIN IMMEDIATE`): DDL в SQLite транзакционен, поэтому сбой посреди
-  миграции не оставляет полуприменённое состояние;
+  применения не оставляет полуприменённое состояние;
 - `BEGIN IMMEDIATE` + `busy_timeout` защищают от конкурентной инициализации:
   второй процесс ждёт, затем видит уже применённые версии;
 - перед первым ожидающим DDL существующей непустой базы автоматически
   создаётся WAL-aware копия (SQLite Backup API + integrity_check). Сбой
   копии отменяет миграцию; готовые копии не удаляются.
 
+Релиз 1.0.0: накопительные миграции 1–33 заменены ОДНОЙ базовой версией.
+`MIGRATION_1_0_0_BASELINE` создаёт с нуля всю схему (32 таблицы с индексами,
+CHECK, FK и 45 триггерами), журнал и каталог системных кирпичиков с
+финальными описаниями. История невыпущенных версий не поддерживается:
+база, созданная прежними миграциями, считается несовместимой.
+
+Будущие обновления: новая версия — новая запись `Migration` с version=2, 3, …
+и добавляется в `DEFAULT_MIGRATIONS`; уже применённую версию редактировать
+нельзя (контрольная сумма), только добавлять новую.
+
 Ограничение: миграции требуют файловую SQLite (не `:memory:`) — приложение
 всегда работает с файлом; для временных баз тесты используют временные файлы.
 
 Правила для будущих этапов:
-- уже применённую миграцию нельзя редактировать — только новая версия;
-- миграции только добавочные (CREATE TABLE/INDEX, ALTER TABLE ADD COLUMN);
-- разрушительные операции требуют отдельного плана восстановления (docs/migrations.md).
+- уже применённую версию нельзя редактировать — только новая;
+- изменения только добавочные (CREATE TABLE/INDEX, ALTER TABLE ADD COLUMN);
+- разрушительные операции требуют отдельного плана восстановления
+  (docs/migrations.md).
 """
 
 from __future__ import annotations
@@ -66,12 +77,13 @@ _JOURNAL_DDL = (
 @dataclass(frozen=True)
 class Migration:
     """
-    Одна неизменяемая миграция: версия, имя и набор DDL/DML-шагов.
+    Одна неизменяемая версия схемы: версия, имя и набор DDL/DML-шагов.
 
     `requires_tables` — таблицы, без которых шаги неприменимы (например,
     архив легаси-таблицы на давно очищенной базе). Если хотя бы одной нет,
-    шаги пропускаются, а версия всё равно фиксируется в журнале: миграция
-    идемпотентна и на пустой/новой базе, где таблица никогда не создавалась.
+    шаги пропускаются, а версия всё равно фиксируется в журнале: версия
+    идемпотентна и на пустой базе, где таблица никогда не создавалась.
+    Для базовой инициализации список пуст: она создаёт всё с нуля.
     """
 
     version: int
@@ -107,14 +119,22 @@ class BackupError(MigrationError):
     """Не удалось безопасно скопировать базу — миграцию начинать нельзя."""
 
 
-# --- Версия 1: минимальный фундамент справочника мест -----------------------
+# --- Базовая версия 1.0.0: полная схема с нуля ------------------------------
+#
+# DDL ниже — семантически точная копия схемы, которую к релизу 1.0.0
+# создавали накопительные миграции 1–33. Порядок объектов повторяет
+# исторический: сначала справочник мест, затем кирпичики, шаблоны, анонсы,
+# конфликты, справочники и журнал событий; индексы и триггеры идут сразу за
+# своей таблицей. Порядок важен для имён автоматических индексов
+# (`sqlite_autoindex_<таблица>_N`) и для читаемости diff'а.
+#
+# `user_states` раньше создавалась SQLAlchemy (`Base.metadata.create_all`):
+# теперь она часть базовой схемы, create_all остаётся страховкой.
 
-MIGRATION_1_USERS_PLACES = Migration(
-    version=1,
-    name="users_places_place_names",
-    statements=(
-        """
-        CREATE TABLE users (
+_BASELINE_SCHEMA: tuple[str, ...] = (
+    # table users
+    """
+CREATE TABLE users (
             id INTEGER NOT NULL PRIMARY KEY,
             telegram_user_id INTEGER NOT NULL,
             username VARCHAR(255),
@@ -124,20 +144,26 @@ MIGRATION_1_USERS_PLACES = Migration(
             last_seen_at DATETIME,
             CONSTRAINT uq_users_telegram_user_id UNIQUE (telegram_user_id)
         )
-        """,
-        """
-        CREATE TABLE places (
+    """,
+    # sqlite_autoindex_users_1: автоматический индекс ограничения таблицы
+    # table places
+    """
+CREATE TABLE places (
             id INTEGER NOT NULL PRIMARY KEY,
             created_by_user_id INTEGER,
-            created_at DATETIME NOT NULL,
+            created_at DATETIME NOT NULL, address TEXT, url TEXT, city TEXT,
             CONSTRAINT fk_places_created_by_user_id
                 FOREIGN KEY (created_by_user_id) REFERENCES users (id)
                 ON DELETE SET NULL
         )
-        """,
-        "CREATE INDEX ix_places_created_by_user_id ON places (created_by_user_id)",
-        """
-        CREATE TABLE place_names (
+    """,
+    # index ix_places_created_by_user_id
+    """
+CREATE INDEX ix_places_created_by_user_id ON places (created_by_user_id)
+    """,
+    # table place_names
+    """
+CREATE TABLE place_names (
             id INTEGER NOT NULL PRIMARY KEY,
             place_id INTEGER NOT NULL,
             name TEXT NOT NULL,
@@ -160,53 +186,33 @@ MIGRATION_1_USERS_PLACES = Migration(
                 FOREIGN KEY (created_by_user_id) REFERENCES users (id)
                 ON DELETE SET NULL
         )
-        """,
-        "CREATE INDEX ix_place_names_place_id ON place_names (place_id)",
-        "CREATE INDEX ix_place_names_name_search ON place_names (name_search)",
-        # Ровно один канонический вариант: частичный уникальный индекс.
-        # Отсутствие строк вообще (место без названия) не допускается
-        # прикладным слоем place_store, а не триггером.
-        """
-        CREATE UNIQUE INDEX ux_place_names_one_canonical
+    """,
+    # sqlite_autoindex_place_names_1: автоматический индекс ограничения таблицы
+    # index ix_place_names_place_id
+    """
+CREATE INDEX ix_place_names_place_id ON place_names (place_id)
+    """,
+    # index ix_place_names_name_search
+    """
+CREATE INDEX ix_place_names_name_search ON place_names (name_search)
+    """,
+    # index ux_place_names_one_canonical
+    """
+CREATE UNIQUE INDEX ux_place_names_one_canonical
             ON place_names (place_id) WHERE is_canonical = 1
-        """,
-    ),
-)
 
-# --- Версия 2: контакты места и состояние сценария «Места» -----------------
-
-MIGRATION_2_PLACE_CONTACTS_UI = Migration(
-    version=2,
-    name="place_contacts_and_ui_state",
-    statements=(
-        # Необязательные контакты для карточки; Stage 19B их только читает.
-        "ALTER TABLE places ADD COLUMN address TEXT",
-        "ALTER TABLE places ADD COLUMN url TEXT",
-        # Состояние Telegram-сценария выбора места хранится отдельно от
-        # WIP-поста в user_states. Ключ — Telegram user ID (интерфейсное
-        # состояние), payload ограничен фазой и выбранными id.
-        """
-        CREATE TABLE place_sessions (
+    """,
+    # table place_sessions
+    """
+CREATE TABLE place_sessions (
             telegram_user_id INTEGER NOT NULL PRIMARY KEY,
             payload TEXT NOT NULL,
             updated_at DATETIME NOT NULL
         )
-        """,
-    ),
-)
-
-# --- Версия 3: администраторы мест и состояние админского сценария ----------
-
-MIGRATION_3_PLACE_ADMINS = Migration(
-    version=3,
-    name="place_admins_and_admin_ui_state",
-    statements=(
-        # История назначений. Действующая роль = revoked_at IS NULL.
-        # Частичный уникальный индекс ниже гарантирует не более одного
-        # действующего администратора на место. Отозванные строки остаются
-        # для аудита; при замене они помечаются в той же транзакции.
-        """
-        CREATE TABLE place_admins (
+    """,
+    # table place_admins
+    """
+CREATE TABLE place_admins (
             id INTEGER NOT NULL PRIMARY KEY,
             place_id INTEGER NOT NULL,
             user_id INTEGER NOT NULL,
@@ -227,36 +233,32 @@ MIGRATION_3_PLACE_ADMINS = Migration(
                 FOREIGN KEY (revoked_by_user_id) REFERENCES users (id)
                 ON DELETE SET NULL
         )
-        """,
-        "CREATE INDEX ix_place_admins_place_id ON place_admins (place_id)",
-        "CREATE INDEX ix_place_admins_user_id ON place_admins (user_id)",
-        """
-        CREATE UNIQUE INDEX ux_place_admins_one_active
+    """,
+    # index ix_place_admins_place_id
+    """
+CREATE INDEX ix_place_admins_place_id ON place_admins (place_id)
+    """,
+    # index ix_place_admins_user_id
+    """
+CREATE INDEX ix_place_admins_user_id ON place_admins (user_id)
+    """,
+    # index ux_place_admins_one_active
+    """
+CREATE UNIQUE INDEX ux_place_admins_one_active
             ON place_admins (place_id) WHERE revoked_at IS NULL
-        """,
-        # Интерфейсное состояние кабинета: фаза, выбранное место и кандидат.
-        # Права здесь не хранятся и не восстанавливаются из этого JSON.
-        """
-        CREATE TABLE admin_sessions (
+
+    """,
+    # table admin_sessions
+    """
+CREATE TABLE admin_sessions (
             telegram_user_id INTEGER NOT NULL PRIMARY KEY,
             payload TEXT NOT NULL,
             updated_at DATETIME NOT NULL
         )
-        """,
-    ),
-)
-
-# --- Версия 4: аудит административных изменений данных места (Stage 20B) ------
-
-MIGRATION_4_PLACE_EDIT_LOG = Migration(
-    version=4,
-    name="place_edit_log",
-    statements=(
-        # Аудит редактирования места (Stage 20B): одна строка на успешную
-        # операцию. Секретов нет: здесь только поля места (названия, адрес,
-        # ссылка) и внутренние ключи.
-        """
-        CREATE TABLE place_edit_log (
+    """,
+    # table place_edit_log
+    """
+CREATE TABLE place_edit_log (
             id INTEGER NOT NULL PRIMARY KEY,
             place_id INTEGER NOT NULL,
             actor_user_id INTEGER,
@@ -273,23 +275,14 @@ MIGRATION_4_PLACE_EDIT_LOG = Migration(
                 REFERENCES users (id)
                 ON DELETE SET NULL
         )
-        """,
-        "CREATE INDEX ix_place_edit_log_place_id ON place_edit_log (place_id)",
-    ),
-)
-
-# --- Версия 5: передачи администратора места (Stage 21) ---------------------
-
-MIGRATION_5_ADMIN_TRANSFERS = Migration(
-    version=5,
-    name="admin_transfers",
-    statements=(
-        # Одно предложение передачи. Сырой токен ссылки-приглашения не
-        # хранится: только SHA-256. from_assignment_id фиксирует назначение,
-        # на основании которого начата передача; после замены администратора
-        # предложение становится непригодным для подтверждения.
-        """
-        CREATE TABLE admin_transfers (
+    """,
+    # index ix_place_edit_log_place_id
+    """
+CREATE INDEX ix_place_edit_log_place_id ON place_edit_log (place_id)
+    """,
+    # table admin_transfers
+    """
+CREATE TABLE admin_transfers (
             id INTEGER NOT NULL PRIMARY KEY,
             place_id INTEGER NOT NULL,
             from_user_id INTEGER NOT NULL,
@@ -326,41 +319,40 @@ MIGRATION_5_ADMIN_TRANSFERS = Migration(
                 FOREIGN KEY (opened_by_user_id) REFERENCES users (id)
                 ON DELETE SET NULL
         )
-        """,
-        "CREATE INDEX ix_admin_transfers_place_id ON admin_transfers (place_id)",
-        "CREATE INDEX ix_admin_transfers_from_user_id "
-        "ON admin_transfers (from_user_id)",
-        "CREATE INDEX ix_admin_transfers_to_user_id " "ON admin_transfers (to_user_id)",
-        # Не более одного активного предложения на место. Просроченные и
-        # закрытые строки сохраняются как аудит и новому предложению не мешают.
-        """
-        CREATE UNIQUE INDEX ux_admin_transfers_one_pending_place
+    """,
+    # index ix_admin_transfers_place_id
+    """
+CREATE INDEX ix_admin_transfers_place_id ON admin_transfers (place_id)
+    """,
+    # index ix_admin_transfers_from_user_id
+    """
+CREATE INDEX ix_admin_transfers_from_user_id ON admin_transfers (from_user_id)
+    """,
+    # index ix_admin_transfers_to_user_id
+    """
+CREATE INDEX ix_admin_transfers_to_user_id ON admin_transfers (to_user_id)
+    """,
+    # index ux_admin_transfers_one_pending_place
+    """
+CREATE UNIQUE INDEX ux_admin_transfers_one_pending_place
             ON admin_transfers (place_id) WHERE status = 'pending'
-        """,
-        """
-        CREATE INDEX ix_admin_transfers_pending_to_user
+
+    """,
+    # index ix_admin_transfers_pending_to_user
+    """
+CREATE INDEX ix_admin_transfers_pending_to_user
             ON admin_transfers (to_user_id) WHERE status = 'pending'
-        """,
-        # Токен приглашения уникален; NULL у передач известному получателю.
-        """
-        CREATE UNIQUE INDEX ux_admin_transfers_token_hash
+
+    """,
+    # index ux_admin_transfers_token_hash
+    """
+CREATE UNIQUE INDEX ux_admin_transfers_token_hash
             ON admin_transfers (token_hash) WHERE token_hash IS NOT NULL
-        """,
-    ),
-)
 
-# --- Версия 6: универсальный реестр кирпичиков (Stage 22A) ------------------
-
-
-MIGRATION_6_BRICKS = Migration(
-    version=6,
-    name="bricks_registry",
-    statements=(
-        # Определение поля отделено от значения в анонсе. Системные коды
-        # резервируются триггерами ниже; системные определения вставляются
-        # этой же миграцией со стабильными ID 1..9.
-        """
-        CREATE TABLE bricks (
+    """,
+    # table bricks
+    """
+CREATE TABLE bricks (
             id INTEGER NOT NULL PRIMARY KEY,
             code TEXT NOT NULL,
             title TEXT NOT NULL,
@@ -373,7 +365,7 @@ MIGRATION_6_BRICKS = Migration(
             status TEXT NOT NULL DEFAULT 'active',
             created_by_user_id INTEGER,
             created_at DATETIME NOT NULL,
-            updated_at DATETIME,
+            updated_at DATETIME, revision INTEGER NOT NULL DEFAULT 1, description TEXT,
             CONSTRAINT ck_bricks_type
                 CHECK (type IN (
                     'short_text', 'long_text', 'date', 'time', 'url',
@@ -422,60 +414,77 @@ MIGRATION_6_BRICKS = Migration(
                 FOREIGN KEY (created_by_user_id) REFERENCES users (id)
                 ON DELETE SET NULL
         )
-        """,
-        # Один код внутри области. Системные коды глобально уникальны;
-        # разные пользователи/места могут использовать одинаковый код.
-        """
-        CREATE UNIQUE INDEX ux_bricks_system_code
+    """,
+    # index ux_bricks_system_code
+    """
+CREATE UNIQUE INDEX ux_bricks_system_code
             ON bricks (code) WHERE scope = 'system'
-        """,
-        """
-        CREATE UNIQUE INDEX ux_bricks_place_code
+
+    """,
+    # index ux_bricks_place_code
+    """
+CREATE UNIQUE INDEX ux_bricks_place_code
             ON bricks (place_id, code) WHERE scope = 'place'
-        """,
-        """
-        CREATE UNIQUE INDEX ux_bricks_personal_code
+
+    """,
+    # index ux_bricks_personal_code
+    """
+CREATE UNIQUE INDEX ux_bricks_personal_code
             ON bricks (owner_user_id, code) WHERE scope = 'personal'
-        """,
-        # Индексы доступности/поиска. Частичные уникальные индексы выше
-        # обслуживают точный поиск в своей области, эти — общие выборки.
-        """
-        CREATE INDEX ix_bricks_scope_status_code
+
+    """,
+    # index ix_bricks_scope_status_code
+    """
+CREATE INDEX ix_bricks_scope_status_code
             ON bricks (scope, status, code)
-        """,
-        """
-        CREATE INDEX ix_bricks_place_status ON bricks (place_id, status)
-        """,
-        """
-        CREATE INDEX ix_bricks_owner_status ON bricks (owner_user_id, status)
-        """,
-        """
-        CREATE INDEX ix_bricks_type_status ON bricks (type, status)
-        """,
-        "CREATE INDEX ix_bricks_code ON bricks (code)",
-        "CREATE INDEX ix_bricks_title ON bricks (title)",
-        # Постоянный внутренний ID нельзя переписать UPDATE-ом.
-        """
-        CREATE TRIGGER trg_bricks_id_immutable
+
+    """,
+    # index ix_bricks_place_status
+    """
+CREATE INDEX ix_bricks_place_status ON bricks (place_id, status)
+
+    """,
+    # index ix_bricks_owner_status
+    """
+CREATE INDEX ix_bricks_owner_status ON bricks (owner_user_id, status)
+
+    """,
+    # index ix_bricks_type_status
+    """
+CREATE INDEX ix_bricks_type_status ON bricks (type, status)
+
+    """,
+    # index ix_bricks_code
+    """
+CREATE INDEX ix_bricks_code ON bricks (code)
+    """,
+    # index ix_bricks_title
+    """
+CREATE INDEX ix_bricks_title ON bricks (title)
+    """,
+    # trigger trg_bricks_id_immutable
+    """
+CREATE TRIGGER trg_bricks_id_immutable
         BEFORE UPDATE OF id ON bricks
         FOR EACH ROW
         WHEN NEW.id <> OLD.id
         BEGIN
             SELECT RAISE(ABORT, 'bricks.id is immutable');
         END
-        """,
-        # Код и глобальная принадлежность системного кирпичика неизменяемы.
-        """
-        CREATE TRIGGER trg_bricks_system_code_immutable
+    """,
+    # trigger trg_bricks_system_code_immutable
+    """
+CREATE TRIGGER trg_bricks_system_code_immutable
         BEFORE UPDATE OF code ON bricks
         FOR EACH ROW
         WHEN OLD.scope = 'system' AND NEW.code <> OLD.code
         BEGIN
             SELECT RAISE(ABORT, 'system brick code is immutable');
         END
-        """,
-        """
-        CREATE TRIGGER trg_bricks_system_owner_immutable
+    """,
+    # trigger trg_bricks_system_owner_immutable
+    """
+CREATE TRIGGER trg_bricks_system_owner_immutable
         BEFORE UPDATE OF scope, place_id, owner_user_id ON bricks
         FOR EACH ROW
         WHEN OLD.scope = 'system'
@@ -485,153 +494,10 @@ MIGRATION_6_BRICKS = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'system brick is global');
         END
-        """,
-        # Системный кирпичик можно архивировать, но не удалить: код остаётся
-        # зарезервированным навсегда.
-        """
-        CREATE TRIGGER trg_bricks_system_no_delete
-        BEFORE DELETE ON bricks
-        FOR EACH ROW
-        WHEN OLD.scope = 'system'
-        BEGIN
-            SELECT RAISE(ABORT, 'system brick cannot be deleted');
-        END
-        """,
-        # Системные и несистемные коды не могут сосуществовать: [код] всегда
-        # означает системный кирпичик и не может быть подменён личным/местным.
-        """
-        CREATE TRIGGER trg_bricks_reserve_codes_insert
-        BEFORE INSERT ON bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM bricks b
-            WHERE b.code = NEW.code
-              AND (
-                  (NEW.scope = 'system' AND b.scope <> 'system')
-                  OR (NEW.scope <> 'system' AND b.scope = 'system')
-              )
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'system brick code is reserved');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_bricks_reserve_codes_update
-        BEFORE UPDATE OF code, scope ON bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM bricks b
-            WHERE b.id <> OLD.id
-              AND b.code = NEW.code
-              AND (
-                  (NEW.scope = 'system' AND b.scope <> 'system')
-                  OR (NEW.scope <> 'system' AND b.scope = 'system')
-              )
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'system brick code is reserved');
-        END
-        """,
-        # Системный реестр Stage 22A. ID и коды стабильны; изменение
-        # определения — только новой миграцией, а не повторным сидированием.
-        """
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at)
-        VALUES
-            (1, 'название', 'Название мероприятия', 'short_text',
-             'system', 'ask', NULL, 'active', NULL,
-             CURRENT_TIMESTAMP, NULL)
-        """,
-        """
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at)
-        VALUES
-            (2, 'дата', 'Дата', 'date', 'system', 'ask',
-             '{"horizon_months": 12}', 'active', NULL,
-             CURRENT_TIMESTAMP, NULL)
-        """,
-        """
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at)
-        VALUES
-            (3, 'время_начала', 'Время начала', 'time',
-             'system', 'ask', NULL, 'active', NULL,
-             CURRENT_TIMESTAMP, NULL)
-        """,
-        """
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at)
-        VALUES
-            (4, 'время_окончания', 'Время окончания', 'time',
-             'system', 'ask', NULL, 'active', NULL,
-             CURRENT_TIMESTAMP, NULL)
-        """,
-        """
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at)
-        VALUES
-            (5, 'место', 'Название места', 'short_text',
-             'system', 'place', NULL, 'active', NULL,
-             CURRENT_TIMESTAMP, NULL)
-        """,
-        """
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at)
-        VALUES
-            (6, 'адрес_места', 'Адрес места', 'short_text',
-             'system', 'place', NULL, 'active', NULL,
-             CURRENT_TIMESTAMP, NULL)
-        """,
-        """
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at)
-        VALUES
-            (7, 'ссылка_места', 'Ссылка места', 'url',
-             'system', 'place', NULL, 'active', NULL,
-             CURRENT_TIMESTAMP, NULL)
-        """,
-        """
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at)
-        VALUES
-            (8, 'описание', 'Описание', 'long_text',
-             'system', 'ask', NULL, 'active', NULL,
-             CURRENT_TIMESTAMP, NULL)
-        """,
-        """
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at)
-        VALUES
-            (9, 'контакт', 'Контакт', 'short_text',
-             'system', 'ask', NULL, 'active', NULL,
-             CURRENT_TIMESTAMP, NULL)
-        """,
-    ),
-)
-
-# --- Версия 7: управление личными кирпичиками (Stage 22B) ------------------
-
-
-MIGRATION_7_BRICK_MANAGEMENT = Migration(
-    version=7,
-    name="brick_management",
-    statements=(
-        # Ревизия — явная оптимистическая блокировка для редактирования.
-        # Она не заменяет id и не участвует в ссылках шаблонов.
-        "ALTER TABLE bricks ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
-        # Состояние Telegram-конструктора отделено от WIP-поста, «Мест» и
-        # админки: переход в другой раздел не смешивает текстовые вводы.
-        """
-        CREATE TABLE brick_sessions (
+    """,
+    # table brick_sessions
+    """
+CREATE TABLE brick_sessions (
             telegram_user_id INTEGER NOT NULL PRIMARY KEY,
             payload TEXT NOT NULL,
             updated_at DATETIME NOT NULL,
@@ -639,34 +505,20 @@ MIGRATION_7_BRICK_MANAGEMENT = Migration(
                 json_valid(payload) AND json_type(payload) = 'object'
             )
         )
-        """,
-        # Ревизия может только расти. Условный UPDATE в сервисе дополнительно
-        # проверяет ожидаемую ревизию, поэтому потерянное обновление не
-        # проходит даже при конкурентном редактировании.
-        """
-        CREATE TRIGGER trg_bricks_revision_increases
+    """,
+    # trigger trg_bricks_revision_increases
+    """
+CREATE TRIGGER trg_bricks_revision_increases
         BEFORE UPDATE OF revision ON bricks
         FOR EACH ROW
         WHEN NEW.revision <= OLD.revision
         BEGIN
             SELECT RAISE(ABORT, 'brick revision must increase');
         END
-        """,
-    ),
-)
-
-# --- Версия 8: шаблоны, версии, привязки и снимки (Stage 23) ----------------
-
-
-MIGRATION_8_TEMPLATES = Migration(
-    version=8,
-    name="templates_versions_snapshots",
-    statements=(
-        # Шаблон хранит только стабильную идентичность. Текст живёт в
-        # неизменяемых версиях, а revision одновременно является номером
-        # текущей версии и ожидаемой ревизией оптимистичной блокировки.
-        """
-        CREATE TABLE templates (
+    """,
+    # table templates
+    """
+CREATE TABLE templates (
             id INTEGER NOT NULL PRIMARY KEY,
             kind TEXT NOT NULL,
             place_id INTEGER,
@@ -675,7 +527,9 @@ MIGRATION_8_TEMPLATES = Migration(
             revision INTEGER NOT NULL DEFAULT 1,
             created_by_user_id INTEGER,
             created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL, extended_active INTEGER NOT NULL DEFAULT 0
+            CONSTRAINT ck_templates_extended_active
+            CHECK (extended_active IN (0, 1)),
             CONSTRAINT ck_templates_kind
                 CHECK (kind IN ('standard', 'personal')),
             CONSTRAINT ck_templates_shape
@@ -700,19 +554,24 @@ MIGRATION_8_TEMPLATES = Migration(
                 FOREIGN KEY (created_by_user_id) REFERENCES users (id)
                 ON DELETE SET NULL
         )
-        """,
-        # Ровно один стандартный шаблон на место. Личные шаблоны не входят
-        # в этот частичный индекс и могут иметь одинаковые названия.
-        """
-        CREATE UNIQUE INDEX ux_templates_one_standard_place
+    """,
+    # index ux_templates_one_standard_place
+    """
+CREATE UNIQUE INDEX ux_templates_one_standard_place
             ON templates (place_id) WHERE kind = 'standard'
-        """,
-        "CREATE INDEX ix_templates_owner_kind ON templates (owner_user_id, kind)",
-        "CREATE INDEX ix_templates_place_kind ON templates (place_id, kind)",
-        # Вид и владелец шаблона неизменяемы: стандарт нельзя превратить в
-        # личный или перенести подменой place_id/owner_user_id.
-        """
-        CREATE TRIGGER trg_templates_identity_immutable
+
+    """,
+    # index ix_templates_owner_kind
+    """
+CREATE INDEX ix_templates_owner_kind ON templates (owner_user_id, kind)
+    """,
+    # index ix_templates_place_kind
+    """
+CREATE INDEX ix_templates_place_kind ON templates (place_id, kind)
+    """,
+    # trigger trg_templates_identity_immutable
+    """
+CREATE TRIGGER trg_templates_identity_immutable
         BEFORE UPDATE OF kind, place_id, owner_user_id ON templates
         FOR EACH ROW
         WHEN NEW.kind <> OLD.kind
@@ -721,21 +580,20 @@ MIGRATION_8_TEMPLATES = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'template identity is immutable');
         END
-        """,
-        # Ревизия может только расти; сервис дополнительно сравнивает её
-        # условным UPDATE, поэтому более новая версия не перезаписывается.
-        """
-        CREATE TRIGGER trg_templates_revision_increases
+    """,
+    # trigger trg_templates_revision_increases
+    """
+CREATE TRIGGER trg_templates_revision_increases
         BEFORE UPDATE OF revision ON templates
         FOR EACH ROW
         WHEN NEW.revision <= OLD.revision
         BEGIN
             SELECT RAISE(ABORT, 'template revision must increase');
         END
-        """,
-        # Стандарт нельзя физически удалить и оставить место без шаблона.
-        """
-        CREATE TRIGGER trg_templates_standard_no_delete
+    """,
+    # trigger trg_templates_standard_no_delete
+    """
+CREATE TRIGGER trg_templates_standard_no_delete
         BEFORE DELETE ON templates
         FOR EACH ROW
         WHEN OLD.kind = 'standard'
@@ -743,375 +601,20 @@ MIGRATION_8_TEMPLATES = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'standard template cannot be deleted');
         END
-        """,
-        # Версии содержат все три секции одной строкой: header/body/footer
-        # одной версии не могут быть собраны из разных сохранений.
-        """
-        CREATE TABLE template_versions (
-            id INTEGER NOT NULL PRIMARY KEY,
-            template_id INTEGER NOT NULL,
-            version INTEGER NOT NULL,
-            header TEXT NOT NULL,
-            body TEXT NOT NULL,
-            footer TEXT NOT NULL,
-            created_by_user_id INTEGER,
-            created_at DATETIME NOT NULL,
-            builtin_version INTEGER,
-            CONSTRAINT uq_template_versions_template_version
-                UNIQUE (template_id, version),
-            CONSTRAINT ck_template_versions_version CHECK (version >= 1),
-            CONSTRAINT ck_template_versions_builtin_version
-                CHECK (builtin_version IS NULL OR builtin_version >= 1),
-            CONSTRAINT ck_template_versions_not_all_empty
-                CHECK (header <> '' OR body <> '' OR footer <> ''),
-            CONSTRAINT fk_template_versions_template_id
-                FOREIGN KEY (template_id) REFERENCES templates (id)
-                ON DELETE CASCADE,
-            CONSTRAINT fk_template_versions_created_by_user_id
-                FOREIGN KEY (created_by_user_id) REFERENCES users (id)
-                ON DELETE SET NULL
-        )
-        """,
-        # История неизменяема: правка только добавляет следующую версию.
-        """
-        CREATE TRIGGER trg_template_versions_no_update
-        BEFORE UPDATE ON template_versions
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'template versions are immutable');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_template_versions_no_delete
-        BEFORE DELETE ON template_versions
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM templates WHERE id = OLD.template_id
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'template versions cannot be deleted');
-        END
-        """,
-        # Исполнимая связь — постоянный brick_id, а не повторный поиск по
-        # коду. Один кирпичик может использоваться версией один раз.
-        """
-        CREATE TABLE template_version_bricks (
-            template_version_id INTEGER NOT NULL,
-            brick_id INTEGER NOT NULL,
-            PRIMARY KEY (template_version_id, brick_id),
-            CONSTRAINT fk_template_version_bricks_version
-                FOREIGN KEY (template_version_id)
-                REFERENCES template_versions (id) ON DELETE CASCADE,
-            CONSTRAINT fk_template_version_bricks_brick
-                FOREIGN KEY (brick_id) REFERENCES bricks (id)
-                ON DELETE RESTRICT
-        )
-        """,
-        """
-        CREATE INDEX ix_template_version_bricks_brick_id
-            ON template_version_bricks (brick_id)
-        """,
-        """
-        CREATE TRIGGER trg_template_version_bricks_no_update
-        BEFORE UPDATE ON template_version_bricks
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'template bindings are immutable');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_template_version_bricks_no_delete
-        BEFORE DELETE ON template_version_bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM template_versions
-            WHERE id = OLD.template_version_id
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'template bindings cannot be deleted');
-        END
-        """,
-        # Снимок — самостоятельная копия. Составной FK фиксирует конкретную
-        # версию источника; тексты и связи копируются в собственные таблицы.
-        """
-        CREATE TABLE template_snapshots (
-            id INTEGER NOT NULL PRIMARY KEY,
-            owner_user_id INTEGER NOT NULL,
-            source_template_id INTEGER NOT NULL,
-            source_template_version INTEGER NOT NULL,
-            source_kind TEXT NOT NULL,
-            source_name TEXT,
-            source_place_id INTEGER,
-            source_owner_user_id INTEGER,
-            header TEXT NOT NULL,
-            body TEXT NOT NULL,
-            footer TEXT NOT NULL,
-            builtin_version INTEGER,
-            idempotency_key TEXT,
-            created_at DATETIME NOT NULL,
-            CONSTRAINT fk_template_snapshots_owner_user_id
-                FOREIGN KEY (owner_user_id) REFERENCES users (id)
-                ON DELETE RESTRICT,
-            CONSTRAINT fk_template_snapshots_source_version
-                FOREIGN KEY (source_template_id, source_template_version)
-                REFERENCES template_versions (template_id, version)
-                ON DELETE RESTRICT,
-            CONSTRAINT fk_template_snapshots_source_place_id
-                FOREIGN KEY (source_place_id) REFERENCES places (id)
-                ON DELETE RESTRICT,
-            CONSTRAINT fk_template_snapshots_source_owner_user_id
-                FOREIGN KEY (source_owner_user_id) REFERENCES users (id)
-                ON DELETE SET NULL,
-            CONSTRAINT ck_template_snapshots_source_kind
-                CHECK (source_kind IN ('standard', 'personal')),
-            CONSTRAINT ck_template_snapshots_source_version
-                CHECK (source_template_version >= 1),
-            CONSTRAINT ck_template_snapshots_builtin_version
-                CHECK (builtin_version IS NULL OR builtin_version >= 1),
-            CONSTRAINT ck_template_snapshots_not_all_empty
-                CHECK (header <> '' OR body <> '' OR footer <> ''),
-            CONSTRAINT ck_template_snapshots_idempotency_key
-                CHECK (
-                    idempotency_key IS NULL
-                    OR length(trim(idempotency_key)) > 0
-                )
-        )
-        """,
-        """
-        CREATE UNIQUE INDEX ux_template_snapshots_idempotency
-            ON template_snapshots (owner_user_id, idempotency_key)
-            WHERE idempotency_key IS NOT NULL
-        """,
-        """
-        CREATE INDEX ix_template_snapshots_owner_created
-            ON template_snapshots (owner_user_id, created_at)
-        """,
-        """
-        CREATE INDEX ix_template_snapshots_source
-            ON template_snapshots (source_template_id, source_template_version)
-        """,
-        # Снимок нельзя изменить или удалить: он остаётся ровно тем
-        # состоянием, которое было выбрано для черновика.
-        """
-        CREATE TRIGGER trg_template_snapshots_no_update
-        BEFORE UPDATE ON template_snapshots
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'template snapshots are immutable');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_template_snapshots_no_delete
-        BEFORE DELETE ON template_snapshots
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'template snapshots cannot be deleted');
-        END
-        """,
-        """
-        CREATE TABLE template_snapshot_bricks (
-            template_snapshot_id INTEGER NOT NULL,
-            brick_id INTEGER NOT NULL,
-            PRIMARY KEY (template_snapshot_id, brick_id),
-            CONSTRAINT fk_template_snapshot_bricks_snapshot
-                FOREIGN KEY (template_snapshot_id)
-                REFERENCES template_snapshots (id) ON DELETE CASCADE,
-            CONSTRAINT fk_template_snapshot_bricks_brick
-                FOREIGN KEY (brick_id) REFERENCES bricks (id)
-                ON DELETE RESTRICT
-        )
-        """,
-        """
-        CREATE INDEX ix_template_snapshot_bricks_brick_id
-            ON template_snapshot_bricks (brick_id)
-        """,
-        """
-        CREATE TRIGGER trg_template_snapshot_bricks_no_update
-        BEFORE UPDATE ON template_snapshot_bricks
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'snapshot bindings are immutable');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_template_snapshot_bricks_no_delete
-        BEFORE DELETE ON template_snapshot_bricks
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'snapshot bindings cannot be deleted');
-        END
-        """,
-        # Backfill существующих мест. Строки, уже имеющие стандарт, не
-        # перезаписываются; DML идемпотентен по условиям NOT EXISTS.
-        """
-        INSERT INTO templates
-            (kind, place_id, owner_user_id, name, revision,
-             created_by_user_id, created_at, updated_at)
-        SELECT
-            'standard', p.id, NULL, NULL, 1, NULL,
-            CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-        FROM places AS p
-        WHERE NOT EXISTS (
-            SELECT 1 FROM templates AS t
-            WHERE t.kind = 'standard' AND t.place_id = p.id
-        )
-        """,
-        """
-        INSERT INTO template_versions
-            (template_id, version, header, body, footer,
-             created_by_user_id, created_at, builtin_version)
-        SELECT
-            t.id, 1, '[название]',
-            '🗓 [дата]
-🕒 [время_начала] – [время_окончания]
-📍 [место]
-[адрес_места]
-
-[описание]',
-            '🔗 [ссылка_места]
-📞 [контакт]',
-            NULL, CURRENT_TIMESTAMP, 1
-        FROM templates AS t
-        WHERE t.kind = 'standard'
-          AND NOT EXISTS (
-              SELECT 1 FROM template_versions AS v
-              WHERE v.template_id = t.id AND v.version = 1
-          )
-        """,
-        """
-        INSERT INTO template_version_bricks (template_version_id, brick_id)
-        SELECT v.id, b.id
-        FROM template_versions AS v
-        JOIN templates AS t ON t.id = v.template_id
-        JOIN bricks AS b
-          ON b.id IN (1, 2, 3, 4, 5, 6, 7, 8, 9)
-         AND b.scope = 'system'
-        WHERE t.kind = 'standard'
-          AND v.version = 1
-          AND v.builtin_version = 1
-        """,
-    ),
-)
-
-# --- Версия 9: коды в привязках шаблонов (Stage 24) -------------------------
-
-MIGRATION_9_BINDING_CODES = Migration(
-    version=9,
-    name="template_binding_codes",
-    statements=(
-        # Код в привязках — мост между сохранённой версией и исполнением.
-        # Рендер восстанавливает brick_id из этих строк, не разрешая
-        # текстовый код заново: переименование кирпичика после сохранения
-        # не должно незаметно подменять значение.
-        "ALTER TABLE template_version_bricks ADD COLUMN code TEXT NOT NULL DEFAULT ''",
-        "ALTER TABLE template_snapshot_bricks ADD COLUMN code TEXT NOT NULL DEFAULT ''",
-        # Триггеры неизменяемости привязок временно снимаются: backfill
-        # заполняет код для уже существующих строк; без этого UPDATE
-        # заблокирован триггером миграции 8.
-        "DROP TRIGGER IF EXISTS trg_template_version_bricks_no_update",
-        "DROP TRIGGER IF EXISTS trg_template_version_bricks_no_delete",
-        "DROP TRIGGER IF EXISTS trg_template_snapshot_bricks_no_update",
-        "DROP TRIGGER IF EXISTS trg_template_snapshot_bricks_no_delete",
-        # Backfill: код берём из bricks по brick_id, не предполагая структуру
-        # текста. Каждая связь версии/снимка получает код своего кирпичика.
-        """
-        UPDATE template_version_bricks
-        SET code = (
-            SELECT bricks.code FROM bricks
-            WHERE bricks.id = template_version_bricks.brick_id
-        )
-        WHERE code = ''
-        """,
-        """
-        UPDATE template_snapshot_bricks
-        SET code = (
-            SELECT bricks.code FROM bricks
-            WHERE bricks.id = template_snapshot_bricks.brick_id
-        )
-        WHERE code = ''
-        """,
-        # Триггеры неизменяемости восстанавливаются после backfill.
-        """
-        CREATE TRIGGER trg_template_version_bricks_no_update
-        BEFORE UPDATE ON template_version_bricks
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'template bindings are immutable');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_template_version_bricks_no_delete
-        BEFORE DELETE ON template_version_bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM template_versions
-            WHERE id = OLD.template_version_id
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'template bindings cannot be deleted');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_template_snapshot_bricks_no_update
-        BEFORE UPDATE ON template_snapshot_bricks
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'snapshot bindings are immutable');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_template_snapshot_bricks_no_delete
-        BEFORE DELETE ON template_snapshot_bricks
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'snapshot bindings cannot be deleted');
-        END
-        """,
-        # Один код может быть привязан к одной версии ровно один раз, чтобы
-        # рендер однозначно восстанавливал brick_id по коду из сохранённой
-        # версии (без повторного разрешения кода при исполнении).
-        """
-        CREATE UNIQUE INDEX ux_template_version_bricks_version_code
-            ON template_version_bricks (template_version_id, code)
-        """,
-        """
-        CREATE UNIQUE INDEX ux_template_snapshot_bricks_snapshot_code
-            ON template_snapshot_bricks (template_snapshot_id, code)
-        """,
-    ),
-)
-
-# --- Версия 10: интерфейсное состояние редактора шаблонов (Stage 25) -------
-
-MIGRATION_10_TEMPLATE_SESSIONS = Migration(
-    version=10,
-    name="template_sessions",
-    statements=(
-        """
-        CREATE TABLE template_sessions (
+    """,
+    # table template_sessions
+    """
+CREATE TABLE template_sessions (
             telegram_user_id INTEGER NOT NULL PRIMARY KEY,
             payload TEXT NOT NULL CHECK (
                 json_valid(payload) AND json_type(payload) = 'object'
             ),
             updated_at DATETIME NOT NULL
         )
-        """,
-    ),
-)
-
-# --- Версия 11: предложения новых кирпичиков (Stage 26) ---------------------
-
-
-MIGRATION_11_BRICK_PROPOSALS = Migration(
-    version=11,
-    name="brick_proposals",
-    statements=(
-        # Снимок определения на момент отправки. `source_brick_id` — именно
-        # исходный личный кирпичик, а не будущая созданная копия. Срок
-        # действия отсутствует: pending живёт, пока автор или администратор
-        # явно не закроет предложение.
-        """
-        CREATE TABLE brick_proposals (
+    """,
+    # table brick_proposals
+    """
+CREATE TABLE brick_proposals (
             id INTEGER NOT NULL PRIMARY KEY,
             author_user_id INTEGER NOT NULL,
             scope TEXT NOT NULL,
@@ -1127,7 +630,7 @@ MIGRATION_11_BRICK_PROPOSALS = Migration(
             decided_at DATETIME,
             decided_by_user_id INTEGER,
             approved_brick_id INTEGER,
-            decision_note TEXT,
+            decision_note TEXT, description TEXT,
             CONSTRAINT ck_brick_proposals_scope
                 CHECK (scope IN ('place', 'system')),
             CONSTRAINT ck_brick_proposals_target
@@ -1200,56 +703,41 @@ MIGRATION_11_BRICK_PROPOSALS = Migration(
                 FOREIGN KEY (approved_brick_id) REFERENCES bricks (id)
                 ON DELETE RESTRICT
         )
-        """,
-        """
-        CREATE INDEX ix_brick_proposals_author_status_created
+    """,
+    # index ix_brick_proposals_author_status_created
+    """
+CREATE INDEX ix_brick_proposals_author_status_created
             ON brick_proposals (author_user_id, status, created_at)
-        """,
-        """
-        CREATE INDEX ix_brick_proposals_place_status_created
+
+    """,
+    # index ix_brick_proposals_place_status_created
+    """
+CREATE INDEX ix_brick_proposals_place_status_created
             ON brick_proposals (place_id, status, created_at)
-        """,
-        """
-        CREATE INDEX ix_brick_proposals_status_scope_created
+
+    """,
+    # index ix_brick_proposals_status_scope_created
+    """
+CREATE INDEX ix_brick_proposals_status_scope_created
             ON brick_proposals (status, scope, created_at)
-        """,
-        """
-        CREATE INDEX ix_brick_proposals_source_brick
+
+    """,
+    # index ix_brick_proposals_source_brick
+    """
+CREATE INDEX ix_brick_proposals_source_brick
             ON brick_proposals (source_brick_id)
-        """,
-        # Один одобренный кирпичик не может быть результатом двух предложений.
-        """
-        CREATE UNIQUE INDEX ux_brick_proposals_approved_brick
+
+    """,
+    # index ux_brick_proposals_approved_brick
+    """
+CREATE UNIQUE INDEX ux_brick_proposals_approved_brick
             ON brick_proposals (approved_brick_id)
             WHERE approved_brick_id IS NOT NULL
-        """,
-        # Снимок — не указатель: исходное определение можно редактировать или
-        # архивировать, но уже отправленное предложение не переписывается.
-        """
-        CREATE TRIGGER trg_brick_proposals_snapshot_immutable
-        BEFORE UPDATE OF
-            author_user_id, scope, place_id, source_brick_id, title, code,
-            type, source, rules_json, created_at
-        ON brick_proposals
-        FOR EACH ROW
-        WHEN NEW.author_user_id IS NOT OLD.author_user_id
-            OR NEW.scope IS NOT OLD.scope
-            OR NEW.place_id IS NOT OLD.place_id
-            OR NEW.source_brick_id IS NOT OLD.source_brick_id
-            OR NEW.title IS NOT OLD.title
-            OR NEW.code IS NOT OLD.code
-            OR NEW.type IS NOT OLD.type
-            OR NEW.source IS NOT OLD.source
-            OR NEW.rules_json IS NOT OLD.rules_json
-            OR NEW.created_at IS NOT OLD.created_at
-        BEGIN
-            SELECT RAISE(ABORT, 'brick proposal snapshot is immutable');
-        END
-        """,
-        # Решение принимается ровно один раз: pending → approved/rejected/
-        # withdrawn. Повторный callback не может изменить терминальный статус.
-        """
-        CREATE TRIGGER trg_brick_proposals_single_transition
+
+    """,
+    # trigger trg_brick_proposals_single_transition
+    """
+CREATE TRIGGER trg_brick_proposals_single_transition
         BEFORE UPDATE OF status ON brick_proposals
         FOR EACH ROW
         WHEN OLD.status <> 'pending'
@@ -1257,39 +745,10 @@ MIGRATION_11_BRICK_PROPOSALS = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'brick proposal decision is final');
         END
-        """,
-        # После решения поля аудита и ссылка на созданный кирпичик неизменяемы.
-        """
-        CREATE TRIGGER trg_brick_proposals_decision_immutable
-        BEFORE UPDATE ON brick_proposals
-        FOR EACH ROW
-        WHEN OLD.status <> 'pending'
-            AND (
-                NEW.status IS NOT OLD.status
-                OR NEW.decided_at IS NOT OLD.decided_at
-                OR NEW.decided_by_user_id IS NOT OLD.decided_by_user_id
-                OR NEW.approved_brick_id IS NOT OLD.approved_brick_id
-                OR NEW.decision_note IS NOT OLD.decision_note
-            )
-        BEGIN
-            SELECT RAISE(ABORT, 'brick proposal decision is immutable');
-        END
-        """,
-        # История предложений не удаляется физически; терминальные строки
-        # остаются для аудита и отображения автору.
-        """
-        CREATE TRIGGER trg_brick_proposals_no_delete
-        BEFORE DELETE ON brick_proposals
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'brick proposal history cannot be deleted');
-        END
-        """,
-        # Источник — действующий личный кирпичик именно этого автора. После
-        # отправки его можно архивировать/редактировать: триггер проверяет
-        # только INSERT, а снимок уже зафиксирован.
-        """
-        CREATE TRIGGER trg_brick_proposals_source_owner
+    """,
+    # trigger trg_brick_proposals_source_owner
+    """
+CREATE TRIGGER trg_brick_proposals_source_owner
         BEFORE INSERT ON brick_proposals
         FOR EACH ROW
         WHEN NOT EXISTS (
@@ -1302,206 +761,10 @@ MIGRATION_11_BRICK_PROPOSALS = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'brick proposal source must be an active personal brick');
         END
-        """,
-        # Одобрение обязано ссылаться на реально созданный отдельный кирпичик
-        # той же области/места и того же снимка. Исходный личный кирпичик
-        # одобрить вместо копии нельзя.
-        """
-        CREATE TRIGGER trg_brick_proposals_approval_link
-        BEFORE UPDATE OF status, approved_brick_id ON brick_proposals
-        FOR EACH ROW
-        WHEN NEW.status = 'approved' AND NOT EXISTS (
-            SELECT 1 FROM bricks b
-            WHERE b.id = NEW.approved_brick_id
-              AND b.id <> OLD.source_brick_id
-              AND b.status = 'active'
-              AND b.scope = NEW.scope
-              AND b.place_id IS NEW.place_id
-              AND b.owner_user_id IS NULL
-              AND b.code = NEW.code
-              AND b.title = NEW.title
-              AND b.type = NEW.type
-              AND b.source = NEW.source
-              AND b.rules_json IS NEW.rules_json
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'approved brick does not match proposal');
-        END
-        """,
-        # Узкое исключение для продвижения личного кода в системный.
-        #
-        # Общее правило Stage 22A («системный и несистемный код не
-        # сосуществуют») остаётся: прямой INSERT системного кирпичика с кодом
-        # личного по-прежнему запрещён. Исключение действует только в момент
-        # одобрения глобального предложения: существует ровно один несистемный
-        # носитель кода — исходный личный кирпичик, и pending-снимок полностью
-        # совпадает с вставляемым системным кирпичиком. Так требование «не
-        # менять исходный личный кирпичик» не нарушается, а код становится
-        # системным для всех будущих определений.
-        "DROP TRIGGER trg_bricks_reserve_codes_insert",
-        """
-        CREATE TRIGGER trg_bricks_reserve_codes_insert
-        BEFORE INSERT ON bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM bricks b
-            WHERE b.code = NEW.code
-              AND (
-                  (NEW.scope = 'system' AND b.scope <> 'system')
-                  OR (NEW.scope <> 'system' AND b.scope = 'system')
-              )
-        )
-        AND NOT (
-            NEW.scope = 'system'
-            AND EXISTS (
-                SELECT 1
-                FROM brick_proposals p
-                JOIN bricks src ON src.id = p.source_brick_id
-                WHERE p.scope = 'system'
-                  AND p.status = 'pending'
-                  AND p.code = NEW.code
-                  AND p.title = NEW.title
-                  AND p.type = NEW.type
-                  AND p.source = NEW.source
-                  AND p.rules_json IS NEW.rules_json
-                  AND src.code = NEW.code
-                  AND (
-                      SELECT count(*) FROM bricks b2
-                      WHERE b2.code = NEW.code AND b2.scope <> 'system'
-                  ) = 1
-            )
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'system brick code is reserved');
-        END
-        """,
-        # Продвинутый личный кирпичик сохраняет свой код, поэтому обычное
-        # редактирование названия/настроек не должно упираться в системный
-        # дубль. Разрешаем UPDATE только при неизменных коде и области
-        # несистемного кирпичика; смена кода на системный по-прежнему
-        # запрещена.
-        "DROP TRIGGER trg_bricks_reserve_codes_update",
-        """
-        CREATE TRIGGER trg_bricks_reserve_codes_update
-        BEFORE UPDATE OF code, scope ON bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM bricks b
-            WHERE b.id <> OLD.id
-              AND b.code = NEW.code
-              AND (
-                  (NEW.scope = 'system' AND b.scope <> 'system')
-                  OR (NEW.scope <> 'system' AND b.scope = 'system')
-              )
-        )
-        AND NOT (
-            NEW.scope = OLD.scope
-            AND NEW.scope <> 'system'
-            AND NEW.code = OLD.code
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'system brick code is reserved');
-        END
-        """,
-    ),
-)
-
-
-# --- Версия 12: состояние адаптивного мастера анонсов (Stage 27A) ----------
-
-
-MIGRATION_12_ANNOUNCEMENT_WIZARD = Migration(
-    version=12,
-    name="announcement_wizard",
-    statements=(
-        # Незавершённый анонс нового мастера. Хранится отдельно от легаси
-        # `drafts`/`user_states`: старый WIP не конвертируется и не меняется.
-        # place_* — снимок выбранного места на момент подтверждения; NULL
-        # означает отсутствующее значение, а не пустую строку/заглушку.
-        """
-        CREATE TABLE announcement_drafts (
-            id INTEGER NOT NULL PRIMARY KEY,
-            author_user_id INTEGER NOT NULL,
-            place_id INTEGER NOT NULL,
-            place_name_id INTEGER,
-            place_display_name TEXT NOT NULL,
-            place_address TEXT,
-            place_url TEXT,
-            template_id INTEGER,
-            template_version INTEGER,
-            template_snapshot_id INTEGER,
-            stage TEXT NOT NULL DEFAULT 'place',
-            revision INTEGER NOT NULL DEFAULT 1,
-            idempotency_key TEXT,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            CONSTRAINT ck_announcement_drafts_stage
-                CHECK (stage IN (
-                    'place', 'template', 'questions', 'extras',
-                    'preview', 'completed'
-                )),
-            CONSTRAINT ck_announcement_drafts_revision
-                CHECK (revision >= 1),
-            CONSTRAINT ck_announcement_drafts_display_name
-                CHECK (length(trim(place_display_name)) > 0),
-            CONSTRAINT ck_announcement_drafts_address
-                CHECK (place_address IS NULL OR length(trim(place_address)) > 0),
-            CONSTRAINT ck_announcement_drafts_url
-                CHECK (place_url IS NULL OR length(trim(place_url)) > 0),
-            CONSTRAINT ck_announcement_drafts_idempotency
-                CHECK (
-                    idempotency_key IS NULL
-                    OR length(trim(idempotency_key)) > 0
-                ),
-            CONSTRAINT ck_announcement_drafts_template_shape
-                CHECK (
-                    (template_id IS NULL
-                        AND template_version IS NULL
-                        AND template_snapshot_id IS NULL)
-                    OR (template_id IS NOT NULL
-                        AND template_version IS NOT NULL
-                        AND template_version >= 1
-                        AND template_snapshot_id IS NOT NULL)
-                ),
-            CONSTRAINT fk_announcement_drafts_author
-                FOREIGN KEY (author_user_id) REFERENCES users (id)
-                ON DELETE RESTRICT,
-            CONSTRAINT fk_announcement_drafts_place
-                FOREIGN KEY (place_id) REFERENCES places (id)
-                ON DELETE RESTRICT,
-            CONSTRAINT fk_announcement_drafts_place_name
-                FOREIGN KEY (place_name_id) REFERENCES place_names (id)
-                ON DELETE SET NULL,
-            CONSTRAINT fk_announcement_drafts_template
-                FOREIGN KEY (template_id) REFERENCES templates (id)
-                ON DELETE RESTRICT,
-            CONSTRAINT fk_announcement_drafts_snapshot
-                FOREIGN KEY (template_snapshot_id) REFERENCES template_snapshots (id)
-                ON DELETE RESTRICT
-        )
-        """,
-        """
-        CREATE INDEX ix_announcement_drafts_author_updated
-            ON announcement_drafts (author_user_id, updated_at)
-        """,
-        # Один снимок принадлежит ровно одному анонсу: живая версия шаблона
-        # и чужой черновик не могут использовать его повторно.
-        """
-        CREATE UNIQUE INDEX ux_announcement_drafts_snapshot
-            ON announcement_drafts (template_snapshot_id)
-            WHERE template_snapshot_id IS NOT NULL
-        """,
-        """
-        CREATE UNIQUE INDEX ux_announcement_drafts_idempotency
-            ON announcement_drafts (author_user_id, idempotency_key)
-            WHERE idempotency_key IS NOT NULL
-        """,
-        # Значение конкретного анонса. Определение кирпичика остаётся в
-        # `bricks`; здесь только постоянный brick_id и нормализованный payload.
-        # Отсутствие строки — «значение не задано»; state='empty_optional' —
-        # явно допустимое пустое значение (разные состояния мастера).
-        """
-        CREATE TABLE announcement_values (
+    """,
+    # table announcement_values
+    """
+CREATE TABLE announcement_values (
             id INTEGER NOT NULL PRIMARY KEY,
             draft_id INTEGER NOT NULL,
             brick_id INTEGER NOT NULL,
@@ -1528,518 +791,17 @@ MIGRATION_12_ANNOUNCEMENT_WIZARD = Migration(
             CONSTRAINT uq_announcement_values_draft_brick
                 UNIQUE (draft_id, brick_id)
         )
-        """,
-        """
-        CREATE INDEX ix_announcement_values_brick
+    """,
+    # sqlite_autoindex_announcement_values_1: автоматический индекс ограничения таблицы
+    # index ix_announcement_values_brick
+    """
+CREATE INDEX ix_announcement_values_brick
             ON announcement_values (brick_id)
-        """,
-        # Дополнительный кирпичик существует только в этом анонсе. Секция и
-        # позиция задают вставку, occurrence оставлен для будущих повторяемых
-        # экземпляров; Stage 27A создаёт occurrence=1.
-        """
-        CREATE TABLE announcement_extras (
-            id INTEGER NOT NULL PRIMARY KEY,
-            draft_id INTEGER NOT NULL,
-            brick_id INTEGER NOT NULL,
-            section TEXT NOT NULL,
-            position TEXT NOT NULL DEFAULT 'end',
-            occurrence INTEGER NOT NULL DEFAULT 1,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            CONSTRAINT ck_announcement_extras_section
-                CHECK (section IN ('header', 'body', 'footer')),
-            CONSTRAINT ck_announcement_extras_position
-                CHECK (position IN ('start', 'end')),
-            CONSTRAINT ck_announcement_extras_occurrence
-                CHECK (occurrence >= 1),
-            CONSTRAINT fk_announcement_extras_draft
-                FOREIGN KEY (draft_id) REFERENCES announcement_drafts (id)
-                ON DELETE CASCADE,
-            CONSTRAINT fk_announcement_extras_brick
-                FOREIGN KEY (brick_id) REFERENCES bricks (id)
-                ON DELETE RESTRICT,
-            CONSTRAINT uq_announcement_extras_draft_brick_occurrence
-                UNIQUE (draft_id, brick_id, occurrence)
-        )
-        """,
-        """
-        CREATE INDEX ix_announcement_extras_draft
-            ON announcement_extras (draft_id)
-        """,
-        """
-        CREATE INDEX ix_announcement_extras_brick
-            ON announcement_extras (brick_id)
-        """,
-        # Ревизия растёт только сервисом: условный UPDATE ... WHERE revision
-        # остаётся настоящей optimistic locking даже при прямом SQL.
-        """
-        CREATE TRIGGER trg_announcement_drafts_revision_increases
-        BEFORE UPDATE OF revision ON announcement_drafts
-        FOR EACH ROW
-        WHEN NEW.revision <= OLD.revision
-        BEGIN
-            SELECT RAISE(ABORT, 'announcement draft revision must increase');
-        END
-        """,
-        # Автор, место и ключ идемпотентности не переписываются: подмена ID
-        # не превращает чужой анонс в свой и не меняет выбранное место.
-        """
-        CREATE TRIGGER trg_announcement_drafts_identity_immutable
-        BEFORE UPDATE OF author_user_id, place_id, idempotency_key, created_at
-        ON announcement_drafts
-        FOR EACH ROW
-        WHEN NEW.author_user_id IS NOT OLD.author_user_id
-            OR NEW.place_id IS NOT OLD.place_id
-            OR NEW.idempotency_key IS NOT OLD.idempotency_key
-            OR NEW.created_at IS NOT OLD.created_at
-        BEGIN
-            SELECT RAISE(ABORT, 'announcement draft identity is immutable');
-        END
-        """,
-        # Однажды выбранный snapshot шаблона нельзя подменить: правка живого
-        # шаблона или повторный выбор не переписывают начатый анонс.
-        """
-        CREATE TRIGGER trg_announcement_drafts_template_immutable
-        BEFORE UPDATE OF template_id, template_version, template_snapshot_id
-        ON announcement_drafts
-        FOR EACH ROW
-        WHEN OLD.template_snapshot_id IS NOT NULL
-            AND (
-                NEW.template_id IS NOT OLD.template_id
-                OR NEW.template_version IS NOT OLD.template_version
-                OR NEW.template_snapshot_id IS NOT OLD.template_snapshot_id
-            )
-        BEGIN
-            SELECT RAISE(ABORT, 'announcement template snapshot is immutable');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_values_identity_immutable
-        BEFORE UPDATE OF draft_id, brick_id, created_at ON announcement_values
-        FOR EACH ROW
-        WHEN NEW.draft_id IS NOT OLD.draft_id
-            OR NEW.brick_id IS NOT OLD.brick_id
-            OR NEW.created_at IS NOT OLD.created_at
-        BEGIN
-            SELECT RAISE(ABORT, 'announcement value identity is immutable');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_extras_identity_immutable
-        BEFORE UPDATE OF draft_id, brick_id, occurrence, created_at
-        ON announcement_extras
-        FOR EACH ROW
-        WHEN NEW.draft_id IS NOT OLD.draft_id
-            OR NEW.brick_id IS NOT OLD.brick_id
-            OR NEW.occurrence IS NOT OLD.occurrence
-            OR NEW.created_at IS NOT OLD.created_at
-        BEGIN
-            SELECT RAISE(ABORT, 'announcement extra identity is immutable');
-        END
-        """,
-    ),
-)
 
-
-# --- Версия 13: фото и публикация нового мастера (Stage 27C) ----------------
-
-
-MIGRATION_13_ANNOUNCEMENT_PUBLICATION = Migration(
-    version=13,
-    name="announcement_photos_publication",
-    statements=(
-        # Фотографии — отдельная коллекция вложений анонса, а не кирпичики
-        # и не часть HTML-текста. NULL/[] означают «фотографий нет».
-        "ALTER TABLE announcement_drafts ADD COLUMN photos TEXT",
-        # Замороженный payload публикации. Пока статус не начат, все поля
-        # NULL. После начала отправки текст/фото больше не пересобираются.
-        "ALTER TABLE announcement_drafts ADD COLUMN publication_status TEXT",
-        "ALTER TABLE announcement_drafts ADD COLUMN publication_text TEXT",
-        "ALTER TABLE announcement_drafts ADD COLUMN publication_photos TEXT",
-        "ALTER TABLE announcement_drafts ADD COLUMN publication_progress TEXT",
-        "ALTER TABLE announcement_drafts ADD COLUMN publication_error TEXT",
-        "ALTER TABLE announcement_drafts ADD COLUMN publication_started_at DATETIME",
-        "ALTER TABLE announcement_drafts ADD COLUMN published_at DATETIME",
-        """
-        CREATE INDEX ix_announcement_drafts_publication_status
-            ON announcement_drafts (publication_status)
-        """,
-        # JSON-проверки для фото/прогресса: ALTER TABLE в SQLite не умеет
-        # добавлять CHECK, поэтому те же ограничения держат триггеры.
-        """
-        CREATE TRIGGER trg_announcement_drafts_media_json_insert
-        BEFORE INSERT ON announcement_drafts
-        FOR EACH ROW
-        WHEN (NEW.photos IS NOT NULL AND (
-                json_valid(NEW.photos) = 0
-                OR CASE WHEN json_valid(NEW.photos) = 1
-                        THEN json_type(NEW.photos) END <> 'array'
-            ))
-            OR (NEW.publication_photos IS NOT NULL AND (
-                json_valid(NEW.publication_photos) = 0
-                OR CASE WHEN json_valid(NEW.publication_photos) = 1
-                        THEN json_type(NEW.publication_photos) END <> 'array'
-            ))
-            OR (NEW.publication_progress IS NOT NULL AND (
-                json_valid(NEW.publication_progress) = 0
-                OR CASE WHEN json_valid(NEW.publication_progress) = 1
-                        THEN json_type(NEW.publication_progress) END <> 'object'
-            ))
-        BEGIN
-            SELECT RAISE(ABORT, 'announcement media must be valid JSON');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_drafts_media_json_update
-        BEFORE UPDATE OF photos, publication_photos, publication_progress
-        ON announcement_drafts
-        FOR EACH ROW
-        WHEN (NEW.photos IS NOT NULL AND (
-                json_valid(NEW.photos) = 0
-                OR CASE WHEN json_valid(NEW.photos) = 1
-                        THEN json_type(NEW.photos) END <> 'array'
-            ))
-            OR (NEW.publication_photos IS NOT NULL AND (
-                json_valid(NEW.publication_photos) = 0
-                OR CASE WHEN json_valid(NEW.publication_photos) = 1
-                        THEN json_type(NEW.publication_photos) END <> 'array'
-            ))
-            OR (NEW.publication_progress IS NOT NULL AND (
-                json_valid(NEW.publication_progress) = 0
-                OR CASE WHEN json_valid(NEW.publication_progress) = 1
-                        THEN json_type(NEW.publication_progress) END <> 'object'
-            ))
-        BEGIN
-            SELECT RAISE(ABORT, 'announcement media must be valid JSON');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_drafts_publication_status_insert
-        BEFORE INSERT ON announcement_drafts
-        FOR EACH ROW
-        WHEN NEW.publication_status IS NOT NULL
-            AND NEW.publication_status NOT IN
-                ('sending', 'partial', 'failed', 'sent')
-        BEGIN
-            SELECT RAISE(ABORT, 'unknown announcement publication status');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_drafts_publication_status_update
-        BEFORE UPDATE OF publication_status ON announcement_drafts
-        FOR EACH ROW
-        WHEN NEW.publication_status IS NOT NULL
-            AND NEW.publication_status NOT IN
-                ('sending', 'partial', 'failed', 'sent')
-        BEGIN
-            SELECT RAISE(ABORT, 'unknown announcement publication status');
-        END
-        """,
-        # Форма публикационных полей: начатая публикация всегда имеет
-        # замороженный текст и список фото; успешная — время подтверждения.
-        # Сброс к редактированию разрешён только в полностью пустое состояние.
-        """
-        CREATE TRIGGER trg_announcement_drafts_publication_shape_insert
-        BEFORE INSERT ON announcement_drafts
-        FOR EACH ROW
-        WHEN (
-            NEW.publication_status IS NULL
-            AND (
-                NEW.publication_text IS NOT NULL
-                OR NEW.publication_photos IS NOT NULL
-                OR NEW.publication_progress IS NOT NULL
-                OR NEW.publication_error IS NOT NULL
-                OR NEW.publication_started_at IS NOT NULL
-                OR NEW.published_at IS NOT NULL
-            )
-        ) OR (
-            NEW.publication_status IS NOT NULL
-            AND (
-                NEW.publication_text IS NULL
-                OR length(trim(NEW.publication_text)) = 0
-                OR NEW.publication_photos IS NULL
-                OR NEW.publication_started_at IS NULL
-                OR (
-                    NEW.publication_status IN ('sending', 'partial', 'failed')
-                    AND NEW.published_at IS NOT NULL
-                )
-                OR (
-                    NEW.publication_status = 'sent'
-                    AND NEW.published_at IS NULL
-                )
-            )
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'invalid announcement publication shape');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_drafts_publication_shape
-        BEFORE UPDATE OF
-            publication_status, publication_text, publication_photos,
-            publication_progress, publication_error,
-            publication_started_at, published_at
-        ON announcement_drafts
-        FOR EACH ROW
-        WHEN (
-            NEW.publication_status IS NULL
-            AND (
-                NEW.publication_text IS NOT NULL
-                OR NEW.publication_photos IS NOT NULL
-                OR NEW.publication_progress IS NOT NULL
-                OR NEW.publication_error IS NOT NULL
-                OR NEW.publication_started_at IS NOT NULL
-                OR NEW.published_at IS NOT NULL
-            )
-        ) OR (
-            NEW.publication_status IS NOT NULL
-            AND (
-                NEW.publication_text IS NULL
-                OR length(trim(NEW.publication_text)) = 0
-                OR NEW.publication_photos IS NULL
-                OR NEW.publication_started_at IS NULL
-                OR (
-                    NEW.publication_status IN ('sending', 'partial', 'failed')
-                    AND NEW.published_at IS NOT NULL
-                )
-                OR (
-                    NEW.publication_status = 'sent'
-                    AND NEW.published_at IS NULL
-                )
-            )
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'invalid announcement publication shape');
-        END
-        """,
-        # Подтверждённо отправленный анонс нельзя вернуть в отправку или
-        # подменить его payload: повторная публикация не создаёт дубль.
-        """
-        CREATE TRIGGER trg_announcement_drafts_published_immutable
-        BEFORE UPDATE OF
-            publication_status, publication_text, publication_photos,
-            publication_progress, publication_error,
-            publication_started_at, published_at
-        ON announcement_drafts
-        FOR EACH ROW
-        WHEN OLD.publication_status = 'sent'
-            AND (
-                NEW.publication_status IS NOT OLD.publication_status
-                OR NEW.publication_text IS NOT OLD.publication_text
-                OR NEW.publication_photos IS NOT OLD.publication_photos
-                OR NEW.publication_progress IS NOT OLD.publication_progress
-                OR NEW.publication_error IS NOT OLD.publication_error
-                OR NEW.publication_started_at IS NOT OLD.publication_started_at
-                OR NEW.published_at IS NOT OLD.published_at
-            )
-        BEGIN
-            SELECT RAISE(ABORT, 'announcement is already published');
-        END
-        """,
-    ),
-)
-
-
-# --- Версия 14: правка доставленного анонса (Stage 28) ----------------------
-#
-# Готовый анонс теперь автоматически выдаётся в личный чат автора, а после
-# правки данных заменяется новой версией. Миграция НЕ меняет схему данных:
-# адреса уже доставленных сообщений и отпечаток содержимого живут в
-# `publication_progress` (ключи `ids`/`fingerprint`), время — в `published_at`.
-# Единственное изменение — разрешить ровно один проверяемый переход
-# `sent -> sending` (новая заморозка того же анонса). Миграции 1–13 не
-# меняются; DDL выполняется в общей транзакции `run_migrations`.
-
-MIGRATION_14_ANNOUNCEMENT_REDELIVERY = Migration(
-    version=14,
-    name="announcement_redelivery",
-    statements=(
-        "DROP TRIGGER trg_announcement_drafts_published_immutable",
-        # Переход из `sent` возможен только в `sending` и только с явным
-        # переносом прошлых message_id в `previous_ids`: адреса прежней
-        # версии нельзя потерять (иначе её не заменить и не удалить) и нельзя
-        # выдать за адреса новой отправки. Всё остальное (правка payload
-        # идущей отправки, `sent -> failed`, повторный `sent`) по-прежнему
-        # запрещено. Прежний payload при этом перезаписывается — это не
-        # неизменяемая история, а последняя доставленная версия.
-        """
-        CREATE TRIGGER trg_announcement_drafts_published_immutable
-        BEFORE UPDATE OF
-            publication_status, publication_text, publication_photos,
-            publication_progress, publication_error,
-            publication_started_at, published_at
-        ON announcement_drafts
-        FOR EACH ROW
-        WHEN OLD.publication_status = 'sent'
-            AND NOT (
-                NEW.publication_status = 'sending'
-                AND NEW.published_at IS NULL
-                AND NEW.publication_started_at IS NOT NULL
-                AND NEW.publication_text IS NOT NULL
-                AND length(trim(NEW.publication_text)) > 0
-                AND NEW.publication_photos IS NOT NULL
-                AND NEW.publication_error IS NULL
-                AND NEW.publication_progress IS NOT NULL
-                AND (NEW.publication_progress -> '$.previous_ids')
-                    IS (OLD.publication_progress -> '$.ids')
-            )
-        BEGIN
-            SELECT RAISE(ABORT, 'announcement already delivered');
-        END
-        """,
-    ),
-)
-
-
-# --- Версия 15: описание кирпичика и системный код `адрес` (Poster 2.0 S1) --
-#
-# Новый системный кирпичик `[адрес]` — пользовательский код эталона Poster
-# 2.0. Старый `адрес_места` (id=6) НЕ переименовывается и не удаляется: он
-# остаётся в уже сохранённых снимках и шаблонах. Оба кирпичика берут значение
-# из `places.address`.
-#
-# `description` — необязательное пояснение автора кирпичика (NULL = нет
-# описания). Колонка добавляется добавочным ALTER TABLE: существующие строки
-# и триггеры миграции 6 не затрагиваются.
-#
-# Коллизия кода `адрес` (дефект найден независимым тестировщиком S1). До
-# Poster 2.0 кода `адрес` в `SYSTEM_BRICK_CODES` не было, поэтому в работающей
-# базе версии 14 уже мог существовать личный или местный кирпичик с этим
-# кодом — активный или архивный. Триггер `trg_bricks_reserve_codes_insert`
-# запрещает сосуществование системного и несистемного кода, поэтому обычный
-# INSERT системного `адрес` падал с `system brick code is reserved` и блокировал
-# обновление приложения целиком.
-#
-# Решение: на время одной вставки триггер резервирования снимается и сразу
-# восстанавливается дословно тем же определением, что действует после
-# миграции 11 (включая исключение Stage 26 для одобрения предложения). DDL и
-# DML выполняются одной транзакцией `run_migrations`, поэтому окна без
-# триггера для других писателей нет.
-#
-# Легаси-кирпичик при этом НЕ переписывается: его `id`, код, название, тип,
-# область, статус и владелец остаются прежними. Сохранённые версии и снимки
-# ссылаются на `brick_id`, а не на код, поэтому старые шаблоны продолжают
-# рендериться. Сосуществование системного и несистемного носителя одного кода
-# уже допущено проектом в Stage 26 («повышенный» личный кирпичик сохраняет
-# свой код рядом с системным), и разбор кода сохраняет тот же приоритет:
-# `resolve_brick_code_*` отдаёт system, поэтому новые `[адрес]` указывают на
-# системный кирпичик, а `check_code_availability` считает код занятым для
-# новых определений. Для уже существующей строки владелец по-прежнему может
-# менять название/настройки, не меняя код (см. `check_code_availability`:
-# исключение «собственный неизменный код» действует и при `system_reserved`).
-#
-# Инвариант для будущих записей не ослаблен: восстановленный триггер идентичен
-# действовавшему, и никакой новый системный код не может быть создан поверх
-# несистемного.
-
-# Дословное определение `trg_bricks_reserve_codes_insert` из миграции 11.
-# Хранится отдельной константой, чтобы миграция 15 восстанавливала ровно то
-# состояние, которое сменила, и не зависела от форматирования.
-_RESERVE_CODES_INSERT_TRIGGER = """
-        CREATE TRIGGER trg_bricks_reserve_codes_insert
-        BEFORE INSERT ON bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM bricks b
-            WHERE b.code = NEW.code
-              AND (
-                  (NEW.scope = 'system' AND b.scope <> 'system')
-                  OR (NEW.scope <> 'system' AND b.scope = 'system')
-              )
-        )
-        AND NOT (
-            NEW.scope = 'system'
-            AND EXISTS (
-                SELECT 1
-                FROM brick_proposals p
-                JOIN bricks src ON src.id = p.source_brick_id
-                WHERE p.scope = 'system'
-                  AND p.status = 'pending'
-                  AND p.code = NEW.code
-                  AND p.title = NEW.title
-                  AND p.type = NEW.type
-                  AND p.source = NEW.source
-                  AND p.rules_json IS NEW.rules_json
-                  AND src.code = NEW.code
-                  AND (
-                      SELECT count(*) FROM bricks b2
-                      WHERE b2.code = NEW.code AND b2.scope <> 'system'
-                  ) = 1
-            )
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'system brick code is reserved');
-        END
-        """
-
-MIGRATION_15_BRICK_DESCRIPTION_AND_ADDRESS = Migration(
-    version=15,
-    name="brick_description_and_address",
-    statements=(
-        "ALTER TABLE bricks ADD COLUMN description TEXT",
-        # Временное снятие триггера резервирования: без него вставка системного
-        # `адрес` невозможна в базе, где код уже занят несистемным кирпичиком.
-        "DROP TRIGGER IF EXISTS trg_bricks_reserve_codes_insert",
-        # Системный код `[адрес]` (Poster 2.0). ID не хардкодится: миграция 6
-        # создала таблицу без резерва ID, поэтому пользовательские/местные
-        # кирпичики в существующей базе могли занять 10 и далее, и жёсткий
-        # `id=10` даёт UNIQUE constraint failed. Системность задаётся
-        # `scope='system'` и неизменяемостью кода (триггеры миграции 6), а
-        # каталог `SYSTEM_BRICKS[].id` сверяется с БД по коду при чтении, не
-        # по номеру. `MAX(id)+1` сохраняет все прежние ID без изменений.
-        """
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at, description)
-        SELECT
-            COALESCE(MAX(id), 0) + 1, 'адрес', 'Адрес', 'short_text',
-            'system', 'place', NULL, 'active', NULL, CURRENT_TIMESTAMP,
-            NULL, NULL
-        FROM bricks
-        """,
-        _RESERVE_CODES_INSERT_TRIGGER,
-    ),
-)
-
-
-# --- Версия 16: черновик без площадки (Poster 2.0 S1) -----------------------
-#
-# Личный шаблон может не содержать кирпичика «Место», поэтому
-# `announcement_drafts.place_id` и снимок названия места становятся
-# необязательными. `origin` фиксирует источник шаблона (place/personal), а не
-# место, выбранное позже в кирпичике. `live_message_ids_json` хранит адреса
-# всех сообщений живого медиаблока (мультимедиа — несколько сообщений).
-#
-# SQLite не умеет снимать NOT NULL/CHECK через ALTER TABLE, поэтому таблица
-# перестраивается. `PRAGMA foreign_keys=OFF` внутри транзакции
-# `run_migrations` — no-op, поэтому используется безопасная схема с копиями:
-# DROP TABLE при включённых FK делает неявный DELETE и каскадно удаляет
-# детей, но их строки уже сохранены в *_backup. Порядок шагов:
-#   1-3) копии детей и черновиков;
-#   4)   DROP старой таблицы (каскад удаляет детей);
-#   5)   новая схема;
-#   6)   индексы и триггеры (до вставки, чтобы вставка проверила данные);
-#   7)   черновики с origin='place';
-#   8)   значения и дополнительные кирпичики;
-#   9)   удаление копий.
-# Всё выполняется одной транзакцией: сбой любого шага откатывает миграцию.
-
-MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
-    version=16,
-    name="announcement_draft_origin",
-    statements=(
-        "CREATE TABLE announcement_values_backup AS SELECT * FROM announcement_values",
-        "CREATE TABLE announcement_extras_backup AS SELECT * FROM announcement_extras",
-        "CREATE TABLE announcement_drafts_backup AS SELECT * FROM announcement_drafts",
-        # Каскадное удаление детей — ожидаемо: их строки уже в *_backup.
-        "DROP TABLE announcement_drafts",
-        # Триггеры детей принадлежат их собственным таблицам: DROP родителя
-        # их не снимает, а имена заняты. Сами таблицы и данные (в *_backup)
-        # не меняются — снимаем только триггеры, чтобы пересоздать их ниже.
-        "DROP TRIGGER IF EXISTS trg_announcement_values_identity_immutable",
-        "DROP TRIGGER IF EXISTS trg_announcement_extras_identity_immutable",
-        """
-        CREATE TABLE announcement_drafts (
+    """,
+    # table announcement_drafts
+    """
+CREATE TABLE announcement_drafts (
             id INTEGER NOT NULL PRIMARY KEY,
             author_user_id INTEGER NOT NULL,
             place_id INTEGER,
@@ -2064,7 +826,9 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
             published_at DATETIME,
             live_message_ids_json TEXT,
             created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL, place_city TEXT
+            CONSTRAINT ck_announcement_drafts_city
+            CHECK (place_city IS NULL OR length(trim(place_city)) > 0),
             CONSTRAINT ck_announcement_drafts_stage
                 CHECK (stage IN (
                     'place', 'template', 'questions', 'extras',
@@ -2125,39 +889,46 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
                 FOREIGN KEY (template_snapshot_id) REFERENCES template_snapshots (id)
                 ON DELETE RESTRICT
         )
-        """,
-        """
-        CREATE INDEX ix_announcement_drafts_author_updated
+    """,
+    # index ix_announcement_drafts_author_updated
+    """
+CREATE INDEX ix_announcement_drafts_author_updated
             ON announcement_drafts (author_user_id, updated_at)
-        """,
-        """
-        CREATE UNIQUE INDEX ux_announcement_drafts_snapshot
+
+    """,
+    # index ux_announcement_drafts_snapshot
+    """
+CREATE UNIQUE INDEX ux_announcement_drafts_snapshot
             ON announcement_drafts (template_snapshot_id)
             WHERE template_snapshot_id IS NOT NULL
-        """,
-        """
-        CREATE UNIQUE INDEX ux_announcement_drafts_idempotency
+
+    """,
+    # index ux_announcement_drafts_idempotency
+    """
+CREATE UNIQUE INDEX ux_announcement_drafts_idempotency
             ON announcement_drafts (author_user_id, idempotency_key)
             WHERE idempotency_key IS NOT NULL
-        """,
-        """
-        CREATE INDEX ix_announcement_drafts_publication_status
+
+    """,
+    # index ix_announcement_drafts_publication_status
+    """
+CREATE INDEX ix_announcement_drafts_publication_status
             ON announcement_drafts (publication_status)
-        """,
-        # --- Триггеры: копия миграций 12-14 плюс неизменяемость origin ------
-        """
-        CREATE TRIGGER trg_announcement_drafts_revision_increases
+
+    """,
+    # trigger trg_announcement_drafts_revision_increases
+    """
+CREATE TRIGGER trg_announcement_drafts_revision_increases
         BEFORE UPDATE OF revision ON announcement_drafts
         FOR EACH ROW
         WHEN NEW.revision <= OLD.revision
         BEGIN
             SELECT RAISE(ABORT, 'announcement draft revision must increase');
         END
-        """,
-        # Источник шаблона тоже неизменяем: personal-черновик нельзя выдать за
-        # анонс площадки (и наоборот) подменой одной колонки.
-        """
-        CREATE TRIGGER trg_announcement_drafts_identity_immutable
+    """,
+    # trigger trg_announcement_drafts_identity_immutable
+    """
+CREATE TRIGGER trg_announcement_drafts_identity_immutable
         BEFORE UPDATE OF
             author_user_id, place_id, idempotency_key, created_at, origin
         ON announcement_drafts
@@ -2170,9 +941,10 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'announcement draft identity is immutable');
         END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_drafts_template_immutable
+    """,
+    # trigger trg_announcement_drafts_template_immutable
+    """
+CREATE TRIGGER trg_announcement_drafts_template_immutable
         BEFORE UPDATE OF template_id, template_version, template_snapshot_id
         ON announcement_drafts
         FOR EACH ROW
@@ -2185,9 +957,10 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'announcement template snapshot is immutable');
         END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_values_identity_immutable
+    """,
+    # trigger trg_announcement_values_identity_immutable
+    """
+CREATE TRIGGER trg_announcement_values_identity_immutable
         BEFORE UPDATE OF draft_id, brick_id, created_at ON announcement_values
         FOR EACH ROW
         WHEN NEW.draft_id IS NOT OLD.draft_id
@@ -2196,24 +969,10 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'announcement value identity is immutable');
         END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_extras_identity_immutable
-        BEFORE UPDATE OF draft_id, brick_id, occurrence, created_at
-        ON announcement_extras
-        FOR EACH ROW
-        WHEN NEW.draft_id IS NOT OLD.draft_id
-            OR NEW.brick_id IS NOT OLD.brick_id
-            OR NEW.occurrence IS NOT OLD.occurrence
-            OR NEW.created_at IS NOT OLD.created_at
-        BEGIN
-            SELECT RAISE(ABORT, 'announcement extra identity is immutable');
-        END
-        """,
-        # JSON-ограничения фото/прогресса (миграция 13): CHECK на ALTER TABLE
-        # в SQLite не добавить, поэтому те же правила держат триггеры.
-        """
-        CREATE TRIGGER trg_announcement_drafts_media_json_insert
+    """,
+    # trigger trg_announcement_drafts_media_json_insert
+    """
+CREATE TRIGGER trg_announcement_drafts_media_json_insert
         BEFORE INSERT ON announcement_drafts
         FOR EACH ROW
         WHEN (NEW.photos IS NOT NULL AND (
@@ -2234,9 +993,10 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'announcement media must be valid JSON');
         END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_drafts_media_json_update
+    """,
+    # trigger trg_announcement_drafts_media_json_update
+    """
+CREATE TRIGGER trg_announcement_drafts_media_json_update
         BEFORE UPDATE OF photos, publication_photos, publication_progress
         ON announcement_drafts
         FOR EACH ROW
@@ -2258,9 +1018,10 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'announcement media must be valid JSON');
         END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_drafts_publication_status_insert
+    """,
+    # trigger trg_announcement_drafts_publication_status_insert
+    """
+CREATE TRIGGER trg_announcement_drafts_publication_status_insert
         BEFORE INSERT ON announcement_drafts
         FOR EACH ROW
         WHEN NEW.publication_status IS NOT NULL
@@ -2269,9 +1030,10 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'unknown announcement publication status');
         END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_drafts_publication_status_update
+    """,
+    # trigger trg_announcement_drafts_publication_status_update
+    """
+CREATE TRIGGER trg_announcement_drafts_publication_status_update
         BEFORE UPDATE OF publication_status ON announcement_drafts
         FOR EACH ROW
         WHEN NEW.publication_status IS NOT NULL
@@ -2280,9 +1042,10 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'unknown announcement publication status');
         END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_drafts_publication_shape_insert
+    """,
+    # trigger trg_announcement_drafts_publication_shape_insert
+    """
+CREATE TRIGGER trg_announcement_drafts_publication_shape_insert
         BEFORE INSERT ON announcement_drafts
         FOR EACH ROW
         WHEN (
@@ -2315,9 +1078,10 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'invalid announcement publication shape');
         END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_drafts_publication_shape
+    """,
+    # trigger trg_announcement_drafts_publication_shape
+    """
+CREATE TRIGGER trg_announcement_drafts_publication_shape
         BEFORE UPDATE OF
             publication_status, publication_text, publication_photos,
             publication_progress, publication_error,
@@ -2354,11 +1118,10 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'invalid announcement publication shape');
         END
-        """,
-        # Точная редакция миграции 14: разрешён ровно проверяемый переход
-        # sent -> sending с переносом адресов прошлой версии в previous_ids.
-        """
-        CREATE TRIGGER trg_announcement_drafts_published_immutable
+    """,
+    # trigger trg_announcement_drafts_published_immutable
+    """
+CREATE TRIGGER trg_announcement_drafts_published_immutable
         BEFORE UPDATE OF
             publication_status, publication_text, publication_photos,
             publication_progress, publication_error,
@@ -2381,288 +1144,10 @@ MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'announcement already delivered');
         END
-        """,
-        # Прежние черновики получали площадку до появления origin.
-        """
-        INSERT INTO announcement_drafts (
-            id, author_user_id, place_id, place_name_id, place_display_name,
-            place_address, place_url, origin, template_id, template_version,
-            template_snapshot_id, stage, revision, idempotency_key, photos,
-            publication_status, publication_text, publication_photos,
-            publication_progress, publication_error, publication_started_at,
-            published_at, live_message_ids_json, created_at, updated_at
-        )
-        SELECT
-            id, author_user_id, place_id, place_name_id, place_display_name,
-            place_address, place_url, 'place', template_id, template_version,
-            template_snapshot_id, stage, revision, idempotency_key, photos,
-            publication_status, publication_text, publication_photos,
-            publication_progress, publication_error, publication_started_at,
-            published_at, NULL, created_at, updated_at
-        FROM announcement_drafts_backup
-        """,
-        "INSERT INTO announcement_values SELECT * FROM announcement_values_backup",
-        "INSERT INTO announcement_extras SELECT * FROM announcement_extras_backup",
-        "DROP TABLE announcement_values_backup",
-        "DROP TABLE announcement_extras_backup",
-        "DROP TABLE announcement_drafts_backup",
-    ),
-)
-
-
-# --- Версия 17: архив легаси-таблицы черновиков (Poster 2.0 S5) ------------
-#
-# Девятишаговый мастер и его WIP удалены из кода: `Draft` больше нет ни в
-# моделях, ни в живых сценариях. Таблица `drafts` не удаляется безвозвратно:
-# она переименовывается в `legacy_drafts_backup`, поэтому данные прежних
-# черновиков остаются в файле базы и доступны для ручного разбора.
-#
-# Идемпотентность: `requires_tables=('drafts',)` — на новой базе таблицы
-# никогда не было (create_all больше её не создаёт), на уже мигрированной
-# она называется иначе. В обоих случаях шаги пропускаются, а версия
-# фиксируется в журнале. `user_states` не трогается: это живая
-# инфраструктура экрана и снимков состояния, а не легаси.
-
-MIGRATION_17_ARCHIVE_LEGACY_DRAFTS = Migration(
-    version=17,
-    name="archive_legacy_drafts",
-    statements=(
-        # Переименование вместо DROP: данные не теряются, схема не копится.
-        "ALTER TABLE drafts RENAME TO legacy_drafts_backup",
-    ),
-    requires_tables=("drafts",),
-)
-
-
-# --- Версия 18: нетронутые копии встроенного шаблона → версия 3 (R2) --------
-#
-# Poster 2.1 R2 уточнил эталон стандартного анонса (Часть III): после
-# заголовка и строки «дата // время» появились пустые строки, сама строка
-# даты/времени и площадка стали жирными. Уже выданные копии прежнего эталона
-# без этого обновления остались бы «старыми», поэтому миграция добавляет
-# каждому НЕТРОНУТОМУ шаблону новую версию с текстом BUILTIN v3.
-#
-# Правило «обновляем только доказуемо нетронутые»:
-#
-# - кандидат — ТЕКУЩАЯ версия шаблона (`template_versions.version =
-#   templates.revision`), содержимое которой побайтово совпадает с эталоном
-#   v2, а маркер версии — `builtin_version = 2`;
-# - исключение по маркеру: стартовая личная копия до R2 создавалась сервисом
-#   как обычный личный шаблон (`builtin_version IS NULL`). Для личного
-#   шаблона с нетронутым именем «Мой шаблон» и побайтовым текстом v2 такого
-#   совпадения достаточно: имя и все три секции совпадают с эталоном, то есть
-#   копия доказуемо нетронута (после R2 такие копии сразу получают маркер);
-# - правки человека (любая изменённая секция, новая версия без
-#   `builtin_version`) в кандидаты не попадают: их текущая версия уже не v2;
-# - личная копия дополнительно обязана сохранить имя «Мой шаблон»: если
-#   человек переименовал копию, содержимое тоже НЕ обновляется — иначе одно
-#   и то же действие (переименование) молча меняло бы текст;
-# - стандартные шаблоны мест не имеют имени: у них проверяется только
-#   содержимое и маркер v2, имя (NULL) остаётся прежним.
-#
-# Иммутабельность истории не нарушается: старая версия v2 остаётся в
-# `template_versions` как есть, миграция только ДОБАВЛЯЕТ следующую версию,
-# поднимает `templates.revision` (он же указатель текущей версии) и
-# переименовывает нетронутую стартовую копию в «Дефолтный шаблон» в той же
-# транзакции. Снимки (`template_snapshots`) не трогаются: это замороженные
-# копии прошлых черновиков.
-#
-# Привязки резолвятся ПО КОДУ из `bricks`, а не хардкодом ID (S1-замечание):
-# миграция 15 создала системный `[адрес]` с `MAX(id)+1`, поэтому жёсткие
-# номера разошлись бы с реальной базой. Если хотя бы один из восьми
-# системных кодов отсутствует/архивирован, шаблон не обновляется вовсе:
-# версия с неполными привязками сломала бы рендер.
-#
-# Идемпотентность: журнал не даёт применить миграцию повторно, а сама
-# выборка после применения пуста (текущие версии стали `builtin_version=3`).
-# Временная таблица-очередь удаляется последним шагом, поэтому повторный
-# запуск на уже мигрированной базе ничего не оставляет.
-
-# Эталоны миграции заданы локально, а НЕ импортом из `template_types`:
-# миграция обязана остаться самодостаточной и не зависеть от будущих правок
-# текущих констант.
-_M18_V2_HEADER = "**[название]**"
-_M18_V2_BODY = (
-    "[дата] // [время_начала]\n"
-    "[место]([ссылка_места])\n"
-    "[адрес]\n"
-    "\n"
-    "[описание]"
-)
-_M18_V2_FOOTER = "[контакт]"
-_M18_V3_HEADER = "**[название]**"
-_M18_V3_BODY = (
-    "\n"
-    "**[дата] // [время_начала]**\n"
-    "\n"
-    "**[место]([ссылка_места])**\n"
-    "[адрес]\n"
-    "\n"
-    "[описание]"
-)
-_M18_V3_FOOTER = "\n[контакт]"
-_M18_OLD_INITIAL_NAME = "Мой шаблон"
-_M18_NEW_INITIAL_NAME = "Дефолтный шаблон"
-_M18_CODES = (
-    "название",
-    "дата",
-    "время_начала",
-    "место",
-    "ссылка_места",
-    "адрес",
-    "описание",
-    "контакт",
-)
-
-
-def _migration_18_literal(value: str) -> str:
-    """SQL-литерал строки: шаги миграции — готовые строки без параметров."""
-    return "'" + value.replace("'", "''") + "'"
-
-
-_M18_CODES_SQL = ", ".join(_migration_18_literal(code) for code in _M18_CODES)
-_M18_CODES_VALUES_SQL = " UNION ALL ".join(
-    f"SELECT {_migration_18_literal(code)} AS code" for code in _M18_CODES
-)
-
-MIGRATION_18_BUILTIN_TEMPLATES_V3 = Migration(
-    version=18,
-    name="builtin_templates_v3",
-    statements=(
-        # Очередь кандидатов: одна строка на шаблон, чтобы все следующие шаги
-        # работали с одним и тем же зафиксированным списком.
-        """
-        CREATE TABLE migration_18_targets (
-            template_id INTEGER NOT NULL PRIMARY KEY,
-            new_version INTEGER NOT NULL,
-            rename_to_default INTEGER NOT NULL
-        )
-        """,
-        f"""
-        INSERT INTO migration_18_targets (template_id, new_version, rename_to_default)
-        SELECT
-            t.id,
-            t.revision + 1,
-            CASE
-                WHEN t.kind = 'personal' AND t.name = {_migration_18_literal(_M18_OLD_INITIAL_NAME)}
-                    THEN 1
-                ELSE 0
-            END
-        FROM templates AS t
-        JOIN template_versions AS v
-          ON v.template_id = t.id AND v.version = t.revision
-        WHERE v.header = {_migration_18_literal(_M18_V2_HEADER)}
-          AND v.body = {_migration_18_literal(_M18_V2_BODY)}
-          AND v.footer = {_migration_18_literal(_M18_V2_FOOTER)}
-          AND (
-              v.builtin_version = 2
-              OR (
-                  t.kind = 'personal'
-                  AND t.name = {_migration_18_literal(_M18_OLD_INITIAL_NAME)}
-              )
-          )
-          AND (
-              t.kind = 'standard'
-              OR (t.kind = 'personal' AND t.name = {_migration_18_literal(_M18_OLD_INITIAL_NAME)})
-          )
-          AND (
-              SELECT count(*) FROM bricks AS b
-              WHERE b.scope = 'system'
-                AND b.status = 'active'
-                AND b.code IN ({_M18_CODES_SQL})
-          ) = {len(_M18_CODES)}
-        """,
-        # Новая версия: только INSERT, старая v2 остаётся в истории.
-        f"""
-        INSERT INTO template_versions
-            (template_id, version, header, body, footer,
-             created_by_user_id, created_at, builtin_version)
-        SELECT
-            g.template_id, g.new_version,
-            {_migration_18_literal(_M18_V3_HEADER)},
-            {_migration_18_literal(_M18_V3_BODY)},
-            {_migration_18_literal(_M18_V3_FOOTER)},
-            NULL, CURRENT_TIMESTAMP, 3
-        FROM migration_18_targets AS g
-        """,
-        # Те же восемь системных кодов, но brick_id — из `bricks` по коду.
-        f"""
-        INSERT INTO template_version_bricks (template_version_id, brick_id, code)
-        SELECT ver.id, b.id, c.code
-        FROM migration_18_targets AS g
-        JOIN template_versions AS ver
-          ON ver.template_id = g.template_id AND ver.version = g.new_version
-        CROSS JOIN ({_M18_CODES_VALUES_SQL}) AS c
-        JOIN bricks AS b
-          ON b.scope = 'system' AND b.status = 'active' AND b.code = c.code
-        """,
-        # Указатель текущей версии и имя стартовой копии — одной транзакцией
-        # с созданием версии: переименования без обновления не бывает.
-        f"""
-        UPDATE templates
-        SET revision = (
-                SELECT g.new_version FROM migration_18_targets AS g
-                WHERE g.template_id = templates.id
-            ),
-            name = CASE
-                WHEN (
-                    SELECT g.rename_to_default FROM migration_18_targets AS g
-                    WHERE g.template_id = templates.id
-                ) = 1
-                THEN {_migration_18_literal(_M18_NEW_INITIAL_NAME)}
-                ELSE name
-            END,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id IN (SELECT template_id FROM migration_18_targets)
-        """,
-        "DROP TABLE migration_18_targets",
-    ),
-    requires_tables=(
-        "templates",
-        "template_versions",
-        "template_version_bricks",
-        "bricks",
-    ),
-)
-
-
-# --- Версия 19: задачи разрешения конфликтов кодов (Poster 2.1 R3) ----------
-#
-# R1 позволил одобрять глобальный кирпичик при локальном носителе того же
-# кода, но INSERT системного кирпичика разрешался триггером ровно при ОДНОМ
-# несистемном носителе. R3 доводит модель до требований владельца:
-#
-# - глобальный кирпичик создаётся при любом числе локальных носителей и
-#   выигрывает для НОВЫХ привязок (разрешение кода system → place → personal
-#   уже отдаёт приоритет системе);
-# - существующие версии/снимки шаблонов и анонсы не переписываются
-#   (`template_version_bricks`/`template_snapshot_bricks` неизменяемы);
-# - по каждому месту с местным носителем создаётся задача разрешения
-#   конфликта (`brick_conflicts`) и идемпотентное уведомление его админу
-#   (`brick_conflict_notifications`);
-# - решение задачи терминально: `open` → `renamed`/`switched`; `superseded`
-#   закрывает задачу, если местный носитель исчез сам (архив/переименование
-#   вне сценария).
-#
-# Схема только добавочная: существующие таблицы `bricks`,
-# `brick_proposals`, `templates`, `template_versions` не перестраиваются.
-# Пересоздаётся единственный триггер `trg_bricks_reserve_codes_insert`:
-# из исключения «одобрение глобального предложения» убрано требование ровно
-# одного несистемного носителя. Общее правило «системный и несистемный код
-# не сосуществуют» для прямого INSERT (сервис `create_system_brick`)
-# сохранено: исключение по-прежнему требует pending-предложение с полностью
-# совпадающим снимком.
-
-
-MIGRATION_19_BRICK_CONFLICTS = Migration(
-    version=19,
-    name="brick_code_conflicts",
-    statements=(
-        # Одна задача = «глобальный кирпичик + местный носитель того же кода».
-        # Обе ссылки на bricks неизменяемы (RESTRICT): история решений не
-        # должна рассыпаться при архивации/удалении кирпичика.
-        """
-        CREATE TABLE brick_conflicts (
+    """,
+    # table brick_conflicts
+    """
+CREATE TABLE brick_conflicts (
             id INTEGER NOT NULL PRIMARY KEY,
             code TEXT NOT NULL,
             place_id INTEGER NOT NULL,
@@ -2706,19 +1191,24 @@ MIGRATION_19_BRICK_CONFLICTS = Migration(
                 FOREIGN KEY (resolved_by_user_id) REFERENCES users (id)
                 ON DELETE RESTRICT
         )
-        """,
-        # Идемпотентность: одна пара носителей — одна задача. Повторное
-        # одобрение/повторный прогон упирается в этот индекс.
-        """
-        CREATE UNIQUE INDEX ux_brick_conflicts_system_local
+    """,
+    # index ux_brick_conflicts_system_local
+    """
+CREATE UNIQUE INDEX ux_brick_conflicts_system_local
             ON brick_conflicts (system_brick_id, local_brick_id)
-        """,
-        "CREATE INDEX ix_brick_conflicts_place_status ON brick_conflicts (place_id, status)",
-        "CREATE INDEX ix_brick_conflicts_local_brick ON brick_conflicts (local_brick_id)",
-        # Очередь уведомлений админам мест. Получатель — постоянный Telegram
-        # user ID (в `users` он может отсутствовать: суперадмин из конфига).
-        """
-        CREATE TABLE brick_conflict_notifications (
+
+    """,
+    # index ix_brick_conflicts_place_status
+    """
+CREATE INDEX ix_brick_conflicts_place_status ON brick_conflicts (place_id, status)
+    """,
+    # index ix_brick_conflicts_local_brick
+    """
+CREATE INDEX ix_brick_conflicts_local_brick ON brick_conflicts (local_brick_id)
+    """,
+    # table brick_conflict_notifications
+    """
+CREATE TABLE brick_conflict_notifications (
             id INTEGER NOT NULL PRIMARY KEY,
             conflict_id INTEGER NOT NULL,
             telegram_user_id INTEGER NOT NULL,
@@ -2739,19 +1229,22 @@ MIGRATION_19_BRICK_CONFLICTS = Migration(
                 FOREIGN KEY (conflict_id) REFERENCES brick_conflicts (id)
                 ON DELETE CASCADE
         )
-        """,
-        """
-        CREATE UNIQUE INDEX ux_brick_conflict_notifications_target
+    """,
+    # index ux_brick_conflict_notifications_target
+    """
+CREATE UNIQUE INDEX ux_brick_conflict_notifications_target
             ON brick_conflict_notifications (conflict_id, telegram_user_id)
-        """,
-        """
-        CREATE INDEX ix_brick_conflict_notifications_status
+
+    """,
+    # index ix_brick_conflict_notifications_status
+    """
+CREATE INDEX ix_brick_conflict_notifications_status
             ON brick_conflict_notifications (status, created_at)
-        """,
-        # Статус задачи терминален: повторный callback не переигрывает решение
-        # и не переписывает аудит.
-        """
-        CREATE TRIGGER trg_brick_conflicts_single_transition
+
+    """,
+    # trigger trg_brick_conflicts_single_transition
+    """
+CREATE TRIGGER trg_brick_conflicts_single_transition
         BEFORE UPDATE OF status ON brick_conflicts
         FOR EACH ROW
         WHEN OLD.status <> 'open'
@@ -2759,9 +1252,10 @@ MIGRATION_19_BRICK_CONFLICTS = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'brick conflict decision is final');
         END
-        """,
-        """
-        CREATE TRIGGER trg_brick_conflicts_decision_immutable
+    """,
+    # trigger trg_brick_conflicts_decision_immutable
+    """
+CREATE TRIGGER trg_brick_conflicts_decision_immutable
         BEFORE UPDATE ON brick_conflicts
         FOR EACH ROW
         WHEN OLD.status <> 'open'
@@ -2774,11 +1268,10 @@ MIGRATION_19_BRICK_CONFLICTS = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'brick conflict decision is immutable');
         END
-        """,
-        # Снимок задачи (код, место, носители) неизменяем: иначе история
-        # решений перестала бы объяснять, что именно разрешали.
-        """
-        CREATE TRIGGER trg_brick_conflicts_snapshot_immutable
+    """,
+    # trigger trg_brick_conflicts_snapshot_immutable
+    """
+CREATE TRIGGER trg_brick_conflicts_snapshot_immutable
         BEFORE UPDATE OF
             code, place_id, system_brick_id, local_brick_id, proposal_id,
             created_at
@@ -2793,94 +1286,20 @@ MIGRATION_19_BRICK_CONFLICTS = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'brick conflict snapshot is immutable');
         END
-        """,
-        """
-        CREATE TRIGGER trg_brick_conflicts_no_delete
-        BEFORE DELETE ON brick_conflicts
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'brick conflict history cannot be deleted');
-        END
-        """,
-        # Уведомление отправляется ровно один раз: pending → sent/failed,
-        # обратного перехода нет.
-        """
-        CREATE TRIGGER trg_brick_conflict_notifications_single_transition
+    """,
+    # trigger trg_brick_conflict_notifications_single_transition
+    """
+CREATE TRIGGER trg_brick_conflict_notifications_single_transition
         BEFORE UPDATE OF status ON brick_conflict_notifications
         FOR EACH ROW
         WHEN OLD.status <> 'pending' OR NEW.status = 'pending'
         BEGIN
             SELECT RAISE(ABORT, 'brick conflict notification is final');
         END
-        """,
-        # R3: снимаем ограничение «ровно один несистемный носитель» из
-        # исключения для одобрения глобального предложения. Прямой INSERT
-        # системного кирпичика поверх местного по-прежнему запрещён.
-        "DROP TRIGGER trg_bricks_reserve_codes_insert",
-        """
-        CREATE TRIGGER trg_bricks_reserve_codes_insert
-        BEFORE INSERT ON bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM bricks b
-            WHERE b.code = NEW.code
-              AND (
-                  (NEW.scope = 'system' AND b.scope <> 'system')
-                  OR (NEW.scope <> 'system' AND b.scope = 'system')
-              )
-        )
-        AND NOT (
-            NEW.scope = 'system'
-            AND EXISTS (
-                SELECT 1
-                FROM brick_proposals p
-                JOIN bricks src ON src.id = p.source_brick_id
-                WHERE p.scope = 'system'
-                  AND p.status = 'pending'
-                  AND p.code = NEW.code
-                  AND p.title = NEW.title
-                  AND p.type = NEW.type
-                  AND p.source = NEW.source
-                  AND p.rules_json IS NEW.rules_json
-                  AND src.code = NEW.code
-            )
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'system brick code is reserved');
-        END
-        """,
-    ),
-    requires_tables=(
-        "bricks",
-        "places",
-        "users",
-        "brick_proposals",
-    ),
-)
-
-
-# --- Версия 20: описание в снимке предложения (Poster 2.1 R4) ---------------
-#
-# Карточка предложения должна показывать описание кирпичика (№29), а
-# снимок — не указатель: описание фиксируется при отправке и не меняется
-# при последующих правках личного кирпичика. Колонка добавляется
-# добавочным `ALTER TABLE ADD COLUMN`; таблица не перестраивается, триггеры
-# и индексы остаются прежними. Существующие pending-предложения получают
-# `NULL` — карточка показывает «—», данные не переписываются.
-#
-# Триггер неизменяемости снимка (`trg_brick_proposals_snapshot_immutable`)
-# пересоздаётся в той же транзакции: он перечисляет колонки снимка явно,
-# и без `description` новое поле можно было бы переписать после отправки.
-# Прежнее поведение для остальных колонок сохранено дословно.
-
-MIGRATION_20_PROPOSAL_DESCRIPTION = Migration(
-    version=20,
-    name="brick_proposal_description",
-    statements=(
-        "ALTER TABLE brick_proposals ADD COLUMN description TEXT",
-        "DROP TRIGGER IF EXISTS trg_brick_proposals_snapshot_immutable",
-        """
-        CREATE TRIGGER trg_brick_proposals_snapshot_immutable
+    """,
+    # trigger trg_brick_proposals_snapshot_immutable
+    """
+CREATE TRIGGER trg_brick_proposals_snapshot_immutable
         BEFORE UPDATE OF
             author_user_id, scope, place_id, source_brick_id, title, code,
             type, source, rules_json, description, created_at
@@ -2900,289 +1319,10 @@ MIGRATION_20_PROPOSAL_DESCRIPTION = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'brick proposal snapshot is immutable');
         END
-        """,
-    ),
-    requires_tables=(
-        "bricks",
-        "brick_proposals",
-    ),
-)
-
-
-# --- Версия 21: город площадки и системный кирпичик «город» (U1a) -----------
-#
-# Владелец потребовал указывать город зарегистрированной площадки и иметь
-# системный кирпичик `[город]`. Схема расширяется ТОЛЬКО добавочными
-# колонками:
-#
-# - `places.city` — город площадки. Обязателен на уровне сервиса создания
-#   (`place_store.create_place`), но в схеме nullable: старые места не
-#   блокируются и не переписываются (backfill не нужен и запрещён);
-# - `announcement_drafts.place_city` — снимок города на момент подтверждения
-#   места, по той же модели, что `place_address`/`place_url`. NULL означает
-#   «сведений нет», пустая строка запрещена CHECK-ом.
-#
-# Системный кирпичик `город` вставляется по прецеденту миграции 15:
-# `MAX(id)+1`, а не хардкод `11`, потому что в существующей базе
-# пользовательские/местные кирпичики могли занять этот номер. Каталожный
-# `SYSTEM_BRICKS[].id = 11` — логический: чтение сверяет определение по
-# коду, а не по номеру.
-#
-# Триггер `trg_bricks_reserve_codes_insert` временно снимается и
-# восстанавливается ДОСЛОВНО в редакции миграции 19 (R3): вставка системного
-# кода при наличии местного носителя разрешена только через одобренное
-# предложение. Восстанавливать редакцию миграции 11 нельзя — это откатило бы
-# поведение R3.
-#
-# В стандартный шаблон `[город]` НЕ входит и в `BUILTIN_TEMPLATE_BINDINGS`
-# не появляется: автор включает его в свой шаблон осознанно.
-
-_RESERVE_CODES_INSERT_TRIGGER_R3 = """
-        CREATE TRIGGER trg_bricks_reserve_codes_insert
-        BEFORE INSERT ON bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM bricks b
-            WHERE b.code = NEW.code
-              AND (
-                  (NEW.scope = 'system' AND b.scope <> 'system')
-                  OR (NEW.scope <> 'system' AND b.scope = 'system')
-              )
-        )
-        AND NOT (
-            NEW.scope = 'system'
-            AND EXISTS (
-                SELECT 1
-                FROM brick_proposals p
-                JOIN bricks src ON src.id = p.source_brick_id
-                WHERE p.scope = 'system'
-                  AND p.status = 'pending'
-                  AND p.code = NEW.code
-                  AND p.title = NEW.title
-                  AND p.type = NEW.type
-                  AND p.source = NEW.source
-                  AND p.rules_json IS NEW.rules_json
-                  AND src.code = NEW.code
-            )
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'system brick code is reserved');
-        END
-        """
-
-MIGRATION_21_PLACE_CITY = Migration(
-    version=21,
-    name="place_city",
-    statements=(
-        "ALTER TABLE places ADD COLUMN city TEXT",
-        # CHECK добавлен в той же операции: пустая строка не должна стать
-        # «городом». NULL остаётся допустимым для старых записей.
-        """
-        ALTER TABLE announcement_drafts ADD COLUMN place_city TEXT
-            CONSTRAINT ck_announcement_drafts_city
-            CHECK (place_city IS NULL OR length(trim(place_city)) > 0)
-        """,
-        "DROP TRIGGER IF EXISTS trg_bricks_reserve_codes_insert",
-        """
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at, description)
-        SELECT
-            COALESCE(MAX(id), 0) + 1, 'город', 'Город', 'short_text',
-            'system', 'place', NULL, 'active', NULL, CURRENT_TIMESTAMP,
-            NULL, NULL
-        FROM bricks
-        """,
-        _RESERVE_CODES_INSERT_TRIGGER_R3,
-    ),
-    requires_tables=(
-        "places",
-        "announcement_drafts",
-        "bricks",
-    ),
-)
-
-
-# --- Версия 22: нетронутые копии встроенного шаблона → версия 4 (U1a) ------
-#
-# Живой анонс показал, что эталон v3 разрывает дату/время и площадку пустой
-# строкой, а тело содержит лишние блоки. Версия 4 (владелец):
-#
-#   шапка: жирный `[название]`, сразу под ним жирное `[дата] // [время_начала]`,
-#          пустая строка, жирная площадка-ссылка, нежирный `[адрес]`;
-#   тело:  только `[описание]`;
-#   подвал: только `[контакт]`.
-#
-# Правило «обновляем только доказуемо нетронутые» повторяет миграцию 18:
-#
-# - кандидат — ТЕКУЩАЯ версия шаблона (`template_versions.version =
-#   templates.revision`), побайтово равная локальному эталону v3, с
-#   маркером `builtin_version IN (1, 2, 3)` (маркер версии, а не догадка по
-#   тексту: правленая копия в кандидаты не попадает уже потому, что её текст
-#   не равен v3);
-# - исключение по маркеру: стартовая личная копия, переименованная миграцией
-#   18 в «Дефолтный шаблон», могла сохранить `builtin_version IS NULL`;
-#   побайтовое совпадение всех трёх секций и это имя доказывают, что копию
-#   не правили. Личная копия с другим именем не обновляется: иначе
-#   переименование молча меняло бы текст;
-# - уже правленные копии и копии v4 не трогаются.
-#
-# Иммутабельность истории не нарушается: v3 остаётся в `template_versions`,
-# миграция ДОБАВЛЯЕТ версию `revision + 1` и поднимает `templates.revision`.
-# Снимки (`template_snapshots`) не трогаются. Привязки резолвятся по коду
-# из `bricks` (а не хардкодом ID): если хотя бы один из восьми системных
-# кодов отсутствует/архивирован, шаблон не обновляется вовсе.
-#
-# Идемпотентность: журнал не даёт применить миграцию повторно, а после
-# применения выборка пуста (текущие версии стали v4). Временная
-# таблица-очередь удаляется последним шагом.
-
-_M22_V3_HEADER = "**[название]**"
-_M22_V3_BODY = (
-    "\n"
-    "**[дата] // [время_начала]**\n"
-    "\n"
-    "**[место]([ссылка_места])**\n"
-    "[адрес]\n"
-    "\n"
-    "[описание]"
-)
-_M22_V3_FOOTER = "\n[контакт]"
-_M22_V4_HEADER = (
-    "**[название]**\n"
-    "\n"
-    "**[дата] // [время_начала]**\n"
-    "**[место]([ссылка_места])**\n"
-    "[адрес]"
-)
-_M22_V4_BODY = "\n[описание]"
-_M22_V4_FOOTER = "\n[контакт]"
-_M22_INITIAL_NAME = "Дефолтный шаблон"
-_M22_CODES = (
-    "название",
-    "дата",
-    "время_начала",
-    "место",
-    "ссылка_места",
-    "адрес",
-    "описание",
-    "контакт",
-)
-
-_M22_CODES_SQL = ", ".join(_migration_18_literal(code) for code in _M22_CODES)
-_M22_CODES_VALUES_SQL = " UNION ALL ".join(
-    f"SELECT {_migration_18_literal(code)} AS code" for code in _M22_CODES
-)
-
-MIGRATION_22_BUILTIN_TEMPLATES_V4 = Migration(
-    version=22,
-    name="builtin_templates_v4",
-    statements=(
-        # Очередь кандидатов: один зафиксированный список на все шаги.
-        """
-        CREATE TABLE migration_22_targets (
-            template_id INTEGER NOT NULL PRIMARY KEY,
-            new_version INTEGER NOT NULL
-        )
-        """,
-        f"""
-        INSERT INTO migration_22_targets (template_id, new_version)
-        SELECT
-            t.id,
-            t.revision + 1
-        FROM templates AS t
-        JOIN template_versions AS v
-          ON v.template_id = t.id AND v.version = t.revision
-        WHERE v.header = {_migration_18_literal(_M22_V3_HEADER)}
-          AND v.body = {_migration_18_literal(_M22_V3_BODY)}
-          AND v.footer = {_migration_18_literal(_M22_V3_FOOTER)}
-          AND (
-              v.builtin_version IN (1, 2, 3)
-              OR (
-                  t.kind = 'personal'
-                  AND t.name = {_migration_18_literal(_M22_INITIAL_NAME)}
-              )
-          )
-          AND (
-              t.kind = 'standard'
-              OR (
-                  t.kind = 'personal'
-                  AND t.name = {_migration_18_literal(_M22_INITIAL_NAME)}
-              )
-          )
-          AND (
-              SELECT count(*) FROM bricks AS b
-              WHERE b.scope = 'system'
-                AND b.status = 'active'
-                AND b.code IN ({_M22_CODES_SQL})
-          ) = {len(_M22_CODES)}
-        """,
-        # Новая версия: только INSERT, v3 остаётся в истории.
-        f"""
-        INSERT INTO template_versions
-            (template_id, version, header, body, footer,
-             created_by_user_id, created_at, builtin_version)
-        SELECT
-            g.template_id, g.new_version,
-            {_migration_18_literal(_M22_V4_HEADER)},
-            {_migration_18_literal(_M22_V4_BODY)},
-            {_migration_18_literal(_M22_V4_FOOTER)},
-            NULL, CURRENT_TIMESTAMP, 4
-        FROM migration_22_targets AS g
-        """,
-        # Те же восемь системных кодов; brick_id — из `bricks` по коду.
-        f"""
-        INSERT INTO template_version_bricks (template_version_id, brick_id, code)
-        SELECT ver.id, b.id, c.code
-        FROM migration_22_targets AS g
-        JOIN template_versions AS ver
-          ON ver.template_id = g.template_id AND ver.version = g.new_version
-        CROSS JOIN ({_M22_CODES_VALUES_SQL}) AS c
-        JOIN bricks AS b
-          ON b.scope = 'system' AND b.status = 'active' AND b.code = c.code
-        """,
-        # Указатель текущей версии — той же транзакцией с созданием версии.
-        """
-        UPDATE templates
-        SET revision = (
-                SELECT g.new_version FROM migration_22_targets AS g
-                WHERE g.template_id = templates.id
-            ),
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id IN (SELECT template_id FROM migration_22_targets)
-        """,
-        "DROP TABLE migration_22_targets",
-    ),
-    requires_tables=(
-        "templates",
-        "template_versions",
-        "template_version_bricks",
-        "bricks",
-    ),
-)
-
-
-# --- Версия 23: ссылки «создать анонс площадки» (Poster 2.2 U4b) -------------
-#
-# Админ площадки (или суперадмин) показывает ссылку
-# `https://t.me/<бот>?start=<token>`; открывший её сразу попадает в
-# конструктор анонса этой площадки. Токен случайный и не связан с `place_id`:
-# перебрать площадки по ссылке нельзя.
-#
-# Ограничения:
-# - `token` непустой и уникален (UNIQUE);
-# - одна ДЕЙСТВУЮЩАЯ ссылка на площадку (частичный уникальный индекс по
-#   `revoked_at IS NULL`); перевыпуск отзывает прежнюю строку;
-# - `place_id` — каскадное удаление вместе с площадкой; автор —
-#   `SET NULL`, чтобы отозванная история переживала удаление автора.
-# Миграция только создаёт таблицу: существующие площадки ссылок не получают
-# (ссылка выдаётся по явному действию администратора).
-MIGRATION_23_PLACE_INVITE_LINKS = Migration(
-    version=23,
-    name="place_invite_links",
-    statements=(
-        """
-        CREATE TABLE place_invite_links (
+    """,
+    # table place_invite_links
+    """
+CREATE TABLE place_invite_links (
             id INTEGER NOT NULL PRIMARY KEY,
             token VARCHAR(32) NOT NULL,
             place_id INTEGER NOT NULL,
@@ -3198,101 +1338,24 @@ MIGRATION_23_PLACE_INVITE_LINKS = Migration(
             CONSTRAINT ck_place_invite_links_token_not_empty
                 CHECK (length(trim(token)) > 0)
         )
-        """,
-        "CREATE UNIQUE INDEX ux_place_invite_links_token ON place_invite_links (token)",
-        "CREATE INDEX ix_place_invite_links_place_id ON place_invite_links (place_id)",
-        """
-        CREATE UNIQUE INDEX ux_place_invite_links_one_active
+    """,
+    # index ux_place_invite_links_token
+    """
+CREATE UNIQUE INDEX ux_place_invite_links_token ON place_invite_links (token)
+    """,
+    # index ix_place_invite_links_place_id
+    """
+CREATE INDEX ix_place_invite_links_place_id ON place_invite_links (place_id)
+    """,
+    # index ux_place_invite_links_one_active
+    """
+CREATE UNIQUE INDEX ux_place_invite_links_one_active
             ON place_invite_links (place_id) WHERE revoked_at IS NULL
-        """,
-    ),
-    requires_tables=("places", "users"),
-)
 
-
-# --- Версия 24: единый текст шаблона (Poster 2.3 H2) -----------------------
-#
-# Решение владельца: вместо трёх секций `header`/`body`/`footer` шаблон
-# хранит один канонический текст `content` и необязательный расширенный
-# `extended_content`. Пустые строки между блоками теперь часть самого текста,
-# поэтому автор видит ровно те переносы, которые сохранил. Дополнительные
-# кирпичики анонса потеряли `section`/`position`: кирпичик просто добавляет
-# строку в конец выбранного текста, а расширенный вариант выбирается по факту
-# наличия дополнительных кирпичиков.
-#
-# SQLite не умеет ни снимать CHECK, ни удалять колонки при включённых
-# триггерах «неизменяемо», поэтому пять таблиц перестраиваются. Проверенная
-# схема шагов (та же, что в миграции 16, но с детьми, которые тоже меняются):
-#   1) `PRAGMA defer_foreign_keys=ON`: ссылки `announcement_drafts` на
-#      пересоздаваемые таблицы проверяются в конце транзакции, когда новые
-#      строки уже вставлены с прежними ID. `PRAGMA foreign_keys=OFF` внутри
-#      транзакции `run_migrations` — no-op, поэтому он не используется;
-#   2-6) копии всех пяти таблиц (`CREATE TABLE *_backup AS SELECT *`);
-#   7-11) DROP детей, затем родителей (свои триггеры уходят вместе с
-#      таблицей, поэтому `DROP TRIGGER` не нужен);
-#   12-16) новая схема: `content` + `extended_content`, extras без
-#      `section`/`position`;
-#   17-25) индексы и триггеры неизменяемости — до вставки, чтобы строки
-#      проверялись новыми ограничениями;
-#   26-30) перенос строк с backfill текста и `extended_content = NULL`;
-#   31-35) удаление копий.
-#
-# Backfill склеивает прежние секции ровно так, как их склеивал рендер:
-# `header + "\n" + body + "\n" + footer`, но разделитель ставится только если
-# обе соседние части непустые (`.strip()`). Поэтому эталон v4, у которого
-# header кончается на `[адрес]`, а body/footer начинаются с `"\n"`, остаётся
-# побайтово прежним, а пустые секции не оставляют висячих пустых строк.
-# Строка из одних пробельных секций сохраняется как есть (иначе новый
-# CHECK `content <> ''` сделал бы миграцию невыполнимой).
-#
-# Всё выполняется одной транзакцией `run_migrations`: сбой любого шага
-# оставляет базу нетронутой. Откат уже применённой миграции — только
-# восстановление WAL-aware копии, которую `run_migrations` создаёт перед
-# первым ожидающим DDL (см. `docs/migrations.md`); обратной миграции нет,
-# потому что старые колонки после переноса не восстанавливаются.
-
-_M24_CONTENT_BACKFILL = """
-            CASE
-                WHEN trim(header) = '' AND trim(body) = '' AND trim(footer) = ''
-                THEN header || body || footer
-                ELSE trim(header)
-                    || CASE
-                           WHEN trim(header) <> ''
-                                AND (trim(body) <> '' OR trim(footer) <> '')
-                           THEN char(10) ELSE '' END
-                    || body
-                    || CASE
-                           WHEN trim(body) <> '' AND trim(footer) <> ''
-                           THEN char(10) ELSE '' END
-                    || footer
-            END
-"""
-
-MIGRATION_24_TEMPLATE_CONTENT = Migration(
-    version=24,
-    name="template_content_and_extras_without_sections",
-    statements=(
-        # Ссылки drafts → пересоздаваемые таблицы проверяются в конце
-        # транзакции: ID сохраняются, поэтому проверка пройдёт.
-        "PRAGMA defer_foreign_keys=ON",
-        # Копии делаются первыми: DROP родителя каскадно чистит детей, но их
-        # строки уже сохранены.
-        "CREATE TABLE template_snapshot_bricks_backup AS SELECT * FROM template_snapshot_bricks",
-        "CREATE TABLE template_snapshots_backup AS SELECT * FROM template_snapshots",
-        "CREATE TABLE template_version_bricks_backup AS SELECT * FROM template_version_bricks",
-        "CREATE TABLE template_versions_backup AS SELECT * FROM template_versions",
-        "CREATE TABLE announcement_extras_backup AS SELECT * FROM announcement_extras",
-        # Дети раньше родителей: FK-действия не мешают, а имена триггеров
-        # освобождаются вместе с таблицами.
-        "DROP TABLE template_snapshot_bricks",
-        "DROP TABLE template_snapshots",
-        "DROP TABLE template_version_bricks",
-        "DROP TABLE template_versions",
-        "DROP TABLE announcement_extras",
-        # Текст версии — одна строка; расширение либо отсутствует, либо
-        # непустое. История по-прежнему неизменяема: правка добавляет версию.
-        """
-        CREATE TABLE template_versions (
+    """,
+    # table template_versions
+    """
+CREATE TABLE template_versions (
             id INTEGER NOT NULL PRIMARY KEY,
             template_id INTEGER NOT NULL,
             version INTEGER NOT NULL,
@@ -3317,9 +1380,11 @@ MIGRATION_24_TEMPLATE_CONTENT = Migration(
                 FOREIGN KEY (created_by_user_id) REFERENCES users (id)
                 ON DELETE SET NULL
         )
-        """,
-        """
-        CREATE TABLE template_version_bricks (
+    """,
+    # sqlite_autoindex_template_versions_1: автоматический индекс ограничения таблицы
+    # table template_version_bricks
+    """
+CREATE TABLE template_version_bricks (
             template_version_id INTEGER NOT NULL,
             brick_id INTEGER NOT NULL,
             code TEXT NOT NULL DEFAULT '',
@@ -3331,11 +1396,11 @@ MIGRATION_24_TEMPLATE_CONTENT = Migration(
                 FOREIGN KEY (brick_id) REFERENCES bricks (id)
                 ON DELETE RESTRICT
         )
-        """,
-        # Снимок копирует оба текста: расширение тоже должно пережить
-        # изменение исходного шаблона.
-        """
-        CREATE TABLE template_snapshots (
+    """,
+    # sqlite_autoindex_template_version_bricks_1: автоматический индекс ограничения таблицы
+    # table template_snapshots
+    """
+CREATE TABLE template_snapshots (
             id INTEGER NOT NULL PRIMARY KEY,
             owner_user_id INTEGER NOT NULL,
             source_template_id INTEGER NOT NULL,
@@ -3348,7 +1413,11 @@ MIGRATION_24_TEMPLATE_CONTENT = Migration(
             extended_content TEXT,
             builtin_version INTEGER,
             idempotency_key TEXT,
-            created_at DATETIME NOT NULL,
+            created_at DATETIME NOT NULL, conditional_rules_frozen INTEGER NOT NULL DEFAULT 0
+            CONSTRAINT ck_template_snapshots_conditional_rules_frozen
+            CHECK (conditional_rules_frozen IN (0, 1)), extended_active INTEGER NOT NULL DEFAULT 0
+            CONSTRAINT ck_template_snapshots_extended_active
+            CHECK (extended_active IN (0, 1)),
             CONSTRAINT fk_template_snapshots_owner_user_id
                 FOREIGN KEY (owner_user_id) REFERENCES users (id)
                 ON DELETE RESTRICT,
@@ -3378,9 +1447,10 @@ MIGRATION_24_TEMPLATE_CONTENT = Migration(
                     OR length(trim(idempotency_key)) > 0
                 )
         )
-        """,
-        """
-        CREATE TABLE template_snapshot_bricks (
+    """,
+    # table template_snapshot_bricks
+    """
+CREATE TABLE template_snapshot_bricks (
             template_snapshot_id INTEGER NOT NULL,
             brick_id INTEGER NOT NULL,
             code TEXT NOT NULL DEFAULT '',
@@ -3392,11 +1462,11 @@ MIGRATION_24_TEMPLATE_CONTENT = Migration(
                 FOREIGN KEY (brick_id) REFERENCES bricks (id)
                 ON DELETE RESTRICT
         )
-        """,
-        # Дополнительный кирпичик больше не выбирает секцию и позицию:
-        # он добавляет строку в конец выбранного текста анонса.
-        """
-        CREATE TABLE announcement_extras (
+    """,
+    # sqlite_autoindex_template_snapshot_bricks_1: автоматический индекс ограничения таблицы
+    # table announcement_extras
+    """
+CREATE TABLE announcement_extras (
             id INTEGER NOT NULL PRIMARY KEY,
             draft_id INTEGER NOT NULL,
             brick_id INTEGER NOT NULL,
@@ -3414,58 +1484,75 @@ MIGRATION_24_TEMPLATE_CONTENT = Migration(
             CONSTRAINT uq_announcement_extras_draft_brick_occurrence
                 UNIQUE (draft_id, brick_id, occurrence)
         )
-        """,
-        # Индексы восстанавливаются до вставки: уникальность проверяется
-        # переносимыми строками.
-        """
-        CREATE INDEX ix_template_version_bricks_brick_id
+    """,
+    # sqlite_autoindex_announcement_extras_1: автоматический индекс ограничения таблицы
+    # index ix_template_version_bricks_brick_id
+    """
+CREATE INDEX ix_template_version_bricks_brick_id
             ON template_version_bricks (brick_id)
-        """,
-        """
-        CREATE UNIQUE INDEX ux_template_version_bricks_version_code
+
+    """,
+    # index ux_template_version_bricks_version_code
+    """
+CREATE UNIQUE INDEX ux_template_version_bricks_version_code
             ON template_version_bricks (template_version_id, code)
-        """,
-        """
-        CREATE UNIQUE INDEX ux_template_snapshots_idempotency
+
+    """,
+    # index ux_template_snapshots_idempotency
+    """
+CREATE UNIQUE INDEX ux_template_snapshots_idempotency
             ON template_snapshots (owner_user_id, idempotency_key)
             WHERE idempotency_key IS NOT NULL
-        """,
-        """
-        CREATE INDEX ix_template_snapshots_owner_created
+
+    """,
+    # index ix_template_snapshots_owner_created
+    """
+CREATE INDEX ix_template_snapshots_owner_created
             ON template_snapshots (owner_user_id, created_at)
-        """,
-        """
-        CREATE INDEX ix_template_snapshots_source
+
+    """,
+    # index ix_template_snapshots_source
+    """
+CREATE INDEX ix_template_snapshots_source
             ON template_snapshots (source_template_id, source_template_version)
-        """,
-        """
-        CREATE INDEX ix_template_snapshot_bricks_brick_id
+
+    """,
+    # index ix_template_snapshot_bricks_brick_id
+    """
+CREATE INDEX ix_template_snapshot_bricks_brick_id
             ON template_snapshot_bricks (brick_id)
-        """,
-        """
-        CREATE UNIQUE INDEX ux_template_snapshot_bricks_snapshot_code
+
+    """,
+    # index ux_template_snapshot_bricks_snapshot_code
+    """
+CREATE UNIQUE INDEX ux_template_snapshot_bricks_snapshot_code
             ON template_snapshot_bricks (template_snapshot_id, code)
-        """,
-        """
-        CREATE INDEX ix_announcement_extras_draft
+
+    """,
+    # index ix_announcement_extras_draft
+    """
+CREATE INDEX ix_announcement_extras_draft
             ON announcement_extras (draft_id)
-        """,
-        """
-        CREATE INDEX ix_announcement_extras_brick
+
+    """,
+    # index ix_announcement_extras_brick
+    """
+CREATE INDEX ix_announcement_extras_brick
             ON announcement_extras (brick_id)
-        """,
-        # Триггеры неизменяемости пересоздаются дословно: смысл прежний,
-        # меняется только состав колонок extras.
-        """
-        CREATE TRIGGER trg_template_versions_no_update
+
+    """,
+    # trigger trg_template_versions_no_update
+    """
+CREATE TRIGGER trg_template_versions_no_update
         BEFORE UPDATE ON template_versions
         FOR EACH ROW
         BEGIN
             SELECT RAISE(ABORT, 'template versions are immutable');
         END
-        """,
-        """
-        CREATE TRIGGER trg_template_versions_no_delete
+    """,
+    # trigger trg_template_versions_no_delete
+    """
+CREATE TRIGGER trg_template_versions_no_delete
         BEFORE DELETE ON template_versions
         FOR EACH ROW
         WHEN EXISTS (
@@ -3474,61 +1561,46 @@ MIGRATION_24_TEMPLATE_CONTENT = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'template versions cannot be deleted');
         END
-        """,
-        """
-        CREATE TRIGGER trg_template_version_bricks_no_update
+    """,
+    # trigger trg_template_version_bricks_no_update
+    """
+CREATE TRIGGER trg_template_version_bricks_no_update
         BEFORE UPDATE ON template_version_bricks
         FOR EACH ROW
         BEGIN
             SELECT RAISE(ABORT, 'template bindings are immutable');
         END
-        """,
-        """
-        CREATE TRIGGER trg_template_version_bricks_no_delete
-        BEFORE DELETE ON template_version_bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM template_versions
-            WHERE id = OLD.template_version_id
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'template bindings cannot be deleted');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_template_snapshots_no_update
+    """,
+    # trigger trg_template_snapshots_no_update
+    """
+CREATE TRIGGER trg_template_snapshots_no_update
         BEFORE UPDATE ON template_snapshots
         FOR EACH ROW
         BEGIN
             SELECT RAISE(ABORT, 'template snapshots are immutable');
         END
-        """,
-        """
-        CREATE TRIGGER trg_template_snapshots_no_delete
+    """,
+    # trigger trg_template_snapshots_no_delete
+    """
+CREATE TRIGGER trg_template_snapshots_no_delete
         BEFORE DELETE ON template_snapshots
         FOR EACH ROW
         BEGIN
             SELECT RAISE(ABORT, 'template snapshots cannot be deleted');
         END
-        """,
-        """
-        CREATE TRIGGER trg_template_snapshot_bricks_no_update
+    """,
+    # trigger trg_template_snapshot_bricks_no_update
+    """
+CREATE TRIGGER trg_template_snapshot_bricks_no_update
         BEFORE UPDATE ON template_snapshot_bricks
         FOR EACH ROW
         BEGIN
             SELECT RAISE(ABORT, 'snapshot bindings are immutable');
         END
-        """,
-        """
-        CREATE TRIGGER trg_template_snapshot_bricks_no_delete
-        BEFORE DELETE ON template_snapshot_bricks
-        FOR EACH ROW
-        BEGIN
-            SELECT RAISE(ABORT, 'snapshot bindings cannot be deleted');
-        END
-        """,
-        """
-        CREATE TRIGGER trg_announcement_extras_identity_immutable
+    """,
+    # trigger trg_announcement_extras_identity_immutable
+    """
+CREATE TRIGGER trg_announcement_extras_identity_immutable
         BEFORE UPDATE OF draft_id, brick_id, occurrence, created_at
         ON announcement_extras
         FOR EACH ROW
@@ -3539,156 +1611,20 @@ MIGRATION_24_TEMPLATE_CONTENT = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'announcement extra identity is immutable');
         END
-        """,
-        # Перенос строк: обе таблицы текстов используют одну формулу.
-        f"""
-        INSERT INTO template_versions (
-            id, template_id, version, content, extended_content,
-            created_by_user_id, created_at, builtin_version
-        )
-        SELECT
-            id, template_id, version,
-            {_M24_CONTENT_BACKFILL},
-            NULL, created_by_user_id, created_at, builtin_version
-        FROM template_versions_backup
-        """,
-        f"""
-        INSERT INTO template_snapshots (
-            id, owner_user_id, source_template_id, source_template_version,
-            source_kind, source_name, source_place_id, source_owner_user_id,
-            content, extended_content, builtin_version, idempotency_key,
-            created_at
-        )
-        SELECT
-            id, owner_user_id, source_template_id, source_template_version,
-            source_kind, source_name, source_place_id, source_owner_user_id,
-            {_M24_CONTENT_BACKFILL},
-            NULL, builtin_version, idempotency_key, created_at
-        FROM template_snapshots_backup
-        """,
-        "INSERT INTO template_version_bricks SELECT * FROM template_version_bricks_backup",
-        "INSERT INTO template_snapshot_bricks SELECT * FROM template_snapshot_bricks_backup",
-        """
-        INSERT INTO announcement_extras (
-            id, draft_id, brick_id, occurrence, created_at, updated_at
-        )
-        SELECT id, draft_id, brick_id, occurrence, created_at, updated_at
-        FROM announcement_extras_backup
-        """,
-        "DROP TABLE template_versions_backup",
-        "DROP TABLE template_version_bricks_backup",
-        "DROP TABLE template_snapshots_backup",
-        "DROP TABLE template_snapshot_bricks_backup",
-        "DROP TABLE announcement_extras_backup",
-    ),
-)
-
-
-MIGRATION_25_SINGLE_ADDRESS_BRICK = Migration(
-    version=25,
-    name="single_address_brick",
-    statements=(
-        # Poster 2.4 P1: в модели остаётся ОДИН адресный кирпичик — `[адрес]`
-        # (id вырастает из системного реестра миграции 15). Легаси-определение
-        # `адрес_места` (id 6, миграция 6) устраняется полностью: строка
-        # `bricks`, привязки версий/снимков, значения черновиков, доп.
-        # кирпичики, конфликтные записи и ссылки предложений. Алиасов и
-        # переименования не сохраняется: требование владельца 2.4 — один код.
-        #
-        # Порядок важен: сначала зависимые строки (FK RESTRICT), затем сама
-        # строка `bricks`. Четыре группы триггеров снимаются на время DML и
-        # восстанавливаются дословно в той же транзакции `run_migrations`,
-        # поэтому окна без защиты для других писателей нет:
-        #   * `trg_bricks_system_no_delete` — системную строку нельзя было
-        #     удалить никогда; это единственное исключение, выполняемое самой
-        #     миграцией;
-        #   * `trg_template_version_bricks_no_delete` и
-        #     `trg_template_snapshot_bricks_no_delete` — привязки шаблонов
-        #     неизменяемы для сервиса, но миграция обязана убрать ссылку на
-        #     устранённое определение;
-        #   * `trg_brick_conflicts_no_delete`, `trg_brick_proposals_no_delete`
-        #     и `trg_brick_proposals_decision_immutable` — история решений не
-        #     удаляется сервисом; миграция убирает только строки, которые
-        #     ссылаются на устраняемое определение;
-        #   * `trg_bricks_reserve_codes_insert/update` пересоздаются в конце:
-        #     исключение Stage 26/R3 для повышения личного кирпичика в
-        #     системный больше не нужно (Poster 2.4 P1 повышает тот же ряд и
-        #     не создаёт второй носитель кода).
-        "DROP TRIGGER IF EXISTS trg_bricks_system_no_delete",
-        "DROP TRIGGER IF EXISTS trg_template_version_bricks_no_delete",
-        "DROP TRIGGER IF EXISTS trg_template_snapshot_bricks_no_delete",
-        "DROP TRIGGER IF EXISTS trg_brick_conflicts_no_delete",
-        "DROP TRIGGER IF EXISTS trg_brick_proposals_no_delete",
-        "DROP TRIGGER IF EXISTS trg_brick_proposals_decision_immutable",
-        "DROP TRIGGER IF EXISTS trg_brick_proposals_approval_link",
-        # Значения черновиков ссылаются на определение по brick_id. Легаси-
-        # значение адреса дублировало `[адрес]`; автоподстановка Poster 2.4
-        # пишет только в `[адрес]`, поэтому строка не нужна.
-        """
-        DELETE FROM announcement_values
-        WHERE brick_id IN (
-            SELECT id FROM bricks WHERE code = 'адрес_места'
-        )
-        """,
-        """
-        DELETE FROM announcement_extras
-        WHERE brick_id IN (
-            SELECT id FROM bricks WHERE code = 'адрес_места'
-        )
-        """,
-        # `code` в привязке — мост «сохранённый текст → brick_id», поэтому
-        # удаляются и строки с устаревшим кодом, и строки по brick_id.
-        """
-        DELETE FROM template_version_bricks
-        WHERE code = 'адрес_места'
-           OR brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
-        """,
-        """
-        DELETE FROM template_snapshot_bricks
-        WHERE code = 'адрес_места'
-           OR brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
-        """,
-        # Задача разрешения конфликта ссылается на оба носителя кода
-        # (RESTRICT). Носителя `адрес_места` больше нет, поэтому задача
-        # теряет смысл: удаляется вместе с очередью уведомлений (CASCADE).
-        """
-        DELETE FROM brick_conflicts
-        WHERE system_brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
-           OR local_brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
-        """,
-        # Предложения хранят снимок определения и ссылки на исходный и
-        # одобренный кирпичик (FK RESTRICT). Ссылку на системный
-        # `адрес_места` штатно создать нельзя: триггеры миграции 11 требуют
-        # активный ЛИЧНЫЙ источник и совпадение снимка с созданным
-        # кирпичиком, а системный код зарезервирован. Поэтому здесь только
-        # страховка от «ручных»/аномальных строк: такая история ссылается на
-        # устраняемое определение и без него не восстанавливается, а FK
-        # RESTRICT не дал бы удалить строку `bricks`. Обнулить ссылку нельзя:
-        # форма решения (`ck_brick_proposals_decision_shape`) и триггер
-        # неизменяемости решения запрещают правку после решения. Удаляется
-        # ровно эта аномальная история; остальные предложения не трогаются.
-        """
-        DELETE FROM brick_proposals
-        WHERE source_brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
-           OR approved_brick_id IN (SELECT id FROM bricks WHERE code = 'адрес_места')
-        """,
-        # Сама строка определения. Несистемных носителей кода `адрес_места`
-        # быть не может (код системный с миграции 6), поэтому условие по коду
-        # удаляет ровно легаси-определение.
-        "DELETE FROM bricks WHERE code = 'адрес_места'",
-        # Триггеры возвращаются дословно: системная строка снова защищена, а
-        # привязки шаблонов снова неизменяемы для сервиса.
-        """
-        CREATE TRIGGER trg_bricks_system_no_delete
+    """,
+    # trigger trg_bricks_system_no_delete
+    """
+CREATE TRIGGER trg_bricks_system_no_delete
         BEFORE DELETE ON bricks
         FOR EACH ROW
         WHEN OLD.scope = 'system'
         BEGIN
             SELECT RAISE(ABORT, 'system brick cannot be deleted');
         END
-        """,
-        """
-        CREATE TRIGGER trg_template_version_bricks_no_delete
+    """,
+    # trigger trg_template_version_bricks_no_delete
+    """
+CREATE TRIGGER trg_template_version_bricks_no_delete
         BEFORE DELETE ON template_version_bricks
         FOR EACH ROW
         WHEN EXISTS (
@@ -3698,34 +1634,37 @@ MIGRATION_25_SINGLE_ADDRESS_BRICK = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'template bindings cannot be deleted');
         END
-        """,
-        """
-        CREATE TRIGGER trg_template_snapshot_bricks_no_delete
+    """,
+    # trigger trg_template_snapshot_bricks_no_delete
+    """
+CREATE TRIGGER trg_template_snapshot_bricks_no_delete
         BEFORE DELETE ON template_snapshot_bricks
         FOR EACH ROW
         BEGIN
             SELECT RAISE(ABORT, 'snapshot bindings cannot be deleted');
         END
-        """,
-        """
-        CREATE TRIGGER trg_brick_conflicts_no_delete
+    """,
+    # trigger trg_brick_conflicts_no_delete
+    """
+CREATE TRIGGER trg_brick_conflicts_no_delete
         BEFORE DELETE ON brick_conflicts
         FOR EACH ROW
         BEGIN
             SELECT RAISE(ABORT, 'brick conflict history cannot be deleted');
         END
-        """,
-        # История предложений снова неизменяема и неудаляема для сервиса.
-        """
-        CREATE TRIGGER trg_brick_proposals_no_delete
+    """,
+    # trigger trg_brick_proposals_no_delete
+    """
+CREATE TRIGGER trg_brick_proposals_no_delete
         BEFORE DELETE ON brick_proposals
         FOR EACH ROW
         BEGIN
             SELECT RAISE(ABORT, 'brick proposal history cannot be deleted');
         END
-        """,
-        """
-        CREATE TRIGGER trg_brick_proposals_decision_immutable
+    """,
+    # trigger trg_brick_proposals_decision_immutable
+    """
+CREATE TRIGGER trg_brick_proposals_decision_immutable
         BEFORE UPDATE ON brick_proposals
         FOR EACH ROW
         WHEN OLD.status <> 'pending'
@@ -3739,16 +1678,10 @@ MIGRATION_25_SINGLE_ADDRESS_BRICK = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'brick proposal decision is immutable');
         END
-        """,
-        # Poster 2.4 P1: проверка ссылки одобрения снова описывает два исхода.
-        # `place` — по-прежнему ОТДЕЛЬНЫЙ кирпичик (`b.id <> OLD.source_brick_id`),
-        # `system` — повышение ТОГО ЖЕ ряда: `approved_brick_id =
-        # source_brick_id`, строка уже системная и совпадает со снимком.
-        # Обе ветви требуют активного кирпичика, точного совпадения
-        # область/место/владелец/код/название/тип/источник/правила, поэтому
-        # подмена на посторонний кирпичик по-прежнему невозможна.
-        """
-        CREATE TRIGGER trg_brick_proposals_approval_link
+    """,
+    # trigger trg_brick_proposals_approval_link
+    """
+CREATE TRIGGER trg_brick_proposals_approval_link
         BEFORE UPDATE OF status, approved_brick_id ON brick_proposals
         FOR EACH ROW
         WHEN NEW.status = 'approved' AND NOT EXISTS (
@@ -3777,90 +1710,10 @@ MIGRATION_25_SINGLE_ADDRESS_BRICK = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'approved brick does not match proposal');
         END
-        """,
-        # Poster 2.4 P1: повышение личного кирпичика в системный больше не
-        # создаёт второй носитель кода (тот же id меняет `scope`), поэтому
-        # исключение Stage 26/R3 для одобрения глобального предложения
-        # устранено. Правило снова безусловно: системный и несистемный код не
-        # сосуществуют. Триггер UPDATE разрешает неизменный код при смене
-        # области personal → system: это и есть повышение того же ряда без
-        # дубля кода.
-        "DROP TRIGGER IF EXISTS trg_bricks_reserve_codes_insert",
-        """
-        CREATE TRIGGER trg_bricks_reserve_codes_insert
-        BEFORE INSERT ON bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM bricks b
-            WHERE b.code = NEW.code
-              AND (
-                  (NEW.scope = 'system' AND b.scope <> 'system')
-                  OR (NEW.scope <> 'system' AND b.scope = 'system')
-              )
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'system brick code is reserved');
-        END
-        """,
-        "DROP TRIGGER IF EXISTS trg_bricks_reserve_codes_update",
-        """
-        CREATE TRIGGER trg_bricks_reserve_codes_update
-        BEFORE UPDATE OF code, scope ON bricks
-        FOR EACH ROW
-        WHEN EXISTS (
-            SELECT 1 FROM bricks b
-            WHERE b.id <> OLD.id
-              AND b.code = NEW.code
-              AND (
-                  (NEW.scope = 'system' AND b.scope <> 'system')
-                  OR (NEW.scope <> 'system' AND b.scope = 'system')
-              )
-        )
-        AND NOT (
-            NEW.code = OLD.code
-            AND (
-                NEW.scope = OLD.scope
-                OR (OLD.scope = 'personal' AND NEW.scope = 'system')
-            )
-        )
-        BEGIN
-            SELECT RAISE(ABORT, 'system brick code is reserved');
-        END
-        """,
-    ),
-    requires_tables=(
-        "bricks",
-        "announcement_values",
-        "announcement_extras",
-        "template_version_bricks",
-        "template_snapshot_bricks",
-        "brick_conflicts",
-        "brick_proposals",
-    ),
-)
-
-
-MIGRATION_26_ANNOUNCEMENT_INSTANCES = Migration(
-    version=26,
-    name="announcement_instances",
-    statements=(
-        # Poster 2.5 §24–31: готовый анонс — цельное сообщение (или альбом +
-        # одна переиспользуемая панель управления), а повторное открытие
-        # отправляет НОВЫЙ экземпляр. Логический черновик остаётся один:
-        # экземпляры — надстройка над `announcement_drafts`, а не история
-        # самого черновика. `publication_progress` продолжает отвечать за
-        # доставку (ids/fingerprint/step), экземпляр регистрируется ПОСЛЕ
-        # подтверждённой отправки.
-        #
-        # `id` — устойчивая привязка callback `anp_{action}:{instance_id}`:
-        # устаревший callback находит строку и видит `archived` (§32), не
-        # воскрешая старый редактор. `message_ids` — JSON-массив в порядке
-        # отправки (альбом — все сообщения группы). `panel_message_id` —
-        # отдельная панель управления для медиагруппы; у одного сообщения
-        # кнопки живут на нём самом, поэтому NULL. Частичный уникальный
-        # индекс ниже гарантирует ровно один `active` на черновик.
-        """
-        CREATE TABLE announcement_instances (
+    """,
+    # table announcement_instances
+    """
+CREATE TABLE announcement_instances (
             id INTEGER NOT NULL PRIMARY KEY,
             draft_id INTEGER NOT NULL,
             chat_id INTEGER NOT NULL,
@@ -3885,24 +1738,22 @@ MIGRATION_26_ANNOUNCEMENT_INSTANCES = Migration(
                 FOREIGN KEY (draft_id) REFERENCES announcement_drafts (id)
                 ON DELETE CASCADE
         )
-        """,
-        # Ровно один действующий экземпляр на логический анонс (§30). Индекс
-        # проверяет это на уровне SQLite: даже прямой INSERT второго `active`
-        # невозможен, а `replace_instance` обязан сначала архивировать старый.
-        """
-        CREATE UNIQUE INDEX ux_announcement_instances_active
+    """,
+    # index ux_announcement_instances_active
+    """
+CREATE UNIQUE INDEX ux_announcement_instances_active
             ON announcement_instances (draft_id) WHERE status = 'active'
-        """,
-        # История экземпляров одного черновика читается по поколению (§31).
-        """
-        CREATE INDEX ix_announcement_instances_draft
+
+    """,
+    # index ix_announcement_instances_draft
+    """
+CREATE INDEX ix_announcement_instances_draft
             ON announcement_instances (draft_id, generation)
-        """,
-        # Идентичность экземпляра неизменяема: сообщения/чат/поколение не
-        # переписываются, иначе «архивный снимок» переставал бы быть снимком,
-        # а защита старых callback опиралась бы на подменяемые данные.
-        """
-        CREATE TRIGGER trg_announcement_instances_identity_immutable
+
+    """,
+    # trigger trg_announcement_instances_identity_immutable
+    """
+CREATE TRIGGER trg_announcement_instances_identity_immutable
         BEFORE UPDATE OF draft_id, chat_id, message_ids, generation, created_at
         ON announcement_instances
         FOR EACH ROW
@@ -3914,54 +1765,20 @@ MIGRATION_26_ANNOUNCEMENT_INSTANCES = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'announcement instance identity is immutable');
         END
-        """,
-        # Архивный экземпляр не возвращается в строй: иначе старая кнопка
-        # могла бы снова стать активной, а уникальный индекс пропустил бы
-        # два «действующих» в разное время.
-        """
-        CREATE TRIGGER trg_announcement_instances_status_flow
+    """,
+    # trigger trg_announcement_instances_status_flow
+    """
+CREATE TRIGGER trg_announcement_instances_status_flow
         BEFORE UPDATE OF status ON announcement_instances
         FOR EACH ROW
         WHEN OLD.status = 'archived' AND NEW.status = 'active'
         BEGIN
             SELECT RAISE(ABORT, 'archived announcement instance is immutable');
         END
-        """,
-    ),
-    # Backfill не выполняется: в `publication_progress` есть только
-    # `ids`/`fingerprint`, а chat_id доставки нигде не хранится надёжно
-    # (`user_states.chat_id` — состояние интерфейса, а не факт отправки).
-    # Экземпляры начинаются с первой публикации после обновления; уже
-    # доставленные анонсы продолжают читаться по `publication_progress`.
-    requires_tables=("announcement_drafts",),
-)
-
-
-# --- Версия 27: условные части шаблонов (Poster 2.5, §38–45) ----------------
-
-MIGRATION_27_CONDITIONAL_PARTS = Migration(
-    version=27,
-    name="template_conditional_parts",
-    statements=(
-        # Poster 2.5 §38–45: автор сам задаёт фрагмент текста, который
-        # скрывается, если управляющий кирпичик пуст. Синтаксиса условий в
-        # самом тексте нет: правило — отдельная строка со ссылкой на
-        # конкретную НЕИЗМЕНЯЕМУЮ версию шаблона. Поэтому правка текста
-        # создаёт новую версию, а правила старой остаются историей (§44).
-        #
-        # `fragment` — точный фрагмент ИСХОДНОГО текста секции (не HTML).
-        # `occurrence` нужен для §42-Е: два одинаковых вхождения одного
-        # фрагмента различаются номером вхождения (1-based). Без него
-        # правило не смогло бы однозначно указать, какое из них скрывать.
-        #
-        # `brick_id` — единственный управляющий кирпичик (§41); он обязан
-        # быть привязан к той же версии. `status`:
-        #   * `active` — правило действует;
-        #   * `stale` — фрагмент/кирпичик в текущей версии больше не
-        #     находятся однозначно; правило не применяется к случайному
-        #     похожему месту и не удаляется молча (§44).
-        """
-        CREATE TABLE template_conditional_parts (
+    """,
+    # table template_conditional_parts
+    """
+CREATE TABLE template_conditional_parts (
             id INTEGER NOT NULL PRIMARY KEY,
             template_id INTEGER NOT NULL,
             version_id INTEGER NOT NULL,
@@ -3990,59 +1807,16 @@ MIGRATION_27_CONDITIONAL_PARTS = Migration(
                 FOREIGN KEY (brick_id) REFERENCES bricks (id)
                 ON DELETE RESTRICT
         )
-        """,
-        # Правила читаются по версии и секции: редактор показывает их вместе
-        # с одним текстом, рендер — только для отрисовываемой секции.
-        """
-        CREATE INDEX ix_template_conditional_parts_version_section
+    """,
+    # index ix_template_conditional_parts_version_section
+    """
+CREATE INDEX ix_template_conditional_parts_version_section
             ON template_conditional_parts (version_id, section)
-        """,
-    ),
-)
 
-
-# --- Версия 28: заморозка правил в снимке (Poster 2.5.1, §44) --------------
-#
-# Дефект 2.5: правила условных частей жили только у версии шаблона, поэтому
-# правка шаблона (`refresh_conditional_parts`) переносила правило в новую
-# версию или помечала его `stale` — и УЖЕ СОЗДАННЫЙ анонс менял рендер.
-# Обратная сторона: правило, добавленное к той же версии после создания
-# анонса, начинало применяться к старому черновику.
-#
-# Poster 2.5.1: правила входят в независимый снимок анонса и замораживаются
-# в момент его создания. Копия делается в той же транзакции, что и сам
-# снимок (`template_store.create_template_snapshot`), поэтому «снимок без
-# правил» как промежуточное состояние не существует.
-#
-# Backfill НЕ выполняется — решение владельца релиза 2.5.1: рабочая база
-# перед выпуском очищается утверждённым протоколом (`db_maintenance.py`,
-# `make db-maintain-clean`), пользовательских снимков к моменту применения
-# миграции не остаётся. Уже существующие снимки получают
-# `conditional_rules_frozen = 0` из DEFAULT. Poster 2.5.2 (§8) удалил
-# легаси-рендер по правилам версии: значение признака больше не влияет на
-# рендер, снимок всегда читает свою копию правил. Миграция задним числом не
-# переписывается, колонка и её DEFAULT остаются.
-#
-# Пометка «правил не было» отличается от пустой копии намеренно: пустая
-# заморозка (без строк) — это семантика «на момент создания правил не было»,
-# и правило, добавленное позже, к такому снимку уже не применяется.
-
-MIGRATION_28_SNAPSHOT_CONDITIONAL_PARTS = Migration(
-    version=28,
-    name="template_snapshot_conditional_parts",
-    statements=(
-        # Копия активных правил версии на момент создания снимка. Отдельная
-        # таблица, а не ссылка на `template_conditional_parts`: строка
-        # правила версии живёт и меняется (`version_id` переписывается при
-        # переносе, `status` становится `stale`), а снимок обязан остаться
-        # ровно тем, каким был (§44).
-        #
-        # Колонки повторяют смысл правила версии: `section` — одна из двух
-        # авторских секций, `fragment` — точный фрагмент исходного текста,
-        # `occurrence` — 1-based номер вхождения. `brick_id` — управляющий
-        # кирпичик, тот же, что был привязан к версии на момент копирования.
-        """
-        CREATE TABLE template_snapshot_conditional_parts (
+    """,
+    # table template_snapshot_conditional_parts
+    """
+CREATE TABLE template_snapshot_conditional_parts (
             id INTEGER NOT NULL PRIMARY KEY,
             snapshot_id INTEGER NOT NULL,
             section TEXT NOT NULL,
@@ -4061,60 +1835,16 @@ MIGRATION_28_SNAPSHOT_CONDITIONAL_PARTS = Migration(
                 FOREIGN KEY (brick_id) REFERENCES bricks (id)
                 ON DELETE RESTRICT
         )
-        """,
-        # Рендер читает правила одной секции одного снимка: ровно этот
-        # индекс покрывает запрос `snapshot_id + section`.
-        """
-        CREATE INDEX ix_template_snapshot_conditional_parts_snapshot_section
+    """,
+    # index ix_template_snapshot_conditional_parts_snapshot_section
+    """
+CREATE INDEX ix_template_snapshot_conditional_parts_snapshot_section
             ON template_snapshot_conditional_parts (snapshot_id, section)
-        """,
-        # Признак на самом снимке: 1 — правила заморожены в момент создания.
-        # DEFAULT 0 нужен для уже существующих строк (backfill не делается).
-        # С 2.5.2 (§8) значение не влияет на рендер: снимок всегда читает
-        # собственную копию правил, миграция задним числом не переписывается.
-        """
-        ALTER TABLE template_snapshots
-            ADD COLUMN conditional_rules_frozen INTEGER NOT NULL DEFAULT 0
-            CONSTRAINT ck_template_snapshots_conditional_rules_frozen
-            CHECK (conditional_rules_frozen IN (0, 1))
-        """,
-    ),
-)
 
-
-# --- Версия 29: журнал событий пользователя и репорты (этап B) ------------
-#
-# Фундамент системы репортов: пользователь нажимает «Сообщить о проблеме» —
-# бот прикладывает снимок СВОИХ последних действий за час, чтобы разработчик
-# видел шаги, а не только текст жалобы.
-#
-# `user_event_log` — структурированный журнал технических событий:
-# `action` (короткий тип, `screen.open`, `field.edit.save`), `screen`
-# (раздел), `scenario` (сценарий, если применим), `result`, `detail`.
-# Содержимое сообщений и значения полей анонса сюда НЕ пишутся (см.
-# `utils/user_events.py`). Журнал ограничен по времени: retention удаляет
-# строки старше `RETENTION_DAYS` по `created_at`.
-#
-# `reports` — постоянный (переживает рестарт) репорт пользователя:
-# `events_snapshot` хранит готовый текст .txt-снимка В БД, а не во временном
-# файле; `notified_user_ids` — JSON-список уже уведомлённых superadmin
-# (защита от повторной доставки после рестарта). Авторизация закрытия —
-# только `status='active'` + `UPDATE ... WHERE status='active'`: двойное
-# архивирование второго UPDATE не проходит.
-#
-# Обе таблицы описаны только Core-таблицами (`utils/user_events.py`,
-# `report_store.py`), в `models.py` их нет: `create_all` не должен создавать
-# их в обход журнала миграций (как `announcement_instances`).
-
-MIGRATION_29_USER_EVENT_LOG_REPORTS = Migration(
-    version=29,
-    name="user_event_log_reports",
-    statements=(
-        # Журнал событий одного пользователя. Индекс (telegram_user_id,
-        # created_at) — чтение «события пользователя N за период» для снимка
-        # репорта; индекс по created_at — единственный запрос retention.
-        """
-        CREATE TABLE user_event_log (
+    """,
+    # table user_event_log
+    """
+CREATE TABLE user_event_log (
             id INTEGER NOT NULL PRIMARY KEY,
             telegram_user_id INTEGER NOT NULL,
             created_at DATETIME NOT NULL,
@@ -4124,20 +1854,22 @@ MIGRATION_29_USER_EVENT_LOG_REPORTS = Migration(
             result TEXT,
             detail TEXT
         )
-        """,
-        """
-        CREATE INDEX ix_user_event_log_user_created
+    """,
+    # index ix_user_event_log_user_created
+    """
+CREATE INDEX ix_user_event_log_user_created
             ON user_event_log (telegram_user_id, created_at)
-        """,
-        """
-        CREATE INDEX ix_user_event_log_created
+
+    """,
+    # index ix_user_event_log_created
+    """
+CREATE INDEX ix_user_event_log_created
             ON user_event_log (created_at)
-        """,
-        # Постоянный репорт. `username`/`display_name` — снимок на момент
-        # отправки: авторизация по ним не делается, только `author_user_id`.
-        # `events_snapshot` — готовый текст снимка событий (.txt-содержимое).
-        """
-        CREATE TABLE reports (
+
+    """,
+    # table reports
+    """
+CREATE TABLE reports (
             id INTEGER NOT NULL PRIMARY KEY,
             author_user_id INTEGER NOT NULL,
             chat_id INTEGER NOT NULL,
@@ -4155,125 +1887,16 @@ MIGRATION_29_USER_EVENT_LOG_REPORTS = Migration(
             CONSTRAINT ck_reports_status
                 CHECK (status IN ('active', 'archived'))
         )
-        """,
-        # Список и счётчик действующих/архивных репортов: новые к старым.
-        """
-        CREATE INDEX ix_reports_status_created
+    """,
+    # index ix_reports_status_created
+    """
+CREATE INDEX ix_reports_status_created
             ON reports (status, created_at)
-        """,
-    ),
-)
 
-
-# --- Версия 30: два варианта стандарта и три системных кирпичика (этап A1) --
-#
-# Финальное задание владельца (2026-11-08) §1–4:
-#
-# - у площадки ОДИН шаблон с двумя сохранёнными текстами; активность
-#   расширенного варианта — флаг строки шаблона (`templates.extended_active`,
-#   по умолчанию выключен). Выключение флага не удаляет ни текст, ни
-#   условные части: это только выбор варианта для НОВЫХ анонсов;
-# - снимок копирует значение флага (`template_snapshots.extended_active`),
-#   поэтому переключение посреди создания не меняет начатый черновик (§3.1);
-# - три необязательных системных кирпичика: `условие_входа`, `куратор`,
-#   `подвал`. Подсказки — §16 задания, они же `description` строки
-#   `bricks` (экран вопроса показывает описание системного кирпичика).
-#
-# Обе колонки добавляются с DEFAULT 0: у существующих шаблонов расширенный
-# вариант ещё не включали, а снимки без флага рендерятся простым текстом.
-#
-# Кирпичики вставляются идемпотентно (`WHERE NOT EXISTS` по коду) и с
-# `MAX(id)+1`, как в миграциях 15 и 21: в существующей базе пользовательские
-# и местные кирпичики могли занять номера 12–14, а каталожный ID — логический
-# (чтение сверяет определение по коду, а не по номеру). Повторная
-# инициализация не создаёт дублей и не переписывает уже существующую строку.
-#
-# Триггеры резервирования кодов снимаются на время вставки и
-# восстанавливаются дословно в редакции миграции 25 (Poster 2.4 P1): правило
-# безусловно, исключение Stage 26/R3 больше не действует.
-
-_M30_CONDITION_ENTRY_DESCRIPTION = (
-    "Напишите условия входа. Например: «Вход бесплатный, без регистрации», "
-    "«Вход — 100 ₽» или «Вход по записи»."
-)
-_M30_CURATOR_DESCRIPTION = (
-    "Выберите куратора или пришлите его контакт: @ник, ссылку или текст "
-    "с гиперссылкой."
-)
-_M30_FOOTER_DESCRIPTION = "Выберите напоминание, которое появится внизу анонса."
-
-
-def _m30_system_brick_insert(
-    *,
-    code: str,
-    title: str,
-    description: str,
-) -> str:
-    """Идемпотентная вставка одного системного кирпичика (`MAX(id)+1`)."""
-    return f"""
-        INSERT INTO bricks
-            (id, code, title, type, scope, source, rules_json, status,
-             created_by_user_id, created_at, updated_at, description)
-        SELECT
-            COALESCE(MAX(id), 0) + 1,
-            {_migration_18_literal(code)},
-            {_migration_18_literal(title)},
-            'short_text',
-            'system',
-            'ask',
-            NULL,
-            'active',
-            NULL,
-            CURRENT_TIMESTAMP,
-            NULL,
-            {_migration_18_literal(description)}
-        FROM bricks
-        WHERE NOT EXISTS (
-            SELECT 1 FROM bricks WHERE code = {_migration_18_literal(code)}
-        )
-        """
-
-
-MIGRATION_30_STANDARD_TEMPLATE_EXTENDED = Migration(
-    version=30,
-    name="standard_template_extended",
-    statements=(
-        # Флаг расширенного варианта. CHECK в той же операции: значение —
-        # строго 0/1, как у `conditional_rules_frozen`.
-        """
-        ALTER TABLE templates
-            ADD COLUMN extended_active INTEGER NOT NULL DEFAULT 0
-            CONSTRAINT ck_templates_extended_active
-            CHECK (extended_active IN (0, 1))
-        """,
-        # Копия флага в снимке: начатый черновик продолжает создаваться по
-        # тому варианту, с которым пользователь начал работу (§3.1).
-        """
-        ALTER TABLE template_snapshots
-            ADD COLUMN extended_active INTEGER NOT NULL DEFAULT 0
-            CONSTRAINT ck_template_snapshots_extended_active
-            CHECK (extended_active IN (0, 1))
-        """,
-        "DROP TRIGGER IF EXISTS trg_bricks_reserve_codes_insert",
-        "DROP TRIGGER IF EXISTS trg_bricks_reserve_codes_update",
-        _m30_system_brick_insert(
-            code="условие_входа",
-            title="Условие входа",
-            description=_M30_CONDITION_ENTRY_DESCRIPTION,
-        ),
-        _m30_system_brick_insert(
-            code="куратор",
-            title="Куратор",
-            description=_M30_CURATOR_DESCRIPTION,
-        ),
-        _m30_system_brick_insert(
-            code="подвал",
-            title="Подвал",
-            description=_M30_FOOTER_DESCRIPTION,
-        ),
-        # Триггеры возвращаются дословно в редакции миграции 25.
-        """
-        CREATE TRIGGER trg_bricks_reserve_codes_insert
+    """,
+    # trigger trg_bricks_reserve_codes_insert
+    """
+CREATE TRIGGER trg_bricks_reserve_codes_insert
         BEFORE INSERT ON bricks
         FOR EACH ROW
         WHEN EXISTS (
@@ -4287,9 +1910,10 @@ MIGRATION_30_STANDARD_TEMPLATE_EXTENDED = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'system brick code is reserved');
         END
-        """,
-        """
-        CREATE TRIGGER trg_bricks_reserve_codes_update
+    """,
+    # trigger trg_bricks_reserve_codes_update
+    """
+CREATE TRIGGER trg_bricks_reserve_codes_update
         BEFORE UPDATE OF code, scope ON bricks
         FOR EACH ROW
         WHEN EXISTS (
@@ -4311,32 +1935,10 @@ MIGRATION_30_STANDARD_TEMPLATE_EXTENDED = Migration(
         BEGIN
             SELECT RAISE(ABORT, 'system brick code is reserved');
         END
-        """,
-    ),
-    requires_tables=(
-        "bricks",
-        "templates",
-        "template_snapshots",
-    ),
-)
-
-
-MIGRATION_31_CURATOR_FOOTER_CATALOGS = Migration(
-    version=31,
-    name="curator_footer_catalogs",
-    statements=(
-        # Справочник кураторов («Лекало» 2.6, этап B1). Запись принадлежит
-        # ЛИБО площадке (`place_id`), ЛИБО пользователю (`owner_user_id`):
-        # ровно одна область, что и проверяет XOR-CHECK. `owner_user_id` —
-        # внутренний `users.id`, поэтому рестарт/смена username не меняют
-        # владельца.
-        #
-        # Форматирование хранится по модели кирпичиков/анонсов: `value_plain` —
-        # plain-текст (источник истины для длины и подписи кнопки),
-        # `value_html` — безопасный HTML (`entities_to_html`/`sanitize_html`).
-        # Пустой `value_html` не пишется: NULL означает «форматирования нет».
-        """
-        CREATE TABLE curator_entries (
+    """,
+    # table curator_entries
+    """
+CREATE TABLE curator_entries (
             id INTEGER NOT NULL PRIMARY KEY,
             place_id INTEGER,
             owner_user_id INTEGER,
@@ -4365,22 +1967,22 @@ MIGRATION_31_CURATOR_FOOTER_CATALOGS = Migration(
                 FOREIGN KEY (created_by_user_id) REFERENCES users (id)
                 ON DELETE SET NULL
         )
-        """,
-        # Список активных/архивных записей в области: владелец + статус.
-        """
-        CREATE INDEX ix_curator_entries_place_status
+    """,
+    # index ix_curator_entries_place_status
+    """
+CREATE INDEX ix_curator_entries_place_status
             ON curator_entries (place_id, status)
-        """,
-        """
-        CREATE INDEX ix_curator_entries_owner_status
+
+    """,
+    # index ix_curator_entries_owner_status
+    """
+CREATE INDEX ix_curator_entries_owner_status
             ON curator_entries (owner_user_id, status)
-        """,
-        # Справочник подвалов: название для списка/кнопок + текст подстановки.
-        # Название уникально внутри области владения без учёта регистра
-        # (`name_search` — NFKC + casefold, как у `place_names`), архивные
-        # записи участвуют: восстановление не создаёт неоднозначности.
-        """
-        CREATE TABLE footer_entries (
+
+    """,
+    # table footer_entries
+    """
+CREATE TABLE footer_entries (
             id INTEGER NOT NULL PRIMARY KEY,
             place_id INTEGER,
             owner_user_id INTEGER,
@@ -4415,183 +2017,233 @@ MIGRATION_31_CURATOR_FOOTER_CATALOGS = Migration(
                 FOREIGN KEY (created_by_user_id) REFERENCES users (id)
                 ON DELETE SET NULL
         )
-        """,
-        """
-        CREATE UNIQUE INDEX ux_footer_entries_place_name
+    """,
+    # index ux_footer_entries_place_name
+    """
+CREATE UNIQUE INDEX ux_footer_entries_place_name
             ON footer_entries (place_id, name_search) WHERE place_id IS NOT NULL
-        """,
-        """
-        CREATE UNIQUE INDEX ux_footer_entries_owner_name
+
+    """,
+    # index ux_footer_entries_owner_name
+    """
+CREATE UNIQUE INDEX ux_footer_entries_owner_name
             ON footer_entries (owner_user_id, name_search)
             WHERE owner_user_id IS NOT NULL
-        """,
-        """
-        CREATE INDEX ix_footer_entries_place_status
+
+    """,
+    # index ix_footer_entries_place_status
+    """
+CREATE INDEX ix_footer_entries_place_status
             ON footer_entries (place_id, status)
-        """,
-        """
-        CREATE INDEX ix_footer_entries_owner_status
+
+    """,
+    # index ix_footer_entries_owner_status
+    """
+CREATE INDEX ix_footer_entries_owner_status
             ON footer_entries (owner_user_id, status)
-        """,
-        # Стабильный ID нельзя переписать UPDATE-ом (как у кирпичиков).
-        """
-        CREATE TRIGGER trg_curator_entries_id_immutable
+
+    """,
+    # trigger trg_curator_entries_id_immutable
+    """
+CREATE TRIGGER trg_curator_entries_id_immutable
         BEFORE UPDATE OF id ON curator_entries
         FOR EACH ROW
         WHEN NEW.id <> OLD.id
         BEGIN
             SELECT RAISE(ABORT, 'curator_entries.id is immutable');
         END
-        """,
-        """
-        CREATE TRIGGER trg_footer_entries_id_immutable
+    """,
+    # trigger trg_footer_entries_id_immutable
+    """
+CREATE TRIGGER trg_footer_entries_id_immutable
         BEFORE UPDATE OF id ON footer_entries
         FOR EACH ROW
         WHEN NEW.id <> OLD.id
         BEGIN
             SELECT RAISE(ABORT, 'footer_entries.id is immutable');
         END
-        """,
-    ),
-    requires_tables=(
-        "users",
-        "places",
-    ),
+    """,
+    # table user_states
+    """
+CREATE TABLE user_states (
+    user_id INTEGER NOT NULL,
+    chat_id INTEGER,
+    screen_message_id INTEGER,
+    payload TEXT,
+    updated_at DATETIME,
+    PRIMARY KEY (user_id)
+)
+    """,
 )
 
-
-# --- Версия 32: подсказки §16 у системных кирпичиков конструктора ----------
+# Каталог системных кирпичиков новой базы: id, code, title, type, source,
+# rules_json, description. Источник истины по правилам типов — код продукта
+# (`brick_types.SYSTEM_BRICKS`); здесь — начальное состояние релиза 1.0.0 с
+# ФИНАЛЬНЫМИ описаниями (их показывает экран вопроса).
 #
-# Финальное задание 2026-11-08 §16: у системных кирпичиков должны быть
-# РЕАЛЬНЫЕ описания (их показывает экран вопроса), а не только
-# универсальные подсказки типов. Пять кодов без описания: `название`,
-# `дата`, `время_начала`, `описание`, `контакт`. `условие_входа`,
-# `куратор` и `подвал` получили описания ещё миграцией 30 — их не трогаем.
-#
-# `фото` не является кирпичиком (вложения анонса), подсказка шага фото
-# живёт в каталоге текстов (`wizard.photos.hint`), а не в `bricks`.
-#
-# UPDATE условный (`description IS NULL`): описание, уже заданное владельцем
-# или суперадмином, не перезаписывается повторной инициализацией. Коды
-# системных кирпичиков неизменяемы, поэтому выборка по коду безопасна.
-
-_M32_DESCRIPTIONS: tuple[tuple[str, str], ...] = (
-    ("название", "Напишите название мероприятия."),
-    ("дата", "Выберите дату мероприятия или напишите её."),
-    ("время_начала", "Выберите время начала мероприятия или напишите."),
-    ("описание", "Пришлите описание мероприятия."),
+# id заданы явно: номера системных кирпичиков стабильны (на них ссылаются
+# шаблоны и снимки), id=6 не переиспользуется — это удалённый `адрес_места`.
+_BASELINE_SYSTEM_BRICKS: tuple[
+    tuple[int, str, str, str, str, str | None, str | None], ...
+] = (
     (
+        1,
+        "название",
+        "Название мероприятия",
+        "short_text",
+        "ask",
+        None,
+        "Напишите название мероприятия.",
+    ),
+    (
+        2,
+        "дата",
+        "Дата",
+        "date",
+        "ask",
+        '{"horizon_months": 12}',
+        "Выберите дату мероприятия или напишите её.",
+    ),
+    (
+        3,
+        "время_начала",
+        "Время начала",
+        "time",
+        "ask",
+        None,
+        "Выберите время начала мероприятия или напишите.",
+    ),
+    (4, "время_окончания", "Время окончания", "time", "ask", None, None),
+    (5, "место", "Название места", "short_text", "place", None, None),
+    (7, "ссылка_места", "Ссылка места", "url", "place", None, None),
+    (
+        8,
+        "описание",
+        "Описание",
+        "long_text",
+        "ask",
+        None,
+        "Пришлите описание мероприятия.",
+    ),
+    (
+        9,
         "контакт",
-        "Напишите контакты для гостей в формате вашей площадки. "
-        "Например: «Ведущий мероприятия: t.me/iddeleted» или "
-        "«По вопросам площадки: t.me/vozdvizhenka». Можно в несколько строк.",
+        "Контакт",
+        "short_text",
+        "ask",
+        None,
+        "Напишите контакт для гостей по вопросам мероприятия. Можно указать @ник, t.me/ник или имя с гиперссылкой.",
+    ),
+    (10, "адрес", "Адрес", "short_text", "place", None, None),
+    (11, "город", "Город", "short_text", "place", None, None),
+    (
+        12,
+        "условие_входа",
+        "Условие входа",
+        "short_text",
+        "ask",
+        None,
+        "Напишите условия входа. Например: «Вход бесплатный, без регистрации», «Вход — 100 ₽» или «Вход по записи».",
+    ),
+    (
+        13,
+        "куратор",
+        "Куратор",
+        "short_text",
+        "ask",
+        None,
+        "Выберите куратора или пришлите его контакт: @ник, ссылку или текст с гиперссылкой.",
+    ),
+    (
+        14,
+        "подвал",
+        "Подвал",
+        "short_text",
+        "ask",
+        None,
+        "Выберите напоминание, которое появится внизу анонса.",
     ),
 )
 
 
-def _m32_description_update(code: str, description: str) -> str:
-    """Идемпотентная подстановка описания системного кирпичика."""
-    return f"""
-        UPDATE bricks
-        SET description = {_migration_18_literal(description)},
-            updated_at = CURRENT_TIMESTAMP
-        WHERE code = {_migration_18_literal(code)}
-          AND scope = 'system'
-          AND description IS NULL
+def _sql_literal(value: "str | None") -> str:
+    """Литерал SQL: NULL или строка в кавычках (одинарная кавычка удваивается)."""
+    if value is None:
+        return "NULL"
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _baseline_system_brick_insert(
+    brick_id: int,
+    code: str,
+    title: str,
+    value_type: str,
+    source: str,
+    rules_json: "str | None",
+    description: "str | None",
+) -> str:
+    """
+    Идемпотентная вставка одного системного кирпичика.
+
+    `WHERE NOT EXISTS` по коду и области: повторная инициализация не создаёт
+    дублей и НЕ перезаписывает описания, отредактированные владельцем — та же
+    семантика «не откатывать правку», что у условных UPDATE прежних версий.
+    """
+    code_sql = _sql_literal(code)
+    values = ", ".join(
+        (
+            str(brick_id),
+            code_sql,
+            _sql_literal(title),
+            _sql_literal(value_type),
+            "'system'",
+            _sql_literal(source),
+            _sql_literal(rules_json),
+            "'active'",
+            "NULL",
+            "CURRENT_TIMESTAMP",
+            "CURRENT_TIMESTAMP",
+            _sql_literal(description),
+        )
+    )
+    return (
         """
-
-
-MIGRATION_32_SYSTEM_BRICK_HINTS = Migration(
-    version=32,
-    name="system_brick_hints",
-    statements=tuple(
-        _m32_description_update(code, description)
-        for code, description in _M32_DESCRIPTIONS
-    ),
-    requires_tables=("bricks",),
-)
-
-
-# --- Версия 33: финальное описание кирпичика «контакт» (релиз 1.0.0) --------
-#
-# Миграция 32 дала кирпичику `контакт` пример «в формате площадки»
-# (t.me/iddeleted, t.me/vozdvizhenka), который в релизе «Лекала» 1.0.0
-# заменён короткой универсальной подсказкой. Текст миграции 32 не
-# изменяется (журнал и контрольные суммы исторических версий неизменяемы):
-# финальное описание ставит отдельная миграция.
-#
-# UPDATE условный: перезаписывается ТОЛЬКО точный текст миграции 32 (и
-# пустое описание). Описание, отредактированное владельцем или
-# суперадмином на иное значение, как и в миграции 32, не трогается —
-# повторная инициализация не откатывает правку. Код системного кирпичика
-# неизменяем, выборка по коду и `scope='system'` безопасна; пользовательские
-# кирпичики, шаблоны и анонсы не затрагиваются.
-
-_M33_CONTACT_DESCRIPTION = (
-    "Напишите контакт для гостей по вопросам мероприятия. "
-    "Можно указать @ник, t.me/ник или имя с гиперссылкой."
-)
-
-
-def _m33_contact_description_update() -> str:
-    """Идемпотентная замена подсказки миграции 32 у кирпичика «контакт»."""
-    # Текст берётся из таблицы миграции 32: не дублируем литерал, а сама
-    # миграция 32 остаётся побайтово прежней (checksum считается по SQL).
-    previous = dict(_M32_DESCRIPTIONS)["контакт"]
-    return f"""
-        UPDATE bricks
-        SET description = {_migration_18_literal(_M33_CONTACT_DESCRIPTION)},
-            updated_at = CURRENT_TIMESTAMP
-        WHERE code = {_migration_18_literal("контакт")}
-          AND scope = 'system'
-          AND (description IS NULL
-               OR description = {_migration_18_literal(previous)})
+        INSERT INTO bricks
+            (id, code, title, type, scope, source, rules_json, status,
+             created_by_user_id, created_at, updated_at, description)
+        SELECT """
+        + values
+        + """
+        FROM (SELECT 1)
+        WHERE NOT EXISTS (
+            SELECT 1 FROM bricks
+            WHERE code = """
+        + code_sql
+        + """ AND scope = 'system'
+        )
         """
+    )
 
 
-MIGRATION_33_CONTACT_BRICK_HINT = Migration(
-    version=33,
-    name="contact_brick_hint",
-    statements=(_m33_contact_description_update(),),
-    requires_tables=("bricks",),
+_BASELINE_SEED: tuple[str, ...] = tuple(
+    _baseline_system_brick_insert(*brick) for brick in _BASELINE_SYSTEM_BRICKS
 )
 
-
-DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
-    MIGRATION_1_USERS_PLACES,
-    MIGRATION_2_PLACE_CONTACTS_UI,
-    MIGRATION_3_PLACE_ADMINS,
-    MIGRATION_4_PLACE_EDIT_LOG,
-    MIGRATION_5_ADMIN_TRANSFERS,
-    MIGRATION_6_BRICKS,
-    MIGRATION_7_BRICK_MANAGEMENT,
-    MIGRATION_8_TEMPLATES,
-    MIGRATION_9_BINDING_CODES,
-    MIGRATION_10_TEMPLATE_SESSIONS,
-    MIGRATION_11_BRICK_PROPOSALS,
-    MIGRATION_12_ANNOUNCEMENT_WIZARD,
-    MIGRATION_13_ANNOUNCEMENT_PUBLICATION,
-    MIGRATION_14_ANNOUNCEMENT_REDELIVERY,
-    MIGRATION_15_BRICK_DESCRIPTION_AND_ADDRESS,
-    MIGRATION_16_ANNOUNCEMENT_DRAFT_ORIGIN,
-    MIGRATION_17_ARCHIVE_LEGACY_DRAFTS,
-    MIGRATION_18_BUILTIN_TEMPLATES_V3,
-    MIGRATION_19_BRICK_CONFLICTS,
-    MIGRATION_20_PROPOSAL_DESCRIPTION,
-    MIGRATION_21_PLACE_CITY,
-    MIGRATION_22_BUILTIN_TEMPLATES_V4,
-    MIGRATION_23_PLACE_INVITE_LINKS,
-    MIGRATION_24_TEMPLATE_CONTENT,
-    MIGRATION_25_SINGLE_ADDRESS_BRICK,
-    MIGRATION_26_ANNOUNCEMENT_INSTANCES,
-    MIGRATION_27_CONDITIONAL_PARTS,
-    MIGRATION_28_SNAPSHOT_CONDITIONAL_PARTS,
-    MIGRATION_29_USER_EVENT_LOG_REPORTS,
-    MIGRATION_30_STANDARD_TEMPLATE_EXTENDED,
-    MIGRATION_31_CURATOR_FOOTER_CATALOGS,
-    MIGRATION_32_SYSTEM_BRICK_HINTS,
-    MIGRATION_33_CONTACT_BRICK_HINT,
+# Базовая версия 1.0.0: пустой файл → полностью готовая схема и каталог
+# системных кирпичиков. Контрольная сумма считается по всем шагам (DDL +
+# сидирование): применённая версия неизменяема, правки каталога — новая
+# версия 2, 3, …
+MIGRATION_1_0_0_BASELINE = Migration(
+    version=1,
+    name="baseline_1_0_0",
+    # Отступы блоков в исходнике не часть DDL: `strip` возвращает текст
+    # оператора к эталонному виду (SQLite сохраняет его в sqlite_master как
+    # есть, поэтому текст совпадает с эталоном).
+    statements=tuple(statement.strip() for statement in _BASELINE_SCHEMA)
+    + _BASELINE_SEED,
 )
+
+DEFAULT_MIGRATIONS: tuple[Migration, ...] = (MIGRATION_1_0_0_BASELINE,)
 
 LATEST_VERSION = DEFAULT_MIGRATIONS[-1].version if DEFAULT_MIGRATIONS else 0
 

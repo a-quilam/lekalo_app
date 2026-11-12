@@ -45,9 +45,8 @@ class BrickServiceTests(BrickDatabaseTestCase):
         return int(self.session.scalar(select(func.count()).select_from(Brick)) or 0)
 
     def test_system_reads_exclude_archived_but_keep_reserved_code(self) -> None:
-        # 9 кирпичиков миграции 6 + `[адрес]` миграции 15 + `[город]`
-        # миграции 21 (Poster 2.0 U1a) − `адрес_места`, устранённый
-        # миграцией 25 (Poster 2.4 P1), + три кирпичика миграции 30 (A1).
+        # Каталог 1.0.0: базовые кирпичики, `[адрес]` и `[город]`,
+        # `[условие_входа]`/`[куратор]`/`[подвал]`; легаси `адрес_места` нет.
         self.assertEqual(len(list_system_bricks(self.session)), 13)
         title = get_system_brick(self.session, " НАЗВАНИЕ ")
         self.assertIsNotNone(title)

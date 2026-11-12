@@ -2,42 +2,33 @@
 """
 R2 — независимая проверка требований владельца (poster-tester).
 
-Ничего не импортируется из «ожидаемых» констант продукта: эталон анонса,
-эталоны v2/v3 и имя стартовой копии записаны здесь ЛИТЕРАЛЬНО. Проверки идут
-через настоящее приложение `bot.build_application`, FakeBot и временную SQLite
-(`tests.integration_harness`) либо через миграции на временной БД. Реальная
-`post_bot.db`, `.env`, сеть и Telegram не используются.
+Ничего не импортируется из «ожидаемых» констант продукта: эталон анонса и
+имя стартовой копии записаны здесь ЛИТЕРАЛЬНО. Проверки идут через настоящее
+приложение `bot.build_application`, FakeBot и временную SQLite
+(`tests.integration_harness`). Реальная `post_bot.db`, `.env`, сеть и Telegram
+не используются.
 
 Покрыто:
-1. BUILTIN v3: жирный заголовок, пустая строка, жирное «дата // время»,
-   пустая строка, жирная КЛИКАБЕЛЬНАЯ площадка, нежирный адрес строкой ниже,
-   пустая строка, описание, пустая строка, контакт — побайтово в отправленном
-   сообщении; пропуски сохраняют `//`; пустой шаблон → «.».
-2. Миграция 18 на заполненной БД версии 17: обновляются только нетронутые
-   копии, имя меняется вместе с содержимым, правки не трогаются, повторный
-   запуск ничего не меняет, FK/integrity целы.
-3. Новый пользователь (/start) получает «Дефолтный шаблон» с текстом v3.
-4. №25 «Управление → Шаблоны»: ни один путь раздела не запускает анонс;
+1. BUILTIN v5: жирный заголовок, пустая строка, жирное «дата, время»,
+   жирная КЛИКАБЕЛЬНАЯ площадка, нежирный адрес строкой ниже, пустая строка,
+   описание, пустая строка, контакт — побайтово в отправленном сообщении;
+   пропуски сохраняют разделители; пустой шаблон → «.».
+2. Новый пользователь (/start) получает «Дефолтный шаблон» с текстом v5.
+3. №25 «Управление → Шаблоны»: ни один путь раздела не запускает анонс;
    удаление с историей — понятный отказ без потери данных; подделки отклонены.
-5. №26 «Управление → Площадки»: карточка, права трёх ролей, IDOR, создание
-   места со стандартом v3 без анонса, регресс `pl_pick` → анонс, stale.
+4. №26 «Управление → Площадки»: карточка, права трёх ролей, IDOR, создание
+   места со стандартом v5 без анонса, регресс `pl_pick` → анонс, stale.
 """
 
 from __future__ import annotations
 
-import os
 import re
-import shutil
-import sqlite3
 import unittest
 from unittest.mock import patch
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import sessionmaker
 
-from migrations import DEFAULT_MIGRATIONS, LATEST_VERSION, run_migrations
 from tests import ui_texts_expect as cat
-from tests.stage19a_helpers import make_engine, temp_db_path
 
 try:
     from handlers.announcement_wizard import CONVERSATION_NAME
@@ -88,68 +79,6 @@ OWNER_REFERENCE = (
     "Мероприятие ведёт: @contact"
 )
 
-# Эталон v4 (текст шаблонов, созданных до этапа A1): миграция 30 не
-# переписывает историю — существующие шаблоны остаются с прежним текстом
-# (перед публичным выпуском база очищается штатно, §0 задания).
-V4_OWNER_REFERENCE = (
-    "<b>Летний концерт</b>\n"
-    "\n"
-    "<b>12.07 (пн) // 19:00</b>\n"
-    '<b><a href="https://example.com/place">Дом культуры</a></b>\n'
-    "ул. Ленина, 1\n"
-    "\n"
-    "Большой зал, вход свободный.\n"
-    "\n"
-    "@contact"
-)
-
-V3_HEADER = "**[название]**"
-V3_BODY = (
-    "\n"
-    "**[дата] // [время_начала]**\n"
-    "\n"
-    "**[место]([ссылка_места])**\n"
-    "[адрес]\n"
-    "\n"
-    "[описание]"
-)
-V3_FOOTER = "\n[контакт]"
-
-# Эталон v4 (Poster 2.0 U1a): после заголовка пустая строка, дата/время и
-# площадка — соседние строки; тело — только описание, подвал — только контакт.
-V4_HEADER = (
-    "**[название]**\n\n**[дата] // [время_начала]**\n"
-    "**[место]([ссылка_места])**\n[адрес]"
-)
-V4_BODY = "\n[описание]"
-V4_FOOTER = "\n[контакт]"
-
-V2_HEADER = "**[название]**"
-V2_BODY = (
-    "[дата] // [время_начала]\n"
-    "[место]([ссылка_места])\n"
-    "[адрес]\n"
-    "\n"
-    "[описание]"
-)
-V2_FOOTER = "[контакт]"
-
-
-def _join(header: str, body: str, footer: str) -> str:
-    """Склейка секций в единый `content` — формула backfill миграции 24."""
-    if not (header.strip() or body.strip() or footer.strip()):
-        return header + body + footer
-    text = header.strip()
-    if text and (body.strip() or footer.strip()):
-        text += "\n"
-    text += body
-    if body.strip() and footer.strip():
-        text += "\n"
-    return text + footer
-
-
-V4_CONTENT = _join(V4_HEADER, V4_BODY, V4_FOOTER)
-
 # Эталон v5 (этап A1): простой и расширенный тексты стандарта. Записаны
 # литералами — продукт сверяется с ними побайтово.
 V5_CONTENT = (
@@ -179,7 +108,6 @@ V5_EXTENDED_CONTENT = (
     "[подвал]"
 )
 
-OLD_INITIAL_NAME = "Мой шаблон"
 NEW_INITIAL_NAME = "Дефолтный шаблон"
 
 OTHER_TG = 8_930_002
@@ -388,253 +316,6 @@ class DeliveredReferenceTests(unittest.TestCase):
             self.assertEqual(preview.html, ".")
             contact = get_system_brick(session, "контакт")
             self.assertIsNotNone(contact)
-
-
-# ============================================================================
-# 2. Миграция 18 на заполненной БД версии 17
-# ============================================================================
-
-
-def _sql(path: str, statement: str, parameters: tuple = ()) -> list[tuple]:
-    connection = sqlite3.connect(path)
-    try:
-        return connection.execute(statement, parameters).fetchall()
-    finally:
-        connection.close()
-
-
-def _write(path: str, statement: str, parameters: tuple = ()) -> None:
-    connection = sqlite3.connect(path)
-    try:
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute(statement, parameters)
-        connection.commit()
-    finally:
-        connection.close()
-
-
-class MigrationEighteenOwnerTests(unittest.TestCase):
-    """Требование 2: обновляются только доказуемо нетронутые копии v2."""
-
-    def setUp(self) -> None:
-        self.assertEqual(LATEST_VERSION, 33)
-        self.path = temp_db_path("poster-r2-owner-m18-")
-        self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
-        self.engine = make_engine(self.path)
-        self.addCleanup(self.engine.dispose)
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:17]), 17)
-        _write(
-            self.path,
-            "INSERT INTO users (id, telegram_user_id, created_at) "
-            "VALUES (1, 111, '2026-01-01 00:00:00')",
-        )
-        _write(
-            self.path,
-            "INSERT INTO places (id, created_by_user_id, created_at) "
-            "VALUES (1, 1, '2026-01-01 00:00:00')",
-        )
-        self._seed()
-
-    # — заполнение реалистичными копиями —
-    def _personal(
-        self,
-        template_id: int,
-        *,
-        name: str = OLD_INITIAL_NAME,
-        body: str = V2_BODY,
-        header: str = V2_HEADER,
-        footer: str = V2_FOOTER,
-        builtin: int | None = 2,
-        revision: int = 1,
-    ) -> None:
-        _write(
-            self.path,
-            "INSERT INTO templates (id, kind, owner_user_id, name, revision, "
-            "created_by_user_id, created_at, updated_at) "
-            "VALUES (?, 'personal', 1, ?, ?, 1, '2026-01-01 00:00:00', "
-            "'2026-01-01 00:00:00')",
-            (template_id, name, revision),
-        )
-        _write(
-            self.path,
-            "INSERT INTO template_versions (id, template_id, version, header, "
-            "body, footer, created_by_user_id, created_at, builtin_version) "
-            "VALUES (?, ?, ?, ?, ?, ?, 1, '2026-01-01 00:00:00', ?)",
-            (template_id, template_id, revision, header, body, footer, builtin),
-        )
-
-    def _standard(self, template_id: int) -> None:
-        _write(
-            self.path,
-            "INSERT INTO templates (id, kind, place_id, revision, created_at, "
-            "updated_at) VALUES (?, 'standard', 1, 1, "
-            "'2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-            (template_id,),
-        )
-        _write(
-            self.path,
-            "INSERT INTO template_versions (id, template_id, version, header, "
-            "body, footer, created_by_user_id, created_at, builtin_version) "
-            "VALUES (?, ?, 1, ?, ?, ?, NULL, '2026-01-01 00:00:00', 2)",
-            (template_id, template_id, V2_HEADER, V2_BODY, V2_FOOTER),
-        )
-
-    def _seed(self) -> None:
-        # 1 — нетронутая стартовая копия v2 (обновляется + переименовывается).
-        self._personal(1)
-        # 2 — нетронутый стандарт места (обновляется, имя остаётся NULL).
-        self._standard(2)
-        # 3 — тронутое человеком тело (не трогается, имя сохраняется).
-        self._personal(3, body=V2_BODY + "\n\nмоя подпись")
-        # 4 — переименованная, но нетронутая по тексту копия (не трогается).
-        self._personal(4, name="Копия для концертов")
-
-    def test_only_untouched_copies_get_v4_and_rename_happens_with_it(self) -> None:
-        # Возвращается LATEST_VERSION: R3 добавил миграцию 19, R4 — миграцию
-        # 20 (обе no-op для этого теста), логика миграции 18 не менялась.
-        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-
-        # Нетронутая личная копия: новая версия ровно с текстом v3, старая цела.
-        rows = _sql(
-            self.path,
-            "SELECT version, content, builtin_version "
-            "FROM template_versions WHERE template_id = 1 ORDER BY version",
-        )
-        self.assertEqual(len(rows), 3, "история: v2, v3 и новая v4")
-        self.assertEqual(rows[0], (1, _join(V2_HEADER, V2_BODY, V2_FOOTER), 2))
-        self.assertEqual(rows[1], (2, _join(V3_HEADER, V3_BODY, V3_FOOTER), 3))
-        self.assertEqual(rows[2], (3, V4_CONTENT, 4))
-        self.assertEqual(
-            _sql(self.path, "SELECT name, revision FROM templates WHERE id = 1"),
-            [(NEW_INITIAL_NAME, 3)],
-            "имя меняется в той же миграции, что и содержимое",
-        )
-
-        # Нетронутый стандарт: v3, name остаётся NULL, ревизия 2.
-        standard = _sql(
-            self.path,
-            "SELECT version, content FROM template_versions "
-            "WHERE template_id = 2 ORDER BY version",
-        )
-        self.assertEqual(len(standard), 3)
-        self.assertEqual(standard[1], (2, _join(V3_HEADER, V3_BODY, V3_FOOTER)))
-        self.assertEqual(standard[2], (3, V4_CONTENT))
-        self.assertEqual(
-            _sql(self.path, "SELECT name, revision FROM templates WHERE id = 2"),
-            [(None, 3)],
-        )
-
-        # Тронутая и переименованная копии не изменились вообще.
-        for template_id, expected_name in (
-            (3, OLD_INITIAL_NAME),
-            (4, "Копия для концертов"),
-        ):
-            with self.subTest(template_id=template_id):
-                self.assertEqual(
-                    _sql(
-                        self.path,
-                        "SELECT name, revision FROM templates WHERE id = ?",
-                        (template_id,),
-                    ),
-                    [(expected_name, 1)],
-                )
-                self.assertEqual(
-                    _sql(
-                        self.path,
-                        "SELECT version, builtin_version FROM template_versions "
-                        "WHERE template_id = ?",
-                        (template_id,),
-                    ),
-                    [(1, 2)],
-                )
-        # Ни одного переименования без новой версии.
-        self.assertEqual(
-            _sql(
-                self.path,
-                "SELECT id FROM templates WHERE name = ? AND revision = 1",
-                (NEW_INITIAL_NAME,),
-            ),
-            [],
-        )
-
-    def test_repeat_run_is_noop_and_schema_is_clean(self) -> None:
-        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-        templates = _sql(
-            self.path, "SELECT id, name, revision FROM templates ORDER BY id"
-        )
-        versions = _sql(
-            self.path,
-            "SELECT id, template_id, version, content, builtin_version "
-            "FROM template_versions ORDER BY id",
-        )
-        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-        self.assertEqual(
-            _sql(self.path, "SELECT id, name, revision FROM templates ORDER BY id"),
-            templates,
-        )
-        self.assertEqual(
-            _sql(
-                self.path,
-                "SELECT id, template_id, version, content, builtin_version "
-                "FROM template_versions ORDER BY id",
-            ),
-            versions,
-        )
-        self.assertEqual(
-            _sql(
-                self.path,
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name LIKE 'migration_%'",
-            ),
-            [],
-            "временная таблица-очередь не остаётся",
-        )
-        self.assertEqual(_sql(self.path, "PRAGMA foreign_key_check"), [])
-        self.assertEqual(_sql(self.path, "PRAGMA integrity_check"), [("ok",)])
-        # У каждого шаблона есть текущая версия (указатель не «висит»).
-        self.assertEqual(
-            _sql(
-                self.path,
-                "SELECT count(*) FROM templates AS t WHERE NOT EXISTS "
-                "(SELECT 1 FROM template_versions AS v "
-                "WHERE v.template_id = t.id AND v.version = t.revision)",
-            ),
-            [(0,)],
-        )
-
-    def test_migrated_copy_renders_owner_reference(self) -> None:
-        """
-        Скопированный миграцией 18 шаблон рендерится эталоном v4.
-
-        Этап A1 осознанно НЕ переписывает тексты уже существующих шаблонов
-        (миграция 30 только добавляет флаг и кирпичики): перед публичным
-        выпуском тестовые данные очищаются штатно, поэтому конвертация
-        истории не нужна. Новые площадки получают v5 — это проверяется
-        в `test_created_place_gets_v5_standard_without_announcement`.
-        """
-        run_migrations(self.engine)
-        from brick_store import list_system_bricks
-
-        session = sessionmaker(bind=self.engine, expire_on_commit=False)()
-        self.addCleanup(session.close)
-        by_code = {item.code: item for item in list_system_bricks(session)}
-        values = {
-            by_code["название"].id: "Летний концерт",
-            by_code["дата"].id: "12.07.2027",
-            by_code["время_начала"].id: "19:00",
-            by_code["место"].id: "Дом культуры",
-            by_code["ссылка_места"].id: "https://example.com/place",
-            by_code["адрес"].id: "ул. Ленина, 1",
-            by_code["описание"].id: "Большой зал, вход свободный.",
-            by_code["контакт"].id: "@contact",
-        }
-        rendered = render_template_version(
-            session,
-            actor_telegram_user_id=111,
-            template_id=1,
-            values_by_id=values,
-        )
-        self.assertEqual(rendered, V4_OWNER_REFERENCE)
 
 
 # ============================================================================

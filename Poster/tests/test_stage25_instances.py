@@ -1,6 +1,6 @@
 # tests/test_stage25_instances.py
 """
-Poster 2.5, этап C1 — экземпляры готового анонса (миграция 26).
+Poster 2.5, этап C1 — экземпляры готового анонса.
 
 Контракт (spec §19–33):
 
@@ -55,9 +55,6 @@ from tests.stage19a_helpers import make_engine, temp_db_path
 from tests.stage27_helpers import AnnouncementDatabaseTestCase
 
 CHAT_ID = 777
-MIGRATION_26_NAME = "announcement_instances"
-MIGRATION_27_NAME = "template_conditional_parts"
-MIGRATION_28_NAME = "template_snapshot_conditional_parts"
 
 
 def _journal(path: str) -> list[tuple[int, str]]:
@@ -82,11 +79,11 @@ def _sql(path: str, statement: str, params: tuple = ()) -> list[tuple]:
         connection.close()
 
 
-# --- миграция 26 ------------------------------------------------------------
+# --- базовая схема -----------------------------------------------------------
 
 
-class Migration26Tests(unittest.TestCase):
-    """Чистая установка, апгрейд с v25 и ограничения таблицы."""
+class BaselineInstancesTests(unittest.TestCase):
+    """Чистая установка и ограничения таблицы экземпляров."""
 
     def setUp(self) -> None:
         self.path = temp_db_path("poster-25-c1-migr-")
@@ -101,18 +98,8 @@ class Migration26Tests(unittest.TestCase):
 
     def test_fresh_install_has_instances_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 33)
-        # 2.5.1 добавила 28 (`template_snapshot_conditional_parts`), этап B —
-        # 29, «Лекало» 2.6 — 30/31, этап D2 — 32, релиз 1.0.0 — 33:
-        # проверяется позиция 25–27.
-        self.assertEqual(
-            _journal(self.path)[-9:-6],
-            [
-                (25, "single_address_brick"),
-                (26, MIGRATION_26_NAME),
-                (27, MIGRATION_27_NAME),
-            ],
-        )
+        self.assertEqual(LATEST_VERSION, 1)
+        self.assertEqual(_journal(self.path), [(1, "baseline_1_0_0")])
         columns = {
             str(row[1]): (str(row[2]).upper(), int(row[3]), row[4])
             for row in _sql(self.path, "PRAGMA table_info(announcement_instances)")
@@ -160,47 +147,6 @@ class Migration26Tests(unittest.TestCase):
         self.assertEqual(_sql(self.path, "PRAGMA foreign_key_check"), [], "FK целы")
         self.assertEqual(
             _sql(self.path, "PRAGMA integrity_check"), [("ok",)], "целостность"
-        )
-
-    def test_upgrade_from_v25_adds_only_new_tables(self) -> None:
-        """Upgrade-путь: база v25 получает только добавочные таблицы."""
-        self.assertEqual(self.migrate(DEFAULT_MIGRATIONS[:25]), 25)
-        before = {
-            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
-        }
-        self.assertNotIn("announcement_instances", before)
-        # Проверяется вклад 26–27: до 28 база доводится отдельным шагом,
-        # иначе в добавочный набор попали бы объекты следующей миграции.
-        self.assertEqual(self.migrate(DEFAULT_MIGRATIONS[:27]), 27)
-        after = {
-            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
-        }
-        added = after - before
-        self.assertIn("announcement_instances", added)
-        # Никаких перестроек прежних таблиц: миграции только добавочные.
-        self.assertEqual(
-            added,
-            {
-                "announcement_instances",
-                "ix_announcement_instances_draft",
-                "ux_announcement_instances_active",
-                "trg_announcement_instances_identity_immutable",
-                "trg_announcement_instances_status_flow",
-                MIGRATION_27_NAME,
-                "ix_template_conditional_parts_version_section",
-            },
-        )
-        self.assertEqual(_journal(self.path)[-1], (27, MIGRATION_27_NAME))
-        # 2.5.1 доводит базу до 28; повторный прогон по-прежнему no-op.
-        self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertIn((28, MIGRATION_28_NAME), _journal(self.path))
-        latest = {
-            str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")
-        }
-        self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(
-            {str(row[0]) for row in _sql(self.path, "SELECT name FROM sqlite_master")},
-            latest,
         )
 
     def test_two_active_instances_for_one_draft_are_impossible(self) -> None:

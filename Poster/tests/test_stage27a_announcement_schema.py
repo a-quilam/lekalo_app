@@ -2,77 +2,30 @@
 """
 Stage 27A: схема отдельного состояния адаптивного мастера.
 
-Проверяются миграция 12, независимые таблицы, ограничения/триггеры и
-сохранность прежних данных: `drafts` уходит в архив миграцией 17 (S5),
-`user_states` не трогается. Настоящая база не открывается.
+Проверяются независимые таблицы мастера, их ограничения и триггеры в
+базовой схеме 1.0.0. Настоящая база не открывается.
 """
 
 from __future__ import annotations
 
-import os
-import shutil
 import sqlite3
 import unittest
-from json import loads
 
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import sessionmaker
 
 from migrations import DEFAULT_MIGRATIONS, LATEST_VERSION, run_migrations
-from models import UserState
-from tests.stage19a_helpers import (
-    OLD_DRAFT,
-    OLD_WIP_PAYLOAD,
-    create_old_schema,
-    make_engine,
-    temp_db_path,
-)
 from tests.stage27_helpers import AnnouncementDatabaseTestCase
 
 
 class AnnouncementWizardMigrationTests(AnnouncementDatabaseTestCase):
     """Миграция 12 и ограничения новых таблиц."""
 
-    def test_latest_migration_is_twenty_five(self) -> None:
-        self.assertEqual(LATEST_VERSION, 33)
+    def test_latest_version_is_baseline(self) -> None:
+        self.assertEqual(LATEST_VERSION, 1)
         self.assertEqual(
             [(migration.version, migration.name) for migration in DEFAULT_MIGRATIONS],
-            [
-                (1, "users_places_place_names"),
-                (2, "place_contacts_and_ui_state"),
-                (3, "place_admins_and_admin_ui_state"),
-                (4, "place_edit_log"),
-                (5, "admin_transfers"),
-                (6, "bricks_registry"),
-                (7, "brick_management"),
-                (8, "templates_versions_snapshots"),
-                (9, "template_binding_codes"),
-                (10, "template_sessions"),
-                (11, "brick_proposals"),
-                (12, "announcement_wizard"),
-                (13, "announcement_photos_publication"),
-                (14, "announcement_redelivery"),
-                (15, "brick_description_and_address"),
-                (16, "announcement_draft_origin"),
-                (17, "archive_legacy_drafts"),
-                (18, "builtin_templates_v3"),
-                (19, "brick_code_conflicts"),
-                (20, "brick_proposal_description"),
-                (21, "place_city"),
-                (22, "builtin_templates_v4"),
-                (23, "place_invite_links"),
-                (24, "template_content_and_extras_without_sections"),
-                (25, "single_address_brick"),
-                (26, "announcement_instances"),
-                (27, "template_conditional_parts"),
-                (28, "template_snapshot_conditional_parts"),
-                (29, "user_event_log_reports"),
-                (30, "standard_template_extended"),
-                (31, "curator_footer_catalogs"),
-                (32, "system_brick_hints"),
-                (33, "contact_brick_hint"),
-            ],
+            [(1, "baseline_1_0_0")],
         )
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
@@ -309,67 +262,6 @@ class AnnouncementWizardMigrationTests(AnnouncementDatabaseTestCase):
                     ),
                     {"draft_id": draft.draft_id},
                 )
-
-
-class OldDraftCompatibilityTests(unittest.TestCase):
-    """Старые черновики и WIP не конвертируются в анонс.
-
-    Миграция 12 создаёт параллельные таблицы, а не переносит данные. В S5
-    легаси-таблица `drafts` переименована миграцией 17: содержимое остаётся
-    доступным в `legacy_drafts_backup` и в анонс не попадает.
-    """
-
-    def setUp(self) -> None:
-        self.path = temp_db_path("poster-27a-old-")
-        self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
-        create_old_schema(self.path)
-        self.engine = make_engine(self.path)
-        self.addCleanup(self.engine.dispose)
-
-    def test_old_draft_and_wip_survive_without_content_migration(self) -> None:
-        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-        self.session = sessionmaker(bind=self.engine, expire_on_commit=False)()
-        self.addCleanup(self.session.close)
-
-        state = self.session.get(UserState, OLD_DRAFT["user_id"])
-        self.assertIsNotNone(state)
-        assert state is not None
-        self.assertEqual(loads(state.payload or ""), OLD_WIP_PAYLOAD)
-
-        with self.engine.connect() as connection:
-            archived = connection.execute(
-                text("SELECT title, image FROM legacy_drafts_backup WHERE id = :id"),
-                {"id": OLD_DRAFT["id"]},
-            ).fetchone()
-            drafts_table = connection.execute(
-                text(
-                    "SELECT name FROM sqlite_master "
-                    "WHERE type='table' AND name='drafts'"
-                )
-            ).fetchone()
-            self.assertIsNone(drafts_table, "легаси-таблица переименована")
-            self.assertIsNotNone(archived, "прежний черновик читается из архива")
-            assert archived is not None
-            self.assertEqual(archived[0], OLD_DRAFT["title"])
-            self.assertEqual(archived[1], OLD_DRAFT["image"])
-            self.assertEqual(
-                connection.execute(
-                    text("SELECT count(*) FROM announcement_drafts")
-                ).scalar_one(),
-                0,
-            )
-            self.assertEqual(
-                connection.execute(
-                    text("SELECT count(*) FROM announcement_values")
-                ).scalar_one(),
-                0,
-            )
-            self.assertEqual(
-                connection.execute(
-                    text("SELECT count(*) FROM announcement_extras")
-                ).scalar_one(),
-                0,
-            )
 
 
 if __name__ == "__main__":

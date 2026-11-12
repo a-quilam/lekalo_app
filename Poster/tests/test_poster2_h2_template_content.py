@@ -7,18 +7,15 @@ Poster 2.3 H2 (часть 1): единый `content` шаблона и необ�
 `post_bot.db`, сеть и Telegram не используются):
 
 1. **Golden байт-в-байт.** Прежний эталон v4 состоял из трёх частей
-   (`header`/`body`/`footer`); их склейка по формуле миграции 24 побайтово
+   (`header`/`body`/`footer`); их склейка по прежней формуле побайтово
    совпадает с `BUILTIN_TEMPLATE_CONTENT`, а рендер этой строки совпадает с
    литеральным golden-HTML для матрицы: все значения заполнены / пустое
    описание / пустой контакт / оба пустых. То есть перенос секций в одну
    строку не меняет ни одного символа готового анонса.
 
-2. **Миграция pre-24 → 24.** Заполненная база версии 23 (строки версий с
-   секциями, снимок, привязки, черновик и extras с `section`/`position`)
-   переводится миграцией 24: `content` собирается по backfill-формуле,
-   `extended_content IS NULL`, значения extras целы, колонок секций и
-   позиции больше нет, история/привязки/триггеры сохранены, повторный
-   запуск — no-op. Схема после миграции совпадает со свежим `create_all`.
+2. **Единый `content` в базовой схеме.** Свежая база 1.0.0 сразу содержит
+   `content` и `extended_content`, колонок секций и `section`/`position` у
+   extras нет; схема совпадает со свежим `create_all`, история неизменяема.
 
 3. **Скрытие пустых brick-строк.** Строка, в которой есть только токены
    кирпичиков, отрендерившиеся пустыми, исчезает целиком (вместе с висячим
@@ -33,9 +30,6 @@ Poster 2.3 H2 (часть 1): единый `content` шаблона и необ�
 
 from __future__ import annotations
 
-import os
-import shutil
-import sqlite3
 import unittest
 from typing import Any
 
@@ -48,10 +42,8 @@ from announcement_store import (
     remove_announcement_extra,
     save_announcement_value,
 )
-from base import Base
 from brick_store import get_system_brick
 from brick_types import SYSTEM_BRICKS
-from migrations import DEFAULT_MIGRATIONS, LATEST_VERSION, run_migrations
 from template_compiler import render_announcement, render_template
 from template_parser import BrickNode, FormatNode, LinkNode, parse_template
 from template_store import create_personal_template
@@ -60,7 +52,6 @@ from template_types import (
     BUILTIN_TEMPLATE_EXTENDED_CONTENT,
     TEMPLATE_CONTENT,
 )
-from tests.stage19a_helpers import make_engine, temp_db_path
 from tests.stage27_helpers import OWNER_TG, AnnouncementDatabaseTestCase
 
 # --- Эталон v5 (литералы, без импорта констант продукта) --------------------
@@ -95,25 +86,12 @@ REFERENCE_EXTENDED_CONTENT = (
     "[подвал]"
 )
 
-# Эталон v4 — исторические тексты секций (до миграции 24). Нужен как данные
-# фикстур миграции и как проверка, что миграция 30 не переписывает уже
-# сохранённые шаблоны.
-V4_REFERENCE_HEADER = (
-    "**[название]**\n"
-    "\n"
-    "**[дата] // [время_начала]**\n"
-    "**[место]([ссылка_места])**\n"
-    "[адрес]"
-)
-V4_REFERENCE_BODY = "\n[описание]"
-V4_REFERENCE_FOOTER = "\n[контакт]"
 
-
-# Формула backfill миграции 24: разделитель только между непустыми (по
+# Формула склейки прежних секций: разделитель только между непустыми (по
 # `.strip()`) соседними частями. Для эталона v4 тело и подвал уже начинаются
 # с перевода строки, поэтому склейка равна прежней трёхчастной записи.
 def _join(header: str, body: str, footer: str) -> str:
-    """Склейка прежних секций в единый `content` по формуле миграции 24."""
+    """Склейка прежних секций в единый `content` по исторической формуле."""
     if not (header.strip() or body.strip() or footer.strip()):
         return header + body + footer
     text = header.strip()
@@ -376,343 +354,6 @@ class TemplateContentGoldenTests(unittest.TestCase):
             render_announcement(tokens, {}, _definitions()),
             ".",
             "пустой видимый текст без фото → техническая «.»",
-        )
-
-
-# --- Миграция 24 ------------------------------------------------------------
-
-_H2_TABLES = (
-    "template_versions",
-    "template_version_bricks",
-    "template_snapshots",
-    "template_snapshot_bricks",
-    "announcement_extras",
-)
-
-OWNER_TG_MIGRATION = 9_845_001
-
-
-def _write(path: str, statement: str, parameters: tuple = ()) -> None:
-    connection = sqlite3.connect(path)
-    try:
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute(statement, parameters)
-        connection.commit()
-    finally:
-        connection.close()
-
-
-def _sql(path: str, statement: str, parameters: tuple = ()) -> list[tuple]:
-    connection = sqlite3.connect(path)
-    try:
-        return connection.execute(statement, parameters).fetchall()
-    finally:
-        connection.close()
-
-
-def _columns(path: str, table: str) -> dict[str, tuple]:
-    return {str(row[1]): row for row in _sql(path, f"PRAGMA table_info({table})")}
-
-
-def _schema(path: str) -> dict[str, tuple]:
-    """
-    Колонки/индексы/FK таблиц H2 как они видны SQLite.
-
-    Триггеры сюда не входят: их создаёт миграция, а `create_all` — нет;
-    неизменяемость истории проверяется отдельными запросами ниже.
-    """
-    connection = sqlite3.connect(path)
-    try:
-        result: dict[str, tuple] = {}
-        for table in _H2_TABLES:
-            columns = [
-                (str(row[1]), str(row[2]).upper(), int(row[3]), row[4])
-                for row in connection.execute(f"PRAGMA table_info({table})")
-            ]
-            indexes = sorted(
-                (str(row[1]), int(row[2]), str(row[3]))
-                for row in connection.execute(f"PRAGMA index_list({table})")
-            )
-            foreign_keys = sorted(
-                (str(row[2]), str(row[3]), str(row[4]), str(row[5]), str(row[6]))
-                for row in connection.execute(f"PRAGMA foreign_key_list({table})")
-            )
-            result[table] = (columns, indexes, foreign_keys)
-        return result
-    finally:
-        connection.close()
-
-
-class TemplateContentMigrationTests(unittest.TestCase):
-    """Заполненная база версии 23 → миграция 24 без потери данных."""
-
-    def setUp(self) -> None:
-        self.path = temp_db_path("poster-h2-migration-")
-        self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
-        self.engine = make_engine(self.path)
-        self.addCleanup(self.engine.dispose)
-        self.assertEqual(
-            run_migrations(self.engine, DEFAULT_MIGRATIONS[:23]),
-            23,
-            "миграция 24 ещё не применена",
-        )
-        self._seed()
-
-    # --- фикстуры ---------------------------------------------------------
-
-    def _seed(self) -> None:
-        _write(
-            self.path,
-            "INSERT INTO users (id, telegram_user_id, username, created_at) "
-            "VALUES (1, ?, 'h2-owner', '2026-01-01 00:00:00')",
-            (OWNER_TG_MIGRATION,),
-        )
-        _write(
-            self.path,
-            "INSERT INTO places (id, created_by_user_id, address, url, created_at) "
-            "VALUES (1, 1, 'ул. Ленина, 1', 'https://example.com/place', "
-            "'2026-01-01 00:00:00')",
-        )
-        _write(
-            self.path,
-            "INSERT INTO templates (id, kind, place_id, revision, created_at, "
-            "updated_at) VALUES (1, 'standard', 1, 3, "
-            "'2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        versions = (
-            # id, version, header, body, footer, builtin_version
-            (
-                1,
-                1,
-                "**[название]**",
-                "\n**[дата] // [время_начала]**\n\n"
-                "**[место]([ссылка_места])**\n[адрес]\n\n[описание]",
-                "\n[контакт]",
-                3,
-            ),
-            (2, 2, V4_REFERENCE_HEADER, V4_REFERENCE_BODY, V4_REFERENCE_FOOTER, 4),
-            (3, 3, "только шапка", "", "", None),
-            (4, 4, "", "только тело", "", None),
-            # Все секции из пробелов: прежний CHECK разрешал такую строку.
-            (5, 5, " ", "", "", None),
-        )
-        for version_id, version, header, body, footer, builtin in versions:
-            _write(
-                self.path,
-                "INSERT INTO template_versions (id, template_id, version, "
-                "header, body, footer, created_by_user_id, created_at, "
-                "builtin_version) VALUES (?, 1, ?, ?, ?, ?, 1, "
-                "'2026-01-01 00:00:00', ?)",
-                (version_id, version, header, body, footer, builtin),
-            )
-        _write(
-            self.path,
-            "INSERT INTO template_version_bricks (template_version_id, "
-            "brick_id, code) SELECT 1, id, code FROM bricks "
-            "WHERE scope = 'system' AND code IN "
-            "('название', 'дата', 'время_начала')",
-        )
-        _write(
-            self.path,
-            "INSERT INTO template_snapshots (id, owner_user_id, "
-            "source_template_id, source_template_version, source_kind, "
-            "source_name, source_place_id, source_owner_user_id, header, body, "
-            "footer, builtin_version, idempotency_key, created_at) "
-            "VALUES (1, 1, 1, 2, 'standard', NULL, 1, NULL, ?, ?, ?, 4, "
-            "'h2-snapshot', '2026-01-01 00:00:00')",
-            (REFERENCE_HEADER, REFERENCE_BODY, REFERENCE_FOOTER),
-        )
-        _write(
-            self.path,
-            "INSERT INTO template_snapshot_bricks (template_snapshot_id, "
-            "brick_id, code) SELECT 1, id, code FROM bricks "
-            "WHERE scope = 'system' AND code IN ('название', 'место')",
-        )
-        _write(
-            self.path,
-            "INSERT INTO announcement_drafts (id, author_user_id, place_id, "
-            "place_display_name, origin, template_id, template_version, "
-            "template_snapshot_id, stage, revision, created_at, updated_at) "
-            "VALUES (1, 1, 1, 'Дом культуры', 'place', 1, 2, 1, 'extras', 1, "
-            "'2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-        )
-        extras = (
-            (1, 8, "header", "start"),  # [описание] в начало шапки
-            (2, 9, "footer", "end"),  # [контакт] в конец подвала
-        )
-        for extra_id, brick_id, section, position in extras:
-            _write(
-                self.path,
-                "INSERT INTO announcement_extras (id, draft_id, brick_id, "
-                "section, position, occurrence, created_at, updated_at) "
-                "VALUES (?, 1, ?, ?, ?, 1, '2026-01-01 00:00:00', "
-                "'2026-01-01 00:00:00')",
-                (extra_id, brick_id, section, position),
-            )
-
-    def _migrate(self) -> int:
-        return run_migrations(self.engine)
-
-    def _content_rows(self) -> list[tuple]:
-        return _sql(
-            self.path,
-            "SELECT id, template_id, version, content, extended_content, "
-            "builtin_version FROM template_versions ORDER BY id",
-        )
-
-    # --- проверки ---------------------------------------------------------
-
-    def test_pre_migration_schema_has_sections(self) -> None:
-        """Воспроизведение до миграции: секции и позиция extras ещё есть."""
-        version_columns = _columns(self.path, "template_versions")
-        self.assertEqual(
-            [name for name in ("header", "body", "footer") if name in version_columns],
-            ["header", "body", "footer"],
-        )
-        self.assertNotIn("content", version_columns)
-        extra_columns = _columns(self.path, "announcement_extras")
-        self.assertIn("section", extra_columns)
-        self.assertIn("position", extra_columns)
-
-    def test_content_is_backfilled_and_extended_is_null(self) -> None:
-        self.assertEqual(self._migrate(), LATEST_VERSION)
-        rows = self._content_rows()
-        self.assertEqual([row[0] for row in rows], [1, 2, 3, 4, 5])
-        expected = {
-            1: _join(
-                "**[название]**",
-                "\n**[дата] // [время_начала]**\n\n"
-                "**[место]([ссылка_места])**\n[адрес]\n\n[описание]",
-                "\n[контакт]",
-            ),
-            2: _join(V4_REFERENCE_HEADER, V4_REFERENCE_BODY, V4_REFERENCE_FOOTER),
-            3: "только шапка",
-            4: "только тело",
-            5: " ",
-        }
-        for row in rows:
-            with self.subTest(version_id=row[0]):
-                self.assertEqual(row[3], expected[row[0]], "content по backfill")
-                self.assertIsNone(row[4], "extended_content не изобретается")
-        # Номер версии и метка встроенного эталона не переписаны.
-        self.assertEqual(
-            [(row[2], row[5]) for row in rows],
-            [(1, 3), (2, 4), (3, None), (4, None), (5, None)],
-        )
-        # Заполненный эталон v4 не изменился ни на символ (миграция 30 его не
-        # переписывает): сравниваем с историческими литералами v4, а не с
-        # актуальным BUILTIN (эталон v5).
-        self.assertEqual(
-            rows[1][3],
-            _join(V4_REFERENCE_HEADER, V4_REFERENCE_BODY, V4_REFERENCE_FOOTER),
-        )
-
-    def test_snapshot_contents_are_backfilled(self) -> None:
-        self._migrate()
-        self.assertEqual(
-            _sql(
-                self.path,
-                "SELECT id, content, extended_content, builtin_version, "
-                "idempotency_key, source_template_version "
-                "FROM template_snapshots",
-            ),
-            [
-                (
-                    1,
-                    _join(REFERENCE_HEADER, REFERENCE_BODY, REFERENCE_FOOTER),
-                    None,
-                    4,
-                    "h2-snapshot",
-                    2,
-                )
-            ],
-        )
-
-    def test_extras_lose_sections_and_keep_values(self) -> None:
-        self._migrate()
-        columns = _columns(self.path, "announcement_extras")
-        for removed in ("section", "position"):
-            self.assertNotIn(removed, columns, "H2: выбора секции/позиции нет")
-        self.assertEqual(
-            _sql(
-                self.path,
-                "SELECT id, draft_id, brick_id, occurrence FROM "
-                "announcement_extras ORDER BY id",
-            ),
-            [(1, 1, 8, 1), (2, 1, 9, 1)],
-            "значения extras перенесены без потерь",
-        )
-        # Связи и привязки не пересобраны: те же строки, те же коды.
-        self.assertEqual(
-            _sql(
-                self.path,
-                "SELECT template_version_id, code FROM template_version_bricks "
-                "ORDER BY template_version_id, code",
-            ),
-            [(1, "время_начала"), (1, "дата"), (1, "название")],
-        )
-        self.assertEqual(
-            _sql(
-                self.path,
-                "SELECT template_snapshot_id, code FROM template_snapshot_bricks "
-                "ORDER BY code",
-            ),
-            [(1, "место"), (1, "название")],
-        )
-
-    def test_history_stays_immutable_after_rebuild(self) -> None:
-        self._migrate()
-        connection = sqlite3.connect(self.path)
-        try:
-            with self.assertRaises(sqlite3.IntegrityError):
-                connection.execute(
-                    "UPDATE template_versions SET content = 'подмена' WHERE id = 2"
-                )
-        finally:
-            connection.close()
-        content_column = _columns(self.path, "template_versions")["content"]
-        self.assertEqual(
-            (content_column[2], content_column[3], content_column[4]),
-            ("TEXT", 1, None),
-            "content TEXT NOT NULL",
-        )
-
-    def test_repeat_run_is_noop_and_integrity_is_clean(self) -> None:
-        self._migrate()
-        before = self._content_rows()
-        self.assertEqual(self._migrate(), LATEST_VERSION)
-        self.assertEqual(self._content_rows(), before, "повтор не меняет текст")
-        self.assertEqual(_sql(self.path, "PRAGMA integrity_check"), [("ok",)])
-        self.assertEqual(_sql(self.path, "PRAGMA foreign_key_check"), [])
-        self.assertEqual(
-            _sql(
-                self.path,
-                "SELECT name FROM sqlite_master WHERE name LIKE '%backup%' "
-                "AND name NOT LIKE 'legacy_%'",
-            ),
-            [],
-            "временные копии миграции удалены",
-        )
-        self.assertEqual(
-            _sql(
-                self.path,
-                "SELECT version, name FROM schema_migrations ORDER BY version "
-                "DESC LIMIT 1",
-            ),
-            [(33, "contact_brick_hint")],
-        )
-
-    def test_post_migration_schema_equals_fresh_create_all(self) -> None:
-        self._migrate()
-        fresh_path = temp_db_path("poster-h2-fresh-")
-        self.addCleanup(shutil.rmtree, os.path.dirname(fresh_path), True)
-        fresh_engine = make_engine(fresh_path)
-        self.addCleanup(fresh_engine.dispose)
-        Base.metadata.create_all(fresh_engine)
-        self.assertEqual(
-            _schema(self.path),
-            _schema(fresh_path),
-            "колонки, индексы и FK после миграции = модели",
         )
 
 

@@ -9,8 +9,6 @@ Poster 2.0, S5 — независимая проверка (poster-tester).
 
 Покрытие:
 
-- миграция 17 на старой схеме: архив читаем, живые таблицы целы, повтор
-  идемпотентен, свежая база архива не содержит;
 - описание кирпичика: экранированный показ на экране вопроса, отсутствие
   блока без описания, «⏭ Без описания» → NULL, правка описания;
 - юмор: распределение `pick_variant` ≈1% на большой выборке ключей,
@@ -25,17 +23,7 @@ from unittest.mock import patch
 
 from sqlalchemy import select
 
-from base import Base
-from migrations import LATEST_VERSION, run_migrations
 from tests import ui_texts_expect as cat
-from tests.stage19a_helpers import (
-    OLD_DRAFT,
-    connect,
-    create_old_schema,
-    make_engine,
-    table_names,
-    temp_db_path,
-)
 
 try:
     from announcement_store import (
@@ -132,111 +120,6 @@ def _live_texts(h) -> list[str]:
         and is_live_record(call)
         and call.get("text") is not None
     ]
-
-
-# —— миграция 17 ------------------------------------------------------------
-
-
-class Migration17Tests(unittest.TestCase):
-    """Архив легаси-таблицы `drafts` на временных файлах SQLite."""
-
-    def setUp(self) -> None:
-        self.path = temp_db_path("poster-s5-tester-")
-        self.engine = make_engine(self.path)
-        self.addCleanup(self.engine.dispose)
-
-    def _journal(self) -> list[tuple[int, str]]:
-        connection = connect(self.path)
-        try:
-            return [
-                (int(row["version"]), str(row["name"]))
-                for row in connection.execute(
-                    "SELECT version, name FROM schema_migrations ORDER BY version"
-                )
-            ]
-        finally:
-            connection.close()
-
-    def test_old_database_archived_and_readable(self) -> None:
-        create_old_schema(self.path)
-        run_migrations(self.engine)
-
-        tables = table_names(self.path)
-        self.assertNotIn("drafts", tables, "легаси-таблица переименована")
-        self.assertIn("legacy_drafts_backup", tables)
-
-        connection = connect(self.path)
-        try:
-            row = connection.execute(
-                "SELECT title, text, image, photos, formats, created_at "
-                "FROM legacy_drafts_backup WHERE id = ?",
-                (OLD_DRAFT["id"],),
-            ).fetchone()
-        finally:
-            connection.close()
-        self.assertIsNotNone(row, "строка старого черновика не потеряна")
-        self.assertEqual(row["title"], OLD_DRAFT["title"])
-        self.assertEqual(row["text"], OLD_DRAFT["text"])
-        self.assertEqual(row["image"], OLD_DRAFT["image"])
-
-    def test_repeat_is_idempotent(self) -> None:
-        create_old_schema(self.path)
-        run_migrations(self.engine)
-        versions = self._journal()
-        self.assertIn((17, "archive_legacy_drafts"), versions)
-        self.assertEqual(
-            versions[-1],
-            (LATEST_VERSION, "contact_brick_hint"),
-        )
-
-        for _ in range(2):
-            run_migrations(self.engine)
-        self.assertEqual(self._journal(), versions, "журнал не растёт повторно")
-
-        connection = connect(self.path)
-        try:
-            count = connection.execute(
-                "SELECT count(*) FROM legacy_drafts_backup"
-            ).fetchone()[0]
-        finally:
-            connection.close()
-        self.assertEqual(count, 1, "повтор не теряет и не дублирует архив")
-
-    def test_live_tables_are_intact(self) -> None:
-        create_old_schema(self.path)
-        run_migrations(self.engine)
-        tables = table_names(self.path)
-        for name in (
-            "users",
-            "places",
-            "place_names",
-            "place_admins",
-            "bricks",
-            "templates",
-            "announcement_drafts",
-            "user_states",
-        ):
-            with self.subTest(table=name):
-                self.assertIn(name, tables)
-        # Живой user_states не переименован и не очищен архивом.
-        connection = connect(self.path)
-        try:
-            states = connection.execute("SELECT payload FROM user_states").fetchone()
-        finally:
-            connection.close()
-        self.assertIsNotNone(states, "user_states — живая таблица, не архив")
-
-    def test_fresh_database_has_no_archive(self) -> None:
-        run_migrations(self.engine)
-        Base.metadata.create_all(bind=self.engine)
-        tables = table_names(self.path)
-        self.assertNotIn("drafts", tables)
-        self.assertNotIn("legacy_drafts_backup", tables)
-        self.assertIn((17, "archive_legacy_drafts"), self._journal())
-        self.assertEqual(
-            self._journal()[-1],
-            (LATEST_VERSION, "contact_brick_hint"),
-        )
 
 
 # —— описание кирпичика ------------------------------------------------------

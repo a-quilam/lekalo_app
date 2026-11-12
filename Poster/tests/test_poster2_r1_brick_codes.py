@@ -10,14 +10,15 @@ R1 (Poster 2.1), дефект №30: глобальный код не конфл
 Теперь для системной области конфликт — это только внутрисистемный дубль
 (`system_row`) и зарезервированные системные коды. Поведение place/personal
 не изменилось, исключение S1 (неизменённый собственный код легаси-строки)
-сохранено и проверяется на базе, где легаси-строка появилась ДО миграции 15.
+сохранено и проверяется на базе, где легаси-строка появилась до триггера
+резервирования системных кодов.
 
 Граница R1 (согласовано с менеджером): если несистемных носителей кода ДВА
 и больше (например, place-кирпичик и личный источник одного кода), INSERT
 системного кирпичика отклоняет триггер `trg_bricks_reserve_codes_insert` —
 его исключение Stage 26 рассчитано ровно на одного носителя. Полная модель
-конфликтов «глобальный выигрывает + разрешение локальных дублей» — этап R3
-с миграцией, поэтому сценарий множественных носителей здесь не проверяется.
+конфликтов «глобальный выигрывает + разрешение локальных дублей» — этап R3,
+поэтому сценарий множественных носителей здесь не проверяется.
 
 Временная SQLite (tests.stage22a_helpers, tests.stage19a_helpers): настоящая
 `post_bot.db` не открывается.
@@ -43,7 +44,7 @@ from brick_store import (
     create_place_brick,
     get_system_brick,
 )
-from migrations import DEFAULT_MIGRATIONS, LATEST_VERSION, run_migrations
+from migrations import LATEST_VERSION, run_migrations
 from models import Brick
 from tests.stage19a_helpers import make_engine, temp_db_path
 from tests.stage22a_helpers import BrickDatabaseTestCase
@@ -181,8 +182,9 @@ class LegacyCodeExceptionTests(unittest.TestCase):
     Исключение S1: несистемная строка, появившаяся ДО того, как её код стал
     системным, сохраняет право на собственный текущий код.
 
-    Строка вставляется прямым SQL на базе версии 14 — сервис такие данные
-    создать уже не даст (код `адрес` системный с миграции 15).
+    Базовая схема 1.0.0 объявляет `адрес` системным сразу, поэтому легаси-
+    строка вставляется прямым SQL при временно снятом триггере резервирования
+    кодов — так выглядела база, созданная до появления системного кирпичика.
     """
 
     # Легаси-строка места с кодом будущего системного кирпичика.
@@ -190,7 +192,7 @@ class LegacyCodeExceptionTests(unittest.TestCase):
         "INSERT INTO bricks (id, code, title, type, scope, source, "
         "rules_json, status, place_id, created_by_user_id, "
         "created_at, updated_at, revision) VALUES "
-        "(10, 'адрес', 'Адрес площадки', 'short_text', 'place', 'ask', NULL, "
+        "(101, 'адрес', 'Адрес площадки', 'short_text', 'place', 'ask', NULL, "
         "'active', 1, 1, '2026-01-02 00:00:00', '2026-01-02 00:00:00', 1)"
     )
     OWNER_TG = 3_300_001
@@ -200,9 +202,7 @@ class LegacyCodeExceptionTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
         self.engine = make_engine(self.path)
         self.addCleanup(self.engine.dispose)
-        # До миграции 15 `адрес` ещё не системный: строка вставляется без
-        # конфликта, как в боевой базе до обновления.
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:14]), 14)
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
         with self.engine.begin() as connection:
             connection.execute(
                 text(
@@ -217,14 +217,25 @@ class LegacyCodeExceptionTests(unittest.TestCase):
                     "VALUES (1, 1, '2026-01-01 00:00:00', 'ул. Старая, 7')"
                 )
             )
+            # Легаси-база не знала триггера: снимаем его на время вставки и
+            # возвращаем исходный текст из sqlite_master.
+            trigger_sql = str(
+                connection.execute(
+                    text(
+                        "SELECT sql FROM sqlite_master "
+                        "WHERE type='trigger' AND name='trg_bricks_reserve_codes_insert'"
+                    )
+                ).scalar_one()
+            )
+            connection.execute(text("DROP TRIGGER trg_bricks_reserve_codes_insert"))
             connection.execute(text(self.LEGACY_PLACE_SQL))
-        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
+            connection.execute(text(trigger_sql))
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
         self.session = self.Session()
         self.addCleanup(self.session.close)
 
     def test_unchanged_legacy_place_code_stays_available(self) -> None:
-        legacy = self.session.get(Brick, 10)
+        legacy = self.session.get(Brick, 101)
         assert legacy is not None
         self.assertEqual(legacy.code, "адрес")
         self.assertIsNotNone(get_system_brick(self.session, "адрес"))

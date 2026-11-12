@@ -1,6 +1,6 @@
 # conditional_parts.py
 """
-Условные части шаблонов анонсов (Poster 2.5, spec §38–45, миграция 27).
+Условные части шаблонов анонсов (Poster 2.5, spec §38–45).
 
 Автор сам определяет, какую часть текста скрывать, если конкретный
 управляющий кирпичик пуст. Синтаксиса условий в тексте нет: правило —
@@ -21,14 +21,14 @@
   при ОДНОЗНАЧНОМ совпадении фрагмента (`refresh_conditional_parts`),
   иначе помечается `stale` и не удаляется молча (§44);
 - КОПИЯ шаблона правила не переносит (§44); СНИМОК анонса с версии
-  Poster 2.5.1 (миграция 28) замораживает активные правила версии в
+  Poster 2.5.1 замораживает активные правила версии в
   собственной таблице `template_snapshot_conditional_parts`, поэтому
   последующая правка шаблона рендер существующего анонса не меняет.
 
-Таблицы создаются миграциями 27 и 28 и намеренно не добавлены в
+Таблицы создаются базовой схемой 1.0.0 и намеренно не добавлены в
 `models.py` (как `announcement_instances`): `create_all` не должен
-создавать их в обход журнала миграций. Здесь описаны только Core-таблицы
-для запросов.
+создавать их в обход журнала версий схемы. Здесь описаны только
+Core-таблицы для запросов.
 
 Модуль не зависит от Telegram. Права — те же, что у
 `template_store.update_template_content`: стандарт меняет администратор
@@ -83,8 +83,8 @@ SECTION_CONTENT = TEMPLATE_CONTENT
 SECTION_EXTENDED_CONTENT = TEMPLATE_EXTENDED_CONTENT
 CONDITIONAL_SECTIONS = (SECTION_CONTENT, SECTION_EXTENDED_CONTENT)
 
-# Таблицы уже существуют (миграции 27 и 28). Metadata локальная: к Base она
-# не подключена, `create_all` их не создаёт.
+# Таблицы уже существуют (базовая схема 1.0.0). Metadata локальная: к Base
+# она не подключена, `create_all` их не создаёт.
 _METADATA = MetaData()
 
 template_conditional_parts = Table(
@@ -119,9 +119,9 @@ template_conditional_parts = Table(
     Column("updated_at", DateTime, nullable=False),
 )
 
-# Замороженная копия правил внутри снимка шаблона (Poster 2.5.1, миграция 28).
+# Замороженная копия правил внутри снимка шаблона (Poster 2.5.1).
 # Core-таблица по той же причине, что и `template_conditional_parts`: DDL
-# создаёт только журнал миграций, `create_all` её не воскрешает.
+# базовой схемы 1.0.0 создаёт её сама, `create_all` не воскрешает.
 template_snapshot_conditional_parts = Table(
     "template_snapshot_conditional_parts",
     _METADATA,

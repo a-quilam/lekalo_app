@@ -1,6 +1,6 @@
 # tests/test_poster2_r2_templates.py
 """
-Poster 2.1 R2: BUILTIN v3, миграция 18 и «Дефолтный шаблон».
+Poster 2.1 R2: BUILTIN v5 и «Дефолтный шаблон».
 
 Проверяется:
 
@@ -10,13 +10,9 @@ Poster 2.1 R2: BUILTIN v3, миграция 18 и «Дефолтный шабл�
   описание, пустая строка, контакт;
 - буквальный `//` при пропущенных кирпичиках и `.` при полностью пустом
   анонсе;
-- миграция 18 на заполненной временной БД: нетронутые копии (личная
-  «Мой шаблон» и стандарт места) получают новую версию v3, история и снимки
-  не переписываются, тронутые человеком и переименованные копии остаются
-  как есть, повторный запуск ничего не меняет;
 - выдача стартового личного шаблона новому пользователю: имя «Дефолтный
-  шаблон» и содержимое v3;
-- «Восстановить стандарт» после миграции создаёт версию `builtin_version=3`.
+  шаблон» и текст текущего эталона;
+- каталог системных кодов, на которые ссылается эталон.
 
 Настоящая `post_bot.db`, `.env`, Telegram и сеть не используются: каждый
 тест поднимает собственный временный SQLite-файл.
@@ -26,29 +22,19 @@ from __future__ import annotations
 
 import os
 import shutil
-import sqlite3
 import unittest
 
 from sqlalchemy.orm import sessionmaker
 
 from brick_store import get_system_brick, list_system_bricks
-from migrations import DEFAULT_MIGRATIONS, LATEST_VERSION, run_migrations
-from models import Template, TemplateSnapshot
+from migrations import run_migrations
 from template_compiler import (
     PLACEHOLDER_TEXT,
     render_announcement,
     render_template,
 )
 from template_parser import BrickNode, FormatNode, LinkNode, parse_template
-from template_store import (
-    create_template_snapshot,
-    ensure_initial_personal_template,
-    get_personal_template,
-    get_standard_template,
-    list_template_versions,
-    reset_personal_template,
-    update_template_content,
-)
+from template_store import ensure_initial_personal_template
 from template_types import (
     BUILTIN_TEMPLATE,
     BUILTIN_TEMPLATE_VERSION,
@@ -73,51 +59,6 @@ EXPECTED_ANNOUNCEMENT = (
     "\n"
     "Мероприятие ведёт: @contact"
 )
-
-# Эталон v2 внутри миграции 18 (проверяется независимо от текущих констант).
-V2_HEADER = "**[название]**"
-V2_BODY = (
-    "[дата] // [время_начала]\n"
-    "[место]([ссылка_места])\n"
-    "[адрес]\n"
-    "\n"
-    "[описание]"
-)
-V2_FOOTER = "[контакт]"
-
-# Эталон v3 внутри миграции 18: он остаётся в истории после миграции 22.
-V3_HEADER = "**[название]**"
-V3_BODY = (
-    "\n"
-    "**[дата] // [время_начала]**\n"
-    "\n"
-    "**[место]([ссылка_места])**\n"
-    "[адрес]\n"
-    "\n"
-    "[описание]"
-)
-V3_FOOTER = "\n[контакт]"
-
-# Эталон v4: именно этот текст (плюс флаг выключенного расширенного
-# варианта) получают существующие шаблоны миграцией 22 и миграцией 24.
-# Миграция 30 не переписывает историю.
-V4_CONTENT = (
-    "**[название]**\n"
-    "\n"
-    "**[дата] // [время_начала]**\n"
-    "**[место]([ссылка_места])**\n"
-    "[адрес]\n"
-    "\n"
-    "[описание]\n"
-    "\n"
-    "[контакт]"
-)
-
-
-def _join(*parts: str) -> str:
-    """Склейка секций миграцией 24: trim краёв + один перевод строки."""
-    present = [part for part in parts if part.strip()]
-    return "\n".join([present[0].strip(), *(part for part in present[1:])])
 
 
 def _bind(tokens, definitions_by_code) -> None:
@@ -201,337 +142,6 @@ class BuiltinTemplateV3RenderTests(unittest.TestCase):
         self.assertEqual(render_announcement({}, {}, {}), PLACEHOLDER_TEXT)
         # С фото точка не нужна: пустая подпись вместо заглушки.
         self.assertEqual(render_announcement({}, {}, {}, has_photos=True), "")
-
-
-def _seed_version_seventeen(path: str) -> None:
-    """
-    Заполняет базу версии 17 копиями прежнего эталона (v2).
-
-    Пишутся реальные пользователь/место и пять `templates`:
-
-    1. нетронутый личный «Мой шаблон» (v2) — обновляется и переименовывается;
-    2. личный, переименованный человеком, но нетронутый по содержимому —
-       не обновляется (правило «только доказуемо нетронутые»);
-    3. личный «Мой шаблон» с изменённой шапкой — не обновляется;
-    4. нетронутый стандарт места — содержимое обновляется, имя (NULL) прежнее;
-    5. стартовая личная копия без маркера версии (`builtin_version IS NULL`):
-       так её создавал `ensure_initial_personal_template` до R2; имя и все три
-       секции совпадают с эталоном — копия обновляется и переименовывается.
-    """
-    connection = sqlite3.connect(path)
-    try:
-        connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute(
-            "INSERT INTO users (id, telegram_user_id, created_at) "
-            "VALUES (1, ?, '2026-01-01 00:00:00')",
-            (OWNER_TG,),
-        )
-        connection.execute(
-            "INSERT INTO places (id, created_by_user_id, created_at) "
-            "VALUES (1, 1, '2026-01-01 00:00:00')"
-        )
-        personal = (
-            (1, "Мой шаблон", V2_HEADER, V2_BODY, V2_FOOTER, 2),
-            (2, "Рабочий шаблон", V2_HEADER, V2_BODY, V2_FOOTER, 2),
-            (3, "Мой шаблон", "**[название]** — моя правка", V2_BODY, V2_FOOTER, 2),
-            (5, "Мой шаблон", V2_HEADER, V2_BODY, V2_FOOTER, None),
-        )
-        for template_id, name, header, body, footer, builtin in personal:
-            connection.execute(
-                "INSERT INTO templates (id, kind, owner_user_id, name, revision, "
-                "created_by_user_id, created_at, updated_at) "
-                "VALUES (?, 'personal', 1, ?, 1, 1, "
-                "'2026-01-01 00:00:00', '2026-01-01 00:00:00')",
-                (template_id, name),
-            )
-            connection.execute(
-                "INSERT INTO template_versions (id, template_id, version, header, "
-                "body, footer, created_by_user_id, created_at, builtin_version) "
-                "VALUES (?, ?, 1, ?, ?, ?, 1, '2026-01-01 00:00:00', ?)",
-                (template_id, template_id, header, body, footer, builtin),
-            )
-        connection.execute(
-            "INSERT INTO templates (id, kind, place_id, revision, created_at, "
-            "updated_at) VALUES (4, 'standard', 1, 1, "
-            "'2026-01-01 00:00:00', '2026-01-01 00:00:00')"
-        )
-        connection.execute(
-            "INSERT INTO template_versions (id, template_id, version, header, body, "
-            "footer, created_by_user_id, created_at, builtin_version) "
-            "VALUES (4, 4, 1, ?, ?, ?, NULL, '2026-01-01 00:00:00', 2)",
-            (V2_HEADER, V2_BODY, V2_FOOTER),
-        )
-        connection.commit()
-    finally:
-        connection.close()
-
-
-class _MigrationEighteenTestCase(unittest.TestCase):
-    """Временная база версии 17 с нетронутыми и тронутыми копиями."""
-
-    def setUp(self) -> None:
-        self.path = temp_db_path("poster-2-r2-migration-")
-        self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
-        self.engine = make_engine(self.path)
-        self.addCleanup(self.engine.dispose)
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:17]), 17)
-        _seed_version_seventeen(self.path)
-        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-        self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
-        self.session = self.Session()
-        self.addCleanup(self.session.close)
-
-    def _rows(self, statement: str, parameters: tuple = ()) -> list[tuple]:
-        connection = sqlite3.connect(self.path)
-        try:
-            return connection.execute(statement, parameters).fetchall()
-        finally:
-            connection.close()
-
-
-class MigrationEighteenTests(_MigrationEighteenTestCase):
-    """Миграция 18 обновляет только доказуемо нетронутые копии."""
-
-    def test_untouched_personal_copy_is_updated_and_renamed(self) -> None:
-        self.assertEqual(LATEST_VERSION, 33)
-        template = self.session.get(Template, 1)
-        assert template is not None
-        self.assertEqual(template.name, "Дефолтный шаблон")
-        self.assertEqual(template.revision, 3)
-        versions = list_template_versions(self.session, OWNER_TG, 1)
-        self.assertEqual([item.version for item in versions], [1, 2, 3])
-        # Миграция 18 записала v3, миграция 22 — версию v4. Миграция 24
-        # склеивает секции в один текст без потери байтов. Миграция 30
-        # (этап A1) не переписывает тексты уже созданных шаблонов: история
-        # версий остаётся с текстом v4, а v5 выдаётся при сбросе к эталону
-        # или новой площадке (§1 задания — инициализация при создании).
-        self.assertEqual(versions[1].content, _join(V3_HEADER, V3_BODY, V3_FOOTER))
-        self.assertEqual(versions[1].builtin_version, 3)
-        self.assertEqual(versions[2].content, V4_CONTENT)
-        self.assertEqual(versions[2].builtin_version, 4)
-        self.assertEqual(
-            {binding.code for binding in versions[2].bindings},
-            {
-                "название",
-                "дата",
-                "время_начала",
-                "место",
-                "ссылка_места",
-                "адрес",
-                "описание",
-                "контакт",
-            },
-        )
-        # Старая версия v2 не переписана (иммутабельность истории).
-        self.assertEqual(versions[0].content, _join(V2_HEADER, V2_BODY, V2_FOOTER))
-        self.assertIsNone(versions[0].extended_content)
-        self.assertEqual(versions[0].builtin_version, 2)
-
-    def test_standard_copy_is_updated_with_previous_name(self) -> None:
-        template = self.session.get(Template, 4)
-        assert template is not None
-        self.assertIsNone(template.name)
-        self.assertEqual(template.revision, 3)
-        standard = get_standard_template(self.session, OWNER_TG, 1)
-        current = standard.current_version
-        self.assertEqual(current.version, 3)
-        self.assertEqual(current.content, V4_CONTENT)
-        self.assertEqual(current.builtin_version, 4)
-        # Этап A1: миграция 30 не переписывает текст, но у шаблона теперь
-        # есть флаг расширенного варианта; у существующего стандарта он
-        # выключен (значение по умолчанию миграции).
-        self.assertFalse(standard.extended_active)
-
-    def test_edited_copy_is_not_touched(self) -> None:
-        template = self.session.get(Template, 3)
-        assert template is not None
-        self.assertEqual(template.name, "Мой шаблон")
-        self.assertEqual(template.revision, 1)
-        versions = list_template_versions(self.session, OWNER_TG, 3)
-        self.assertEqual([item.version for item in versions], [1])
-        self.assertEqual(
-            versions[0].content,
-            _join("**[название]** — моя правка", V2_BODY, V2_FOOTER),
-        )
-        self.assertEqual(versions[0].builtin_version, 2)
-
-    def test_renamed_but_untouched_copy_is_not_updated(self) -> None:
-        """Правило этапа: обновляется только полностью нетронутая копия."""
-        template = self.session.get(Template, 2)
-        assert template is not None
-        self.assertEqual(template.name, "Рабочий шаблон")
-        self.assertEqual(template.revision, 1)
-        versions = list_template_versions(self.session, OWNER_TG, 2)
-        self.assertEqual([item.version for item in versions], [1])
-        self.assertEqual(versions[0].content, _join(V2_HEADER, V2_BODY, V2_FOOTER))
-        self.assertEqual(versions[0].builtin_version, 2)
-
-    def test_untouched_initial_copy_without_marker_is_updated(self) -> None:
-        """Стартовая копия v2 без маркера — тоже доказуемо нетронутая."""
-        template = self.session.get(Template, 5)
-        assert template is not None
-        self.assertEqual(template.name, "Дефолтный шаблон")
-        self.assertEqual(template.revision, 3)
-        versions = list_template_versions(self.session, OWNER_TG, 5)
-        self.assertEqual([item.version for item in versions], [1, 2, 3])
-        self.assertIsNone(versions[0].builtin_version)
-        self.assertEqual(versions[2].content, V4_CONTENT)
-        self.assertEqual(versions[2].builtin_version, 4)
-
-    def test_user_copy_already_v3_keeps_old_name(self) -> None:
-        """Копия v3 с именем «Мой шаблон» — создана человеком, не трогаем."""
-        connection = sqlite3.connect(self.path)
-        try:
-            connection.execute("PRAGMA foreign_keys=ON")
-            connection.execute(
-                "INSERT INTO templates (id, kind, owner_user_id, name, revision, "
-                "created_by_user_id, created_at, updated_at) "
-                "VALUES (100, 'personal', 1, 'Мой шаблон', 1, 1, "
-                "'2026-01-02 00:00:00', '2026-01-02 00:00:00')"
-            )
-            connection.execute(
-                "INSERT INTO template_versions (id, template_id, version, content, "
-                "extended_content, created_by_user_id, created_at, "
-                "builtin_version) "
-                "VALUES (100, 100, 1, ?, NULL, 1, '2026-01-02 00:00:00', 3)",
-                (BUILTIN_TEMPLATE.content,),
-            )
-            connection.commit()
-        finally:
-            connection.close()
-        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-        template = self.session.get(Template, 100)
-        assert template is not None
-        self.assertEqual(template.name, "Мой шаблон")
-        self.assertEqual(template.revision, 1)
-
-    def test_repeat_run_changes_nothing(self) -> None:
-        before = self._rows(
-            "SELECT id, template_id, version, content, extended_content, "
-            "builtin_version FROM template_versions ORDER BY id"
-        )
-        revisions = self._rows("SELECT id, name, revision FROM templates ORDER BY id")
-        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-        self.assertEqual(
-            self._rows(
-                "SELECT id, template_id, version, content, extended_content, "
-                "builtin_version FROM template_versions ORDER BY id"
-            ),
-            before,
-        )
-        self.assertEqual(
-            self._rows("SELECT id, name, revision FROM templates ORDER BY id"),
-            revisions,
-        )
-        self.assertEqual(
-            self._rows(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name LIKE 'migration_%'"
-            ),
-            [],
-        )
-
-    def test_integrity_and_foreign_keys_after_migration(self) -> None:
-        self.assertEqual(self._rows("PRAGMA foreign_key_check"), [])
-        self.assertEqual(self._rows("PRAGMA integrity_check"), [("ok",)])
-        # У каждой версии нет чужих/потерянных привязок.
-        orphan = self._rows(
-            "SELECT count(*) FROM template_version_bricks AS vb "
-            "WHERE NOT EXISTS (SELECT 1 FROM template_versions AS v "
-            "WHERE v.id = vb.template_version_id)"
-        )
-        self.assertEqual(orphan, [(0,)])
-
-    def test_snapshots_are_not_rewritten(self) -> None:
-        snapshot = create_template_snapshot(
-            self.session,
-            actor_telegram_user_id=OWNER_TG,
-            template_id=1,
-            expected_revision=3,
-        )
-        row = self.session.get(TemplateSnapshot, snapshot.snapshot_id)
-        assert row is not None
-        self.assertEqual(row.content, V4_CONTENT)
-        self.assertEqual(row.extended_content, None)
-        self.assertEqual(self._rows("SELECT count(*) FROM template_snapshots"), [(1,)])
-
-
-class ResetToBuiltinAfterMigrationTests(_MigrationEighteenTestCase):
-    """«Восстановить стандарт» после миграции выдаёт текущий эталон v5."""
-
-    def test_personal_reset_creates_v4_version(self) -> None:
-        updated = update_template_content(
-            self.session,
-            actor_telegram_user_id=OWNER_TG,
-            template_id=1,
-            expected_revision=3,
-            content="Своя шапка",
-        )
-        self.assertEqual(updated.status, "updated")
-        result = reset_personal_template(
-            self.session,
-            actor_telegram_user_id=OWNER_TG,
-            template_id=1,
-            expected_revision=4,
-            confirm=True,
-        )
-        self.assertEqual(result.status, "updated")
-        assert result.template is not None
-        current = result.template.current_version
-        self.assertEqual(current.version, 5)
-        self.assertEqual(current.content, BUILTIN_TEMPLATE.content)
-        self.assertEqual(current.builtin_version, BUILTIN_TEMPLATE_VERSION)
-
-    def test_untouched_personal_copy_is_unchanged_on_reset(self) -> None:
-        """Копия с текстом v4 больше не эталон: сброс переводит её на v5."""
-        result = reset_personal_template(
-            self.session,
-            actor_telegram_user_id=OWNER_TG,
-            template_id=1,
-            expected_revision=3,
-            confirm=True,
-        )
-        # Этап A1: эталон изменился (v4 → v5), значит копия v4 уже не
-        # совпадает с ним и сброс честно создаёт новую версию.
-        self.assertEqual(result.status, "updated")
-        assert result.template is not None
-        current = result.template.current_version
-        self.assertEqual(current.version, 4)
-        self.assertEqual(current.content, BUILTIN_TEMPLATE.content)
-        self.assertEqual(current.extended_content, BUILTIN_TEMPLATE.extended_content)
-        self.assertEqual(current.builtin_version, BUILTIN_TEMPLATE_VERSION)
-
-    def test_untouched_builtin_copy_is_unchanged_on_reset(self) -> None:
-        """Копия уже совпадает с v5 — повторный сброс версию не плодит."""
-        first = reset_personal_template(
-            self.session,
-            actor_telegram_user_id=OWNER_TG,
-            template_id=1,
-            expected_revision=3,
-            confirm=True,
-        )
-        self.assertEqual(first.status, "updated")
-        assert first.template is not None
-        second = reset_personal_template(
-            self.session,
-            actor_telegram_user_id=OWNER_TG,
-            template_id=1,
-            expected_revision=first.template.revision,
-            confirm=True,
-        )
-        self.assertEqual(second.status, "unchanged")
-        self.assertEqual(
-            self._rows("SELECT count(*) FROM template_versions WHERE template_id=1"),
-            [(4,)],
-        )
-
-    def test_reset_is_selectable_for_both_kinds(self) -> None:
-        """Карточки личного шаблона и стандарта места дают одно действие сброса."""
-        personal = get_personal_template(self.session, OWNER_TG, 1)
-        standard = get_standard_template(self.session, OWNER_TG, 1)
-        assert personal is not None
-        self.assertEqual(personal.kind, "personal")
-        self.assertEqual(standard.kind, "standard")
 
 
 class InitialPersonalTemplateV3Tests(unittest.TestCase):

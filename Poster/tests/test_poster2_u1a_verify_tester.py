@@ -11,12 +11,13 @@ U1a — независимая приёмка (тестировщик, не ав
    (жирный заголовок, пустая строка, жирные «дата // время», сразу под ними
    жирная площадка-ссылка без пустой строки, обычный адрес, пустая строка,
    описание, пустая строка, контакт) + состав секций редактора; правленый
-   пользователем шаблон не перезаписывается миграцией 22;
+   пользователем шаблон и его снимок не перезаписываются повторной
+   инициализацией;
 3. автозаполнение: жирная кликабельная площадка, адрес, пустые дата/время,
    первый вопрос — первый неизвестный кирпичик, площадка без URL, свежий
    снимок после правки справочника;
-4. негативы: идемпотентность миграций, integrity/foreign_key, старые места
-   с `city IS NULL`, повторные callback без дублей.
+4. негативы: идемпотентность инициализации, integrity/foreign_key, старые
+   места с `city IS NULL`, повторные callback без дублей.
 
 Реальная `post_bot.db`, `.env` и сеть не используются.
 """
@@ -42,7 +43,7 @@ try:
         confirm_announcement_place,
         start_announcement_wizard,
     )
-    from migrations import DEFAULT_MIGRATIONS, LATEST_VERSION, run_migrations
+    from migrations import LATEST_VERSION, run_migrations
     from models import AnnouncementDraft, Place
     from place_edit_store import set_place_city
     from place_store import create_place, get_place_details, list_places, search_places
@@ -475,14 +476,23 @@ class AutofillTests(TemplateDatabaseTestCase):
 
 
 @unittest.skipIf(IMPORT_ERROR is not None, f"окружение недоступно: {IMPORT_ERROR}")
-class MigrationNegativesTests(unittest.TestCase):
-    """Свежая база: все миграции, повторный прогон, целостность, старые строки."""
+class BaselineNegativesTests(unittest.TestCase):
+    """Свежая база 1.0.0: повторный прогон, целостность, старые строки."""
 
     def setUp(self) -> None:
         self.path = temp_db_path("poster-u1a-verify-")
         self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
         self.engine = make_engine(self.path)
         self.addCleanup(self.engine.dispose)
+
+    def _write(self, statement: str, parameters: tuple = ()) -> None:
+        connection = sqlite3.connect(self.path)
+        try:
+            connection.execute("PRAGMA foreign_keys=ON")
+            connection.execute(statement, parameters)
+            connection.commit()
+        finally:
+            connection.close()
 
     def _sql(self, statement: str, parameters: tuple = ()) -> list[tuple]:
         connection = sqlite3.connect(self.path)
@@ -491,7 +501,7 @@ class MigrationNegativesTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def test_migrations_are_idempotent_and_clean(self) -> None:
+    def test_reinit_is_idempotent_and_clean(self) -> None:
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
         snapshot = {
             "journal": self._sql(
@@ -516,22 +526,24 @@ class MigrationNegativesTests(unittest.TestCase):
         self.assertEqual(self._sql("PRAGMA foreign_key_check"), [])
 
     def test_city_columns_are_nullable_and_old_rows_survive(self) -> None:
-        # База версии 20 со старым местом без города, затем миграции 21–22.
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:20]), 20)
-        connection = sqlite3.connect(self.path)
-        try:
-            connection.execute(
-                "INSERT INTO places (id, created_by_user_id, address, url, created_at) "
-                "VALUES (7, NULL, 'старый адрес', NULL, '2026-01-01 00:00:00')"
-            )
-            connection.commit()
-        finally:
-            connection.close()
+        # Место без города допустимо схемой: такие строки остались от версий
+        # до появления города и обязаны пережить повторную инициализацию.
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
+        self._write(
+            "INSERT INTO places (id, created_by_user_id, address, url, created_at) "
+            "VALUES (7, NULL, 'старый адрес', NULL, '2026-01-01 00:00:00')"
+        )
+        # `city` объявлен без NOT NULL и без DEFAULT: город никто не досоздаёт.
+        columns = self._sql("PRAGMA table_info(places)")
+        city = [column for column in columns if column[1] == "city"]
+        self.assertEqual(len(city), 1)
+        self.assertIn(city[0][3], (0, None), "город объявлен обязательным")
+
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
         self.assertEqual(
             self._sql("SELECT id, address, city FROM places WHERE id = 7"),
             [(7, "старый адрес", None)],
-            "миграция не должна backfill-ить город",
+            "инициализация не должна backfill-ить город",
         )
         self.assertEqual(self._sql("PRAGMA integrity_check"), [("ok",)])
         self.assertEqual(self._sql("PRAGMA foreign_key_check"), [])
@@ -539,15 +551,10 @@ class MigrationNegativesTests(unittest.TestCase):
 
 @unittest.skipIf(IMPORT_ERROR is not None, f"окружение недоступно: {IMPORT_ERROR}")
 class UserTemplateNotOverwrittenTests(unittest.TestCase):
-    """Правленый пользователем шаблон не перезаписывается миграцией 22."""
+    """Повторная инициализация не переписывает шаблоны и их снимки."""
 
-    V3_HEADER = "**[название]**"
-    V3_BODY = "\n**[дата] // [время_начала]**\n\n**[место]([ссылка_места])**\n[адрес]\n\n[описание]"
-    V3_FOOTER = "\n[контакт]"
-    # Литерал миграции 22 (эталон v4). Актуальный BUILTIN — уже v5, но
-    # миграция 30 существующие шаблоны не переписывает.
-    V4_CONTENT = (
-        "**[название]**\n"
+    EDITED_CONTENT = (
+        "**Мой заголовок**\n"
         "\n"
         "**[дата] // [время_начала]**\n"
         "**[место]([ссылка_места])**\n"
@@ -555,28 +562,18 @@ class UserTemplateNotOverwrittenTests(unittest.TestCase):
         "\n"
         "[описание]\n"
         "\n"
-        "[контакт]"
+        "[контакт]\n"
+        "\n"
+        "моя подпись"
     )
-
-    @classmethod
-    def _joined(cls, header: str, body: str, footer: str) -> str:
-        """Формула backfill миграции 24: секции через "\n" только между непустыми."""
-        if not (header.strip() or body.strip() or footer.strip()):
-            return header + body + footer
-        text = header.strip()
-        if text and (body.strip() or footer.strip()):
-            text += "\n"
-        text += body
-        if body.strip() and footer.strip():
-            text += "\n"
-        return text + footer
+    BUILTIN_VERSION = 3
 
     def setUp(self) -> None:
-        self.path = temp_db_path("poster-u1a-verify-m22-")
+        self.path = temp_db_path("poster-u1a-verify-templates-")
         self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
         self.engine = make_engine(self.path)
         self.addCleanup(self.engine.dispose)
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:21]), 21)
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
         self._write(
             "INSERT INTO users (id, telegram_user_id, created_at) "
             "VALUES (1, ?, '2026-01-01 00:00:00')",
@@ -599,10 +596,7 @@ class UserTemplateNotOverwrittenTests(unittest.TestCase):
         finally:
             connection.close()
 
-    def _seed_personal(
-        self, template_id: int, *, name: str, header: str, body: str, footer: str
-    ) -> None:
-        """Строка версии v3 до миграции 24 — секции, а не `content`."""
+    def _seed_personal(self, template_id: int, *, name: str, content: str) -> None:
         self._write(
             "INSERT INTO templates (id, kind, owner_user_id, name, revision, "
             "created_by_user_id, created_at, updated_at) VALUES "
@@ -610,75 +604,56 @@ class UserTemplateNotOverwrittenTests(unittest.TestCase):
             (template_id, name),
         )
         self._write(
-            "INSERT INTO template_versions (id, template_id, version, header, body, "
-            "footer, created_by_user_id, created_at, builtin_version) VALUES "
-            "(?, ?, 1, ?, ?, ?, 1, '2026-01-01 00:00:00', 3)",
-            (template_id, template_id, header, body, footer),
+            "INSERT INTO template_versions (id, template_id, version, content, "
+            "created_by_user_id, created_at, builtin_version) VALUES "
+            "(?, ?, 1, ?, 1, '2026-01-01 00:00:00', ?)",
+            (template_id, template_id, content, self.BUILTIN_VERSION),
         )
 
     def test_edited_copy_is_not_overwritten(self) -> None:
-        edited_body = self.V3_BODY + "\n\nмоя подпись"
-        self._seed_personal(
-            1,
-            name="Дефолтный шаблон",
-            header=self.V3_HEADER,
-            body=edited_body,
-            footer=self.V3_FOOTER,
-        )
-        untouched_id = 2
-        self._seed_personal(
-            untouched_id,
-            name="Дефолтный шаблон",
-            header=self.V3_HEADER,
-            body=self.V3_BODY,
-            footer=self.V3_FOOTER,
-        )
+        self._seed_personal(1, name="Дефолтный шаблон", content=self.EDITED_CONTENT)
+        self._seed_personal(2, name="Дефолтный шаблон", content=self.EDITED_CONTENT)
+
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
 
+        for template_id in (1, 2):
+            self.assertEqual(
+                self._sql(
+                    "SELECT content, builtin_version, revision FROM "
+                    "template_versions AS v JOIN templates AS t "
+                    "ON t.id = v.template_id WHERE t.id = ?",
+                    (template_id,),
+                ),
+                [(self.EDITED_CONTENT, self.BUILTIN_VERSION, 1)],
+                "правленый шаблон перезаписан повторной инициализацией",
+            )
         self.assertEqual(
-            self._sql(
-                "SELECT content, builtin_version, revision FROM template_versions AS v "
-                "JOIN templates AS t ON t.id = v.template_id WHERE t.id = 1"
-            ),
-            [(self._joined(self.V3_HEADER, edited_body, self.V3_FOOTER), 3, 1)],
-            "правленый шаблон перезаписан миграцией",
+            self._sql("SELECT count(*) FROM bricks WHERE code = 'город'"), [(1,)]
         )
-        # Контроль: нетронутая копия обновлена до v4 (миграция работает).
-        rows = self._sql(
-            "SELECT version, builtin_version, content FROM template_versions "
-            "WHERE template_id = ? ORDER BY version",
-            (untouched_id,),
-        )
-        self.assertEqual(rows[-1][1], 4)
-        self.assertEqual(rows[-1][2], self.V4_CONTENT)
 
     def test_snapshot_of_edited_copy_is_not_rewritten(self) -> None:
-        self._seed_personal(
-            3,
-            name="Мой шаблон",
-            header=self.V3_HEADER,
-            body=self.V3_BODY,
-            footer=self.V3_FOOTER,
-        )
+        self._seed_personal(3, name="Мой шаблон", content=self.EDITED_CONTENT)
         self._write(
             "INSERT INTO template_snapshots (id, owner_user_id, source_template_id, "
-            "source_template_version, source_kind, header, body, footer, "
-            "builtin_version, created_at) VALUES "
-            "(50, 1, 3, 1, 'personal', ?, ?, ?, 3, '2026-01-01 00:00:00')",
-            (self.V3_HEADER, self.V3_BODY, self.V3_FOOTER),
+            "source_template_version, source_kind, content, builtin_version, "
+            "created_at) VALUES (50, 1, 3, 1, 'personal', ?, 3, "
+            "'2026-01-01 00:00:00')",
+            (self.EDITED_CONTENT,),
         )
+
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
+
         self.assertEqual(
             self._sql(
                 "SELECT content, extended_content FROM template_snapshots "
                 "WHERE id = 50"
             ),
-            [(self._joined(self.V3_HEADER, self.V3_BODY, self.V3_FOOTER), None)],
+            [(self.EDITED_CONTENT, None)],
         )
         self.assertEqual(
-            self._sql("SELECT revision FROM templates WHERE id = 3"),
-            [(1,)],
-            "шаблон с другим именем и текстом v3 не должен обновляться",
+            self._sql("SELECT revision, name FROM templates WHERE id = 3"),
+            [(1, "Мой шаблон")],
+            "шаблон владельца не должен обновляться инициализацией",
         )
 
 

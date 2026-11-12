@@ -11,7 +11,7 @@
 публичного выпуска Poster): в базе не остаётся НИ ОДНОЙ тестовой записи —
 площадки, пользователи, администраторы, личные и локальные кирпичики,
 пользовательские шаблоны, предложения, анонсы, состояния. Сохраняются
-только: актуальная схема (все миграции), системные кирпичики (каталог
+только: актуальная схема (базовая версия 1.0.0), системные кирпичики (каталог
 `brick_types.SYSTEM_BRICKS`), встроенный стандартный шаблон (эталон
 `template_types.BUILTIN_TEMPLATE`; строка появляется вместе с первым
 местом), системные настройки (в БД их нет — конфигурация `.env`) и права
@@ -25,14 +25,15 @@
   `template_snapshots` и др.) защищены триггерами `no_delete` и FK
   RESTRICT, поэтому пользователи/места/шаблоны/кирпичики «оставались»;
 - rebuild устраняет саму проблему: новая база создаётся штатным
-  bootstrap (`init_db`: все миграции + `create_all` + сидирование
+  bootstrap (`init_db`: базовая схема 1.0.0 + `create_all` + сидирование
   системных кирпичиков) в НОВОМ файле, где тестовых записей нет по
   построению; защита FK (`PRAGMA foreign_keys=ON`) и триггеров не
   отключается ни на секунду;
 - результат проверяется ДО замены: integrity_check, полный журнал
-  миграций 1..N, каталог системных кирпичиков по кодам из кода продукта,
-  нулевые счётчики всех пользовательских таблиц; при любой неудаче
-  рабочая база не изменяется;
+  версий схемы (для 1.0.0 — ровно версия 1, для будущих релизов 1..N),
+  каталог системных кирпичиков по кодам из кода продукта, нулевые счётчики
+  всех пользовательских таблиц; при любой неудаче рабочая база не
+  изменяется;
 - замена атомарна (`os.replace` в одном каталоге) и выполняется при
   остановленной службе (PID-файл + тестовая `BEGIN IMMEDIATE` над
   рабочей базой), поэтому бот не увидит «половину» замены.
@@ -64,6 +65,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -76,7 +78,7 @@ REAL_DB_PATH = APP_DIR / "post_bot.db"
 # выполняться при остановленном боте. Каталог logs — рядом с модулем.
 SERVICE_PID_FILE = APP_DIR / "logs" / "post_bot.pid"
 
-# Журнал миграций: определяет совместимость схемы, чистке не подлежит.
+# Журнал версий схемы: определяет совместимость, чистке не подлежит.
 SYSTEM_TABLES = ("schema_migrations",)
 
 
@@ -116,8 +118,8 @@ def user_table_counts(path: str | Path) -> dict[str, int]:
     Счётчики строк всех пользовательских таблиц (read-only, для отчёта).
 
     Пользовательская таблица — любая таблица базы, кроме системного
-    журнала миграций. Список берётся из фактической схемы базы, поэтому
-    новая таблица миграций автоматически попадает в контроль нулевых
+    журнала версий схемы. Список берётся из фактической схемы базы, поэтому
+    новая таблица автоматически попадает в контроль нулевых
     счётчиков — ничего дублировать вручную не нужно. Используется фазой
     отчёта (`--skip-clean`) и верификацией rebuild: после очистки каждый
     счётчик обязан быть нулевым.
@@ -303,8 +305,8 @@ def bootstrap_fresh_database(target_path: str | Path) -> None:
     Создать новую базу штатным bootstrap в файле `target_path`.
 
     Никакого собственного DDL и никакого прямого доступа к данным: та же
-    функция `init_db` (миграции 1..N + create_all + сидирование системных
-    кирпичиков), что при старте бота. Новая база содержит ровно:
+    функция `init_db` (базовая схема 1.0.0 + create_all + сидирование
+    системных кирпичиков), что при старте бота. Новая база содержит ровно:
     актуальную схему, системные кирпичики, встроенный стандартный шаблон
     (его определения живут в коде `template_types.BUILTIN_TEMPLATE` и
     материализуются вместе с первым местом), конфигурацию (`.env`, в БД
@@ -326,7 +328,7 @@ def bootstrap_fresh_database(target_path: str | Path) -> None:
 def verify_rebuilt_database(
     path: str | Path,
     *,
-    expected_version: int,
+    expected_versions: Sequence[int],
     system_brick_codes: tuple[str, ...],
 ) -> dict[str, object]:
     """
@@ -334,8 +336,9 @@ def verify_rebuilt_database(
 
     Проверяется:
     - `PRAGMA integrity_check`;
-    - журнал миграций: ровно версии 1..N без пропусков, где N —
-      актуальная версия кода (`DEFAULT_MIGRATIONS`, не зашита);
+    - журнал версий схемы: ровно версии кода в их порядке (`DEFAULT_MIGRATIONS`,
+      не зашито; для 1.0.0 это ровно одна версия 1, для будущих релизов —
+      1..N без пропусков);
     - каталог системных кирпичиков: активные строки `scope='system'`
       совпадают по кодам с `brick_types.SYSTEM_BRICKS` (источник —
       каталог кода продукта, число не зашито);
@@ -356,10 +359,11 @@ def verify_rebuilt_database(
                 "SELECT version FROM schema_migrations ORDER BY version"
             )
         ]
-        if applied != list(range(1, expected_version + 1)):
+        expected = list(expected_versions)
+        if applied != expected:
             raise MaintenanceError(
-                "Новая база содержит не полный журнал миграций: "
-                f"{applied!r}, ожидалось 1..{expected_version}."
+                "Новая база содержит не полный журнал версий схемы: "
+                f"{applied!r}, ожидалось {expected!r}."
             )
 
         system_codes = [
@@ -496,7 +500,7 @@ def clean_test_data(path: str | Path) -> dict[str, object]:
         print("[4/6] Bootstrap новой базы завершён (init_db).")
         verification = verify_rebuilt_database(
             staging,
-            expected_version=DEFAULT_MIGRATIONS[-1].version,
+            expected_versions=[migration.version for migration in DEFAULT_MIGRATIONS],
             system_brick_codes=SYSTEM_BRICK_CODES,
         )
         migrations_applied = verification["migrations"]
@@ -504,7 +508,7 @@ def clean_test_data(path: str | Path) -> dict[str, object]:
         assert isinstance(migrations_applied, list)  # узкий тип для отчёта
         assert isinstance(brick_codes, list)  # узкий тип для отчёта
         print(
-            f"[5/6] Верификация новой базы: миграции 1..{len(migrations_applied)}, "
+            f"[5/6] Верификация новой базы: журнал версий {migrations_applied}, "
             f"системных кирпичиков {len(brick_codes)}, "
             "пользовательские счётчики нулевые."
         )
@@ -536,8 +540,8 @@ def verify_after_clean(path: str | Path) -> str:
     """
     Поверка результата: integrity_check + smoke-запуск init_db.
 
-    Отдельный процесс инициализирует базу как при старте бота (миграции
-    должны быть no-op, схема — читаемой). Telegram не трогается: токен —
+    Отдельный процесс инициализирует базу как при старте бота (версии
+    схемы должны быть no-op, схема — читаемой). Telegram не трогается: токен —
     фикстурный, init_db сети не касается.
     """
     resolved = Path(path).resolve()

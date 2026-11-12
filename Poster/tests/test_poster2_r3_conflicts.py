@@ -1167,7 +1167,7 @@ class ConflictRestartTests(BrickDatabaseTestCase):
 
 
 class ConflictMigrationTests(unittest.TestCase):
-    """Требование 7: миграция 19 на заполненной БД."""
+    """Требование 7: схема конфликтов на заполненной БД."""
 
     def setUp(self) -> None:
         import os
@@ -1187,19 +1187,17 @@ class ConflictMigrationTests(unittest.TestCase):
         self.addCleanup(self.engine.dispose)
         self.addCleanup(shutil.rmtree, os.path.dirname(self.path), True)
 
-    def test_latest_version_is_twenty_five(self) -> None:
-        # U1a добавил 21 (`place_city`) и 22 (`builtin_templates_v4`)
-        # поверх R4-овской 20, H2 — 24 (`template_content_and_extras...
-        # _without_sections`), Poster 2.4 P1 — 25 (`single_address_brick`);
-        # все применяются штатно.
-        self.assertEqual(LATEST_VERSION, 33)
+    def test_latest_version_is_baseline(self) -> None:
+        # Вся схема, включая таблицы конфликтов R3, входит в базовую версию
+        # 1.0.0: отдельных накопительных миграций больше нет.
+        self.assertEqual(LATEST_VERSION, 1)
 
-    def test_migration_19_on_filled_database_keeps_data(self) -> None:
+    def test_filled_database_keeps_data_and_tables(self) -> None:
         from sqlalchemy import text
 
-        from migrations import DEFAULT_MIGRATIONS, run_migrations
+        from migrations import run_migrations
 
-        self.assertEqual(run_migrations(self.engine, DEFAULT_MIGRATIONS[:18]), 18)
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
         with self.engine.begin() as connection:
             connection.execute(
                 text(
@@ -1224,6 +1222,7 @@ class ConflictMigrationTests(unittest.TestCase):
                 )
             )
 
+        # Повторный прогон на заполненной базе ничего не меняет.
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
         with self.engine.begin() as connection:
             self.assertEqual(
