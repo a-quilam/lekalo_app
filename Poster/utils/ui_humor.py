@@ -94,17 +94,11 @@ FORBIDDEN_PHRASE_CHARS = ("<", ">", "&")
 SCREEN_QUESTION = "question"
 SCREEN_BUTTON = "button"
 
-# Запрещённые виды экранов перечислены явно: это не «всё остальное», а
-# конкретные продуктовые границы из спеки.
+# Вид экрана с ошибкой: конструктор анонса передаёт его в `pick_variant`,
+# чтобы диагностика никогда не получала шутку.
 SCREEN_ERROR = "error"
-SCREEN_RIGHTS = "rights"
-SCREEN_LIMITS = "limits"
-SCREEN_DATA_LOSS = "data_loss"
 
 ALLOWED_SCREEN_KINDS = frozenset({SCREEN_QUESTION, SCREEN_BUTTON})
-FORBIDDEN_SCREEN_KINDS = frozenset(
-    {SCREEN_ERROR, SCREEN_RIGHTS, SCREEN_LIMITS, SCREEN_DATA_LOSS}
-)
 
 # Ключ шутки пустого анонса. Постоянный: экран пустого анонса перерисовывается
 # при каждом шаге и не должен «прыгать» между фразами.

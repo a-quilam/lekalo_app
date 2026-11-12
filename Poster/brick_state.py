@@ -35,7 +35,6 @@ _BROWSE_PHASES = frozenset(
         "archive",
         "card",
         "archive_confirm",
-        "proposal_select_brick",
         "proposal_scope",
         "proposal_select_place",
         "proposal_preview",

@@ -1,12 +1,17 @@
 # .gitignore
 
-# Ignore environment variables file
+# Секреты и локальное окружение
 .env
 
-drafts.db
-
-responsible_person.db
-
+# Бэкапы и артефакты обслуживания базы (migrations.py, db_maintenance.py):
+# WAL-aware копии, замены и ручные резервные копии рядом с базой.
 *.bak
 *.owner-backup
+*.backup-*
 *.replaced-*
+
+# Локальные файлы SQLite: рабочую базу задаёт и корневой `.gitignore`
+# (`Poster/*.db`); здесь — производные имена и базы рядом с кодом.
+*.db
+*.db-wal
+*.db-shm

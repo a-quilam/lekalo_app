@@ -155,7 +155,6 @@ _WIZARD_PHASES = frozenset(
 )
 _PROPOSAL_PHASES = frozenset(
     {
-        "proposal_select_brick",
         "proposal_scope",
         "proposal_select_place",
         "proposal_preview",
@@ -884,18 +883,14 @@ def _proposal_header(title: str, step: int | None = None) -> str:
     return f"{PROPOSAL_CRUMB}\n\n📨 <b>{title}</b>{suffix}"
 
 
-def _proposal_back_label(state: dict) -> str:
+def _proposal_back_label() -> str:
     """
     Подпись «Назад» для экрана области (R4 №24).
 
-    U3a №8: мастер всегда запускается из строки хаба (`bp_start:<id>`), шаг
-    выбора кирпичика пропущен — «назад» возвращает в хаб, а не на экран
-    «выберите тот же кирпичик ещё раз». Ветка для старых сессий без метки
-    входа оставлена, чтобы сохранённое состояние не врало подписью.
+    Мастер всегда запускается из строки хаба (`bp_start:<id>`): шаг выбора
+    кирпичика пропущен, поэтому «назад» возвращает в хаб.
     """
-    if state.get("proposal_entry") == "row":
-        return tr("bricks.proposal_back_label.k_kirpichikam")
-    return tr("bricks.proposal_back_label.k_vyboru_kirpichika")
+    return tr("bricks.proposal_back_label.k_kirpichikam")
 
 
 def _proposal_reset_hub(state: dict, notice: str) -> None:
@@ -921,60 +916,6 @@ def _proposal_brick(session: Session, user: User, state: dict):
         brick_id,
         include_archived=False,
     )
-
-
-def _proposal_select_brick_content(session: Session, user: User, state: dict):
-    """
-    Шаг выбора личного кирпичика — совместимость со старыми сессиями.
-
-    U3a №8: общей кнопки «📨 Предложить кирпичик» на хабе больше нет, поэтому
-    этот экран из интерфейса недостижим: предложение запускается только из
-    строки конкретного кирпичика (`bp_start:<id>`). Функция остаётся, чтобы
-    сохранённая ранее сессия в фазе `proposal_select_brick` не превратилась
-    в тупик после обновления: человек видит список и может продолжить.
-    """
-    total = count_personal_bricks(session, user.telegram_user_id)
-    if total <= 0:
-        _proposal_reset_hub(
-            state,
-            tr("bricks.proposal_select_brick.snachala_sozdayte_lichnyy"),
-        )
-        return None
-    offset = _page_value(state.get("proposal_page"))
-    if offset >= total:
-        offset = ((total - 1) // PROPOSAL_PAGE_SIZE) * PROPOSAL_PAGE_SIZE
-    bricks = list_personal_bricks(
-        session,
-        user.telegram_user_id,
-        limit=PROPOSAL_PAGE_SIZE,
-        offset=offset,
-    )
-    state["proposal_page"] = offset
-    text = _proposal_header(tr("bricks.proposal_select_brick.vyberite_kirpichik")) + tr(
-        "bricks.proposal_select_brick.vyberite_svoy_lichnyy_kirpichik"
-    )
-    rows = [
-        [
-            keyboard_layouts.button(
-                _button_title(brick),
-                f"bp_source:{brick.id}",
-            )
-        ]
-        for brick in bricks
-    ]
-    nav = pagination.nav_keyboard_for_offset(
-        offset, total, "bp_page", page_size=PROPOSAL_PAGE_SIZE
-    )
-    if nav:
-        rows.append(nav)
-    rows.append(
-        [
-            InlineKeyboardButton(
-                tr("bricks.proposal_back_label.k_kirpichikam"), callback_data="bp_back"
-            )
-        ]
-    )
-    return text, InlineKeyboardMarkup(rows)
 
 
 def _proposal_scope_content(session: Session, user: User, state: dict):
@@ -1003,7 +944,7 @@ def _proposal_scope_content(session: Session, user: User, state: dict):
     rows.append(
         [
             InlineKeyboardButton(
-                _proposal_back_label(state),
+                _proposal_back_label(),
                 callback_data="bp_back",
             )
         ]
@@ -1322,8 +1263,6 @@ def _proposal_content(
     session: Session, user: User, state: dict
 ) -> tuple[str, InlineKeyboardMarkup] | None:
     phase = state.get("phase")
-    if phase == "proposal_select_brick":
-        return _proposal_select_brick_content(session, user, state)
     if phase == "proposal_scope":
         return _proposal_scope_content(session, user, state)
     if phase == "proposal_select_place":
@@ -2244,15 +2183,11 @@ async def handle_proposal_start(
     try:
         user = _ensure_user(session, update)
         total = count_personal_bricks(session, user.telegram_user_id)
-        brick = (
-            get_personal_brick(
-                session,
-                user.telegram_user_id,
-                source_id,
-                include_archived=False,
-            )
-            if source_id is not None
-            else None
+        brick = get_personal_brick(
+            session,
+            user.telegram_user_id,
+            source_id,
+            include_archived=False,
         )
     finally:
         session.close()
@@ -2261,10 +2196,10 @@ async def handle_proposal_start(
             update,
             context,
             state,
-            notice=(tr("bricks.proposal_select_brick.snachala_sozdayte_lichnyy")),
+            notice=tr("bricks.proposal_select_brick.snachala_sozdayte_lichnyy"),
         )
         return
-    if source_id is not None and brick is None:
+    if brick is None:
         await _render_phase(
             update,
             context,
@@ -2275,9 +2210,6 @@ async def handle_proposal_start(
         )
         return
     _proposal_new_state(state, "proposal_scope")
-    # R4 №24: вход только из строки хаба, шаг выбора кирпичика пропущен —
-    # «назад» на экране области ведёт в хаб.
-    state["proposal_entry"] = "row"
     state["proposal_source_brick_id"] = brick.id
     state["proposal_place_page"] = 0
     await _render_phase(update, context, state, drop_input=True)
@@ -2293,56 +2225,6 @@ async def handle_proposal_mine(
     await ctx.query(update).answer()
     _proposal_new_state(state, "proposal_list")
     await _render_phase(update, context, state, drop_input=True)
-
-
-async def handle_proposal_source(
-    update: Update, context: ContextTypes.DEFAULT_TYPE
-) -> None:
-    """
-    Выбор кирпичика на legacy-экране шага 1 (сохранённые старые сессии).
-
-    U3a №8: из интерфейса этот шаг недостижим, поэтому обработчик остаётся
-    только ради совместимости: сохранённая ранее сессия в фазе
-    `proposal_select_brick` продолжает работать, а не превращается в тупик.
-    """
-    state = load_brick_session(ctx.user(update).id)
-    if state is None or state.get("phase") != "proposal_select_brick":
-        await _stale(update)
-        return
-    query = ctx.query(update)
-    await query.answer()
-    brick_id = _proposal_parse_id(query.data or "")
-    if brick_id is None:
-        await _stale(update)
-        return
-    session = SessionLocal()
-    try:
-        user = _ensure_user(session, update)
-        brick = get_personal_brick(
-            session,
-            user.telegram_user_id,
-            brick_id,
-            include_archived=False,
-        )
-    finally:
-        session.close()
-    if brick is None:
-        await _render_phase(
-            update,
-            context,
-            state,
-            notice=(
-                tr("bricks.handle_proposal_start.kirpichik_nayden_arhive_vyberite")
-            ),
-        )
-        return
-    state["proposal_source_brick_id"] = brick.id
-    state["proposal_entry"] = "row"
-    state.pop("proposal_scope", None)
-    state.pop("proposal_place_id", None)
-    state["proposal_place_page"] = 0
-    state["phase"] = "proposal_scope"
-    await _render_phase(update, context, state)
 
 
 async def handle_proposal_target(
@@ -2408,7 +2290,6 @@ async def handle_proposal_page(
 ) -> None:
     state = load_brick_session(ctx.user(update).id)
     if state is None or state.get("phase") not in {
-        "proposal_select_brick",
         "proposal_select_place",
         "proposal_list",
     }:
@@ -2421,9 +2302,7 @@ async def handle_proposal_page(
         await _stale(update)
         return
     phase = state.get("phase")
-    if phase == "proposal_select_brick":
-        state["proposal_page"] = offset
-    elif phase == "proposal_select_place":
+    if phase == "proposal_select_place":
         state["proposal_place_page"] = offset
     else:
         state["proposal_page"] = offset
@@ -2596,17 +2475,12 @@ async def handle_proposal_back(
     await ctx.query(update).answer()
     phase = state.get("phase")
     page, archive_page = _saved_page(state)
-    if phase in {"proposal_select_brick", "proposal_list"}:
+    if phase == "proposal_list":
         _reset_hub(state, page=page, archive_page=archive_page)
     elif phase == "proposal_scope":
-        # R4 №24: из строки хаба шаг выбора кирпичика был пропущен — «назад»
-        # возвращает в хаб, а не на экран повторного выбора того же кирпичика.
-        if state.get("proposal_entry") == "row":
-            _reset_hub(state, page=page, archive_page=archive_page)
-        else:
-            state["phase"] = "proposal_select_brick"
-            state.pop("proposal_scope", None)
-            state.pop("proposal_place_id", None)
+        # Мастер всегда запускается из строки хаба: шаг выбора кирпичика был
+        # пропущен — «назад» возвращает в хаб.
+        _reset_hub(state, page=page, archive_page=archive_page)
     elif phase == "proposal_select_place":
         state["phase"] = "proposal_scope"
     elif phase == "proposal_preview":
@@ -3932,7 +3806,6 @@ def bricks_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(handle_delete_confirm, pattern=r"^bk_delete_yes:\d+$"),
         CallbackQueryHandler(handle_proposal_start, pattern=r"^bp_start(?::\d+)?$"),
         CallbackQueryHandler(handle_proposal_mine, pattern=r"^bp_mine$"),
-        CallbackQueryHandler(handle_proposal_source, pattern=r"^bp_source:\d+$"),
         CallbackQueryHandler(
             handle_proposal_target, pattern=r"^bp_target:(?:place|system)$"
         ),

@@ -596,7 +596,6 @@
 "bricks.proposal.predlozhenie_naydeno_bolshe_vam": "Предложение не найдено или больше вам недоступно."
 "bricks.proposal.predlozhenie_ozhidaet_resheniya": "Предложение больше не ждёт решения, поэтому отозвать его нельзя."
 "bricks.proposal_back_label.k_kirpichikam": "◀️ К кирпичикам"
-"bricks.proposal_back_label.k_vyboru_kirpichika": "◀️ К выбору кирпичика"
 "bricks.proposal_card.cel": "Для кого: {proposal_target_text}"
 "bricks.proposal_card.nastroyki": "Настройки: {settings_text}"
 "bricks.proposal_card.opisanie": "Описание: {proposal_description}"
@@ -624,7 +623,6 @@
 "bricks.proposal_scope.vsya_sistema": "🌍 Вся система"
 "bricks.proposal_scope.vybrannyy_kirpichik_bolshe": "Этот кирпичик больше недоступен. Выберите другой."
 "bricks.proposal_select_brick.snachala_sozdayte_lichnyy": "Сначала создайте свой кирпичик."
-"bricks.proposal_select_brick.vyberite_kirpichik": "Выберите кирпичик"
 "bricks.proposal_select_place.vyberite_mesto": "Выберите место"
 "bricks.proposal_withdraw_confirm.otozvat": "✅ Отозвать"
 "bricks.proposal_withdraw_confirm.otozvat_predlozhenie": "Отозвать предложение?"
@@ -1218,7 +1216,6 @@
 "bricks.handle_brick.vvedite_drugoe_oboznachenie": " Введите другое обозначение."
 "bricks.proposal_list.zdes_hranitsya_istoriya_vashih": "\n\nВаши предложения кирпичиков."
 "bricks.proposal_scope.kirpichik_oboznachenie_vyberite_html": "\n\nКирпичик: <b>{title}</b> <code>[{code}]</code>\n\nКому предложить?"
-"bricks.proposal_select_brick.vyberite_svoy_lichnyy_kirpichik": "\n\nВыберите кирпичик, который хотите предложить.\n\n"
 "bricks.proposal_select_place.kirpichik_vyberite_mesto_html": "\n\nКирпичик: <b>{title}</b> <code>[{code}]</code>\n\nВыберите площадку."
 "bricks.proposal_withdraw_confirm.nazvanie_oboznachenie_ce_html": "\n\nКирпичик: {title} <code>[{code}]</code>\nКому: {proposal_target_text}\n\nОтозвать предложение?"
 

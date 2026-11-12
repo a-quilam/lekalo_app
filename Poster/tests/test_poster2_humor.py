@@ -204,24 +204,12 @@ class HumorCoreTests(unittest.TestCase):
     def test_whitelist_allows_only_question_and_button(self) -> None:
         self.assertTrue(ui_humor.humor_allowed(ui_humor.SCREEN_QUESTION))
         self.assertTrue(ui_humor.humor_allowed(ui_humor.SCREEN_BUTTON))
-        for kind in (
-            ui_humor.SCREEN_ERROR,
-            ui_humor.SCREEN_RIGHTS,
-            ui_humor.SCREEN_LIMITS,
-            ui_humor.SCREEN_DATA_LOSS,
-            "unknown",
-            "",
-        ):
+        for kind in ("error", "rights", "limits", "data_loss", "unknown", ""):
             self.assertFalse(ui_humor.humor_allowed(kind), kind)
 
     def test_forbidden_screens_never_joke_even_forced(self) -> None:
         keys = [f"{7 + index}:1:1:{index}" for index in range(5_000)]
-        for kind in (
-            ui_humor.SCREEN_ERROR,
-            ui_humor.SCREEN_RIGHTS,
-            ui_humor.SCREEN_LIMITS,
-            ui_humor.SCREEN_DATA_LOSS,
-        ):
+        for kind in ("error", "rights", "limits", "data_loss"):
             for key in keys:
                 self.assertIsNone(
                     ui_humor.pick_variant(key, screen_kind=kind, forced=True),
@@ -411,7 +399,7 @@ class HumorPhrasesCatalogTests(unittest.TestCase):
 
     def test_yaml_jokes_still_never_reach_forbidden_screens(self) -> None:
         """Смена источника фраз не открывает запрещённые экраны."""
-        for kind in ui_humor.FORBIDDEN_SCREEN_KINDS:
+        for kind in ("error", "rights", "limits", "data_loss"):
             for index in range(500):
                 self.assertIsNone(
                     ui_humor.pick_variant(f"k{index}", screen_kind=kind, forced=True),

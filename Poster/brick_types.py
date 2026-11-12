@@ -823,21 +823,3 @@ def validate_brick_value(
     if raw not in choices:
         return _invalid("Выбран вариант, которого нет в списке допустимых.")
     return BrickValueResult(BrickValueStatus.VALID, payload={"choice": raw})
-
-
-def value_payload_from_text(
-    value_type: str,
-    text: str | None,
-    *,
-    rules: Mapping[str, object] | str | None = None,
-    allow_empty: bool = False,
-    today: date | None = None,
-) -> BrickValueResult:
-    """Удобная обёртка для будущего адаптивного ввода (без Telegram)."""
-    return validate_brick_value(
-        value_type,
-        text,
-        rules=rules,
-        allow_empty=allow_empty,
-        today=today,
-    )

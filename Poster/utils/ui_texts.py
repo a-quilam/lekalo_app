@@ -1073,7 +1073,6 @@ DEFAULTS: dict[str, str] = {
     "bricks.proposal.predlozhenie_naydeno_bolshe_vam": "Предложение не найдено или больше вам недоступно.",
     "bricks.proposal.predlozhenie_ozhidaet_resheniya": "Предложение больше не ждёт решения, поэтому отозвать его нельзя.",
     "bricks.proposal_back_label.k_kirpichikam": "◀️ К кирпичикам",
-    "bricks.proposal_back_label.k_vyboru_kirpichika": "◀️ К выбору кирпичика",
     "bricks.proposal_card.cel": "Для кого: {proposal_target_text}",
     "bricks.proposal_card.nastroyki": "Настройки: {settings_text}",
     "bricks.proposal_card.opisanie": "Описание: {proposal_description}",
@@ -1104,7 +1103,6 @@ DEFAULTS: dict[str, str] = {
     "bricks.proposal_scope.vsya_sistema": "🌍 Вся система",
     "bricks.proposal_scope.vybrannyy_kirpichik_bolshe": "Выбранный кирпичик больше недоступен. Начните предложение заново.",
     "bricks.proposal_select_brick.snachala_sozdayte_lichnyy": "Сначала создайте личный кирпичик. После этого его можно предложить для места или всей системы.",
-    "bricks.proposal_select_brick.vyberite_kirpichik": "Выберите кирпичик",
     "bricks.proposal_select_place.vyberite_mesto": "Выберите место",
     "bricks.proposal_withdraw_confirm.otozvat": "✅ Отозвать",
     "bricks.proposal_withdraw_confirm.otozvat_predlozhenie": "Отозвать предложение?",
@@ -1849,13 +1847,6 @@ DEFAULTS: dict[str, str] = {
         "• Месту — решение примет его администратор или суперадминистратор.\n"
         "• Всей системе — решение примет только суперадминистратор.\n\n"
         "Новое место автоматически не создаётся."
-    ),
-    "bricks.proposal_select_brick.vyberite_svoy_lichnyy_kirpichik": (
-        "\n\n"
-        "Выберите свой личный кирпичик, который хотите предложить для места или всей системы.\n"
-        "\n"
-        "В предложении сохранятся его текущие название, код, тип и описание. Сам кирпичик останется у вас без изменений.\n"
-        "\n"
     ),
     "bricks.proposal_select_place.kirpichik_vyberite_mesto_html": (
         "\n\nКирпичик: <b>{title}</b> <code>[{code}]</code>\n\n"

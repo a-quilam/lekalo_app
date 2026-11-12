@@ -818,7 +818,7 @@ class HumorTests(R4TesterCase):
             self.assertIsNone(ui_humor.get_humor_line(announcement_is_empty=True))
 
     def test_forbidden_screens_never_joke(self) -> None:
-        for kind in ui_humor.FORBIDDEN_SCREEN_KINDS:
+        for kind in ("error", "rights", "limits", "data_loss"):
             for index in range(500):
                 self.assertIsNone(ui_humor.pick_variant(f"k{index}", screen_kind=kind))
 
@@ -991,7 +991,8 @@ class ForgeryAndIdorTests(R4TesterCase):
         proposal_id = self.make_proposal(h, OWNER, source.id, place_id=place_id)
         await self.open_hub(h)
         before = h.screen_text()
-        # Кнопки, допустимые только на других фазах.
+        # Кнопки, допустимые только на других фазах, и кнопка удалённого
+        # legacy-шага выбора кирпичика (`bp_source:*`): все они устарели.
         for data in (
             f"bp_source:{source.id}",
             "bp_target:place",
@@ -1002,6 +1003,7 @@ class ForgeryAndIdorTests(R4TesterCase):
         ):
             await h.callback(data, user_id=OWNER)
         self.assertEqual(h.screen_text(), before, "устаревшая кнопка сменила экран")
+        cat.assert_stale(self, " ".join(alert_texts(h)))
         with h.session_factory() as session:
             row = session.get(BrickProposal, proposal_id)
             assert row is not None

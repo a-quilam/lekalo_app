@@ -684,9 +684,10 @@ class BrickProposalFlowTests(unittest.TestCase):
         proposal_id = self.direct_proposal(h, OWNER_TG, source.id, place_id=place_id)
         await self.open_own_card(h, proposal_id)
         h.bot.calls.clear()
-        # Legacy-кнопка шага выбора кирпичика: вне своей фазы она устарела.
+        # Кнопка удалённого legacy-шага выбора кирпичика: из старого
+        # сообщения это устаревший callback, данные не меняются.
         await h.callback(f"bp_source:{source.id}", user_id=OWNER_TG)
-        self.assertIsNotNone(self.last_alert(h))
+        cat.assert_stale(self, self.last_alert(h) or "")
         await h.callback("bp_send", user_id=OWNER_TG)
         self.assertIsNotNone(self.last_alert(h))
         self.assertEqual(self.proposal_status(h, proposal_id), "pending")
