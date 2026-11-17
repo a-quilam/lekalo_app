@@ -139,6 +139,7 @@ from handlers import (
     wizard_photos,
     wizard_questions,
 )
+from place_brick_store import place_brick_description_map
 from place_store import (
     get_place_details,
     list_places,
@@ -4609,14 +4610,39 @@ async def _show_field_input(
     return AW_PREVIEW
 
 
-def _extra_field_state(details, definition) -> AnnouncementFieldState:
+def _place_local_descriptions(details) -> dict[int, str]:
+    """
+    Действующие локальные описания системных кирпичиков площадки черновика.
+
+    Poster 2.6.2 §3.2: подсказка автора анонса — своя у площадки, если она
+    задана, иначе общая из каталога. Карта читается ОДНОЙ сессией на экран;
+    вызывающий слой передаёт её в `_extra_field_state`, чтобы список из
+    десятка кирпичиков не открывал десяток сессий.
+    """
+    place_id = getattr(details, "place_id", None)
+    if not isinstance(place_id, int) or isinstance(place_id, bool):
+        return {}
+    with SessionLocal() as session:
+        return place_brick_description_map(session, place_id)
+
+
+def _extra_field_state(
+    details, definition, *, local_descriptions=None
+) -> AnnouncementFieldState:
     """
     Состояние значения кирпичика для экрана доп. полей.
 
     `definition` — определение кирпичика (`BrickDefinition`) из payload
     рендера: экран показывает и незаполненные кирпичики, поэтому для
     «нет строки» возвращается MISSING, а не ошибка.
+
+    Poster 2.6.2 §3.2: действующее описание системного кирпичика берётся с
+    учётом локального переопределения площадки. Карта читается один раз на
+    экран (`local_descriptions`), иначе каждый кирпичик открывал бы свою
+    сессию; без карты — одна сессия на вызов.
     """
+    if local_descriptions is None:
+        local_descriptions = _place_local_descriptions(details)
     value = details.value_for(definition.id)
     status = FIELD_STATUS_MISSING
     raw: object | None = None
@@ -4642,7 +4668,7 @@ def _extra_field_state(details, definition) -> AnnouncementFieldState:
         status=status,
         raw_value=raw,
         rules=dict(definition.rules),
-        description=definition.description,
+        description=local_descriptions.get(definition.id, definition.description),
         raw_html=raw_html,
     )
 
@@ -5215,6 +5241,8 @@ def _extras_entries(details, telegram_user_id: int):
     # дополнительных полей не показываем вовсе и не открываем экран пустого
     # справочника. Само значение анонса при этом не меняется.
     footers_available: bool | None = None
+    # Одна карта локальных описаний на экран (Poster 2.6.2 §3.2).
+    local_descriptions = _place_local_descriptions(details)
     entries: list[dict[str, Any]] = []
     for brick_id in order:
         definition = payload.definitions_by_id.get(brick_id)
@@ -5231,7 +5259,9 @@ def _extras_entries(details, telegram_user_id: int):
                 "brick_id": brick_id,
                 "extra_id": extra.extra_id if extra is not None else None,
                 "title": brick_title_display(definition.title, definition.code),
-                "field": _extra_field_state(details, definition),
+                "field": _extra_field_state(
+                    details, definition, local_descriptions=local_descriptions
+                ),
                 "catalog": (
                     definition.code if definition.code in CATALOG_BRICK_CODES else None
                 ),
@@ -6229,8 +6259,11 @@ def _preview_summary_lines(
     extras = _extras_with_definitions(details, telegram_user_id)
     if extras:
         lines.extend(["", tr("wizard.preview_summary_lines.dopolnitelnye_kirpichiki")])
+        local_descriptions = _place_local_descriptions(details)
         for extra, definition in extras[:MAX_PREVIEW_EXTRAS]:
-            field = _extra_field_state(details, definition)
+            field = _extra_field_state(
+                details, definition, local_descriptions=local_descriptions
+            )
             if field.status == FIELD_STATUS_VALID:
                 value = _short(_field_value_text(field), FIELD_DISPLAY_LIMIT)
                 value_text = tr_safe(

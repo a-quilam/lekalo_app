@@ -507,6 +507,36 @@ DEFAULTS: dict[str, str] = {
     "admin.brick_list.mesto_line": "Место: {place}.",
     "admin.brick_list.net_kirpichikov": "Кирпичиков пока нет.",
     "admin.brick_list.sistema_line": "Системные кирпичики: общий каталог.",
+    # Poster 2.6.2 §3.1–3.2: каталог системных кирпичиков глазами площадки.
+    # Меняется только описание, действующее для автора анонса этого места.
+    "admin.place_brick_card.istochnik_katalog": "общее описание каталога",
+    "admin.place_brick_card.istochnik_mesto": "своё описание площадки",
+    "admin.place_brick_card.kartochka_html": (
+        "🧩 <b>{title}</b>\n\n"
+        "Код: <code>[{code}]</code>\n"
+        "Описание для площадки: {description_block}\n"
+        "Источник: {source_label}\n\n"
+        "Меняется только описание — подсказка автору анонса. Название, код и "
+        "тип кирпичика остаются прежними."
+    ),
+    "admin.place_brick_input.arhivnyy_kirpichik": (
+        "Кирпичик в архиве: описание для площадки не меняется."
+    ),
+    "admin.place_brick_input.ne_udalos_sohranit": (
+        "Не удалось сохранить описание. Попробуйте ещё раз."
+    ),
+    "admin.place_brick_input.opisanie_html": (
+        "✏️ Своё описание кирпичика <code>[{code}]</code>\n\n"
+        "Отправьте текст описания для этой площадки. Пустой текст вернёт "
+        "общее описание каталога."
+    ),
+    "admin.place_bricks.net_kirpichikov": "Системных кирпичиков нет.",
+    "admin.place_bricks.spisok_html": (
+        "🧩 <b>Системные кирпичики</b>\n\n📍 {place}\n\n"
+        "Выберите кирпичик: своё описание площадки заменяет общее для автора "
+        "анонса. Название, код и тип кирпичика не меняются."
+    ),
+    "admin.place_bricks.svoe_opisanie": " · своё описание",
     "admin.build.izmenenie_adresa_tekuschiy_adres": (
         "🏠 Изменить адрес\n\n📍 {canonical_name}\n"
         "Текущий адрес: {current}\n\n"
@@ -1165,6 +1195,9 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.predlozheniya_mestam": "📍 Предложения по местам ({places_pending})",
     "buttons.admin.redaktirovat_mesto": "✏️ Редактировать место",
     "buttons.admin.snyat_administratora": "🚫 Снять администратора",
+    "buttons.admin.vernut_obshee_opisanie": "↩️ Общее описание",
+    "buttons.admin.sistemnye_kirpichiki": "🧩 Системные кирпичики",
+    "buttons.admin.svoi_opisanie": "✏️ Своё описание",
     "buttons.admin.sozdat_kirpichik": "➕ Создать кирпичик",
     "buttons.admin.sozdat_predlozhenie": "✅ Создать предложение",
     "buttons.admin.sozdat_ssylku_priglashenie": "🔗 Создать ссылку-приглашение",

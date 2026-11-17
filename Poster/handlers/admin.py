@@ -147,6 +147,14 @@ from place_admin_store import (
     revoke_place_admin,
     search_known_users,
 )
+from place_brick_store import (
+    PlaceBrickDescriptionError,
+    PlaceBrickView,
+    get_place_brick_view,
+    list_place_system_brick_views,
+    reset_place_brick_description,
+    set_place_brick_description,
+)
 from place_edit_store import (
     AliasRow,
     EditMutationResult,
@@ -237,6 +245,11 @@ PHASES = {
     "brick_list",
     "brick_card",
     "brick_description_input",
+    # Poster 2.6.2 §3.1–3.2: системные кирпичики глазами площадки и её
+    # ЛОКАЛЬНЫЕ описания (каталог при этом не меняется).
+    "place_brick_list",
+    "place_brick_card",
+    "place_brick_description_input",
     # Poster 2.4.1 T2: ссылка для создания анонса — экран полной карточки.
     "invite",
     # Poster 2.5 A3: служебный подраздел управления администратором места.
@@ -1202,6 +1215,167 @@ def _brick_phase_content(
     return _brick_card_content(brick, place_name=place_name)
 
 
+def _place_brick_source_label(view: PlaceBrickView) -> str:
+    """Источник действующего описания: своё у площадки или общее у каталога."""
+    if view.is_local:
+        return tr("admin.place_brick_card.istochnik_mesto")
+    return tr("admin.place_brick_card.istochnik_katalog")
+
+
+def _place_brick_list_content(
+    session: Session,
+    state: dict,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    «🧩 Системные кирпичики» места (Poster 2.6.2 §3.1).
+
+    Показывается ЖИВОЙ системный каталог (не хардкод): новый кирпичик
+    появляется на экране сам. Пять записей на страницу — общий механизм
+    `utils.pagination`; отметка «своё описание» помогает найти
+    переопределения, не открывая каждую карточку.
+    """
+    place_id = state.get("brick_place_id")
+    # Вызывающий слой уже проверил права и сам id, но контент-функция не
+    # доверяет состоянию: без места показывать нечего.
+    if not isinstance(place_id, int) or isinstance(place_id, bool):
+        raise BrickNotFoundError("Место не выбрано.")
+    place_name = get_place_name_for_display(session, place_id)
+    views = list_place_system_brick_views(session, place_id)
+    offset = _clamp_offset(
+        _page_value(state, "place_brick_page"), len(views), pagination.PAGE_SIZE
+    )
+    state["place_brick_page"] = offset
+    page_views = views[offset : offset + pagination.PAGE_SIZE]
+
+    text = tr_safe(
+        "admin.place_bricks.spisok_html",
+        place=_h(place_name or tr("admin.brick_card.mesto_bez_nazvaniya")),
+    )
+    rows: list[list[InlineKeyboardButton]] = []
+    local_mark = tr("admin.place_bricks.svoe_opisanie")
+    for view in page_views:
+        label = f"[{view.brick.code}] {brick_title_display(view.brick.title, view.brick.code)}"
+        if view.is_local:
+            label += local_mark
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    _button_name("", label),
+                    callback_data=f"adm_pbrick:{view.brick.id}",
+                )
+            ]
+        )
+    if not views:
+        text += "\n\n" + tr("admin.place_bricks.net_kirpichikov")
+    nav = pagination.nav_keyboard_for_offset(offset, len(views), "adm_pbricks_page")
+    if nav:
+        rows.append(nav)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                tr("buttons.nav.back"),
+                callback_data=f"adm_place:{place_id}",
+            )
+        ]
+    )
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _place_brick_card_content(
+    session: Session,
+    state: dict,
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    """
+    Карточка системного кирпичика в контексте площадки (Poster 2.6.2 §3.2).
+
+    `None` — кирпичик перестал быть видимым системным: экран безопасно
+    возвращается в список, а не показывает чужую или архивную запись.
+    """
+    place_id = state.get("brick_place_id")
+    brick_id = state.get("place_brick_id")
+    if not isinstance(place_id, int) or isinstance(place_id, bool):
+        return None
+    if not isinstance(brick_id, int) or isinstance(brick_id, bool):
+        return None
+    view = get_place_brick_view(session, place_id, brick_id)
+    if view is None:
+        return None
+    text = tr_safe(
+        "admin.place_brick_card.kartochka_html",
+        title=_h(brick_title_display(view.brick.title, view.brick.code)),
+        code=_h(view.brick.code),
+        description_block=_brick_description_block(view.description),
+        source_label=_h(_place_brick_source_label(view)),
+    )
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(
+                tr("buttons.admin.svoi_opisanie"),
+                callback_data=f"adm_pbrick_desc:{view.brick.id}",
+            )
+        ]
+    ]
+    if view.is_local:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tr("buttons.admin.vernut_obshee_opisanie"),
+                    callback_data=f"adm_pbrick_reset:{view.brick.id}",
+                )
+            ]
+        )
+    rows.append(
+        [InlineKeyboardButton(tr("buttons.nav.back"), callback_data="adm_pbrick_back")]
+    )
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _place_brick_input_content(code: str) -> tuple[str, InlineKeyboardMarkup]:
+    """Фаза ввода локального описания: запись — только после отправки текста."""
+    text = tr_safe("admin.place_brick_input.opisanie_html", code=_h(code))
+    return text, InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    tr("buttons.nav.back"),
+                    callback_data="adm_pbrick_back",
+                )
+            ]
+        ]
+    )
+
+
+def _place_bricks_content(
+    session: Session, state: dict, phase: str
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    """
+    Экран фазы «Системные кирпичики» места.
+
+    `None` — кирпичик больше не доступен площадке (архив/удаление/подмена
+    id): вызывающий слой возвращает список области с плашкой.
+    """
+    if phase == "place_brick_list":
+        return _place_brick_list_content(session, state)
+    if phase == "place_brick_description_input":
+        brick_id = state.get("place_brick_id")
+        place_id = state.get("brick_place_id")
+        if (
+            not isinstance(place_id, int)
+            or isinstance(place_id, bool)
+            or not isinstance(brick_id, int)
+            or isinstance(brick_id, bool)
+        ):
+            return None
+        view = get_place_brick_view(session, place_id, brick_id)
+        if view is None:
+            return None
+        if view.brick.status != BRICK_STATUS_ACTIVE:
+            state["phase"] = "place_brick_card"
+            return _place_brick_card_content(session, state)
+        return _place_brick_input_content(view.brick.code)
+    return _place_brick_card_content(session, state)
+
+
 def _places_content(
     session: Session,
     state: dict,
@@ -1888,6 +2062,18 @@ def _place_keyboard(
             )
         if catalogs_row:
             rows.append(catalogs_row)
+        # Poster 2.6.2 §3.1: системный каталог глазами площадки. Строка идёт
+        # после «Кирпичиков» и после строки справочников: существующий
+        # контракт раскладки (rows[1]/rows[2], навигация и max 2 в ряду) не
+        # сдвигается, а новая кнопка остаётся в блоке действий места.
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tr("buttons.admin.sistemnye_kirpichiki"),
+                    callback_data=f"adm_pbricks:{details.place_id}",
+                )
+            ]
+        )
     # Poster 2.5 A3: админ-действия карточки сведены к одной точке входа.
     # Суперадмин без администратора сразу назначает; замена, снятие и
     # передача прав живут в подразделе «Управление администратором».
@@ -3634,6 +3820,49 @@ async def _render_phase(
                 text, keyboard = _places_content(session, state, access_kind, user_id)
             else:
                 text, keyboard = brick_text, brick_keyboard
+        elif phase in {
+            "place_brick_list",
+            "place_brick_card",
+            "place_brick_description_input",
+        }:
+            # Poster 2.6.2 §3.1–3.2: системные кирпичики глазами площадки.
+            # Права проверяются по фактической строке `place_admins` при
+            # КАЖДОЙ отрисовке, а не по факту прихода в экран.
+            place_brick_place_id = state.get("brick_place_id")
+            managed = (
+                isinstance(place_brick_place_id, int)
+                and not isinstance(place_brick_place_id, bool)
+                and can_manage_place(session, user_id, place_brick_place_id)
+            )
+            if not managed:
+                state.clear()
+                state.update(_new_state())
+                notice = notice or tr(
+                    "admin.render_phase.dostup_etomu_mestu_podtverzhden"
+                )
+                text, keyboard = _places_content(session, state, access_kind, user_id)
+            else:
+                # `None` — кирпичик ушёл в архив, удалён или подменён:
+                # возвращаем список области, а не чужую/устаревшую карточку.
+                place_brick_screen = _place_bricks_content(session, state, phase)
+                if place_brick_screen is None:
+                    state.pop("place_brick_id", None)
+                    state["phase"] = "place_brick_list"
+                    notice = notice or tr("admin.brick_list.kirpichik_nedostupen")
+                    place_brick_screen = _place_bricks_content(
+                        session, state, "place_brick_list"
+                    )
+                if place_brick_screen is None:
+                    state.clear()
+                    state.update(_new_state())
+                    notice = notice or tr(
+                        "admin.render_phase.kirpichik_nedostupen_roley"
+                    )
+                    text, keyboard = _places_content(
+                        session, state, access_kind, user_id
+                    )
+                else:
+                    text, keyboard = place_brick_screen
         else:  # confirm_*
             if details is None:
                 state.clear()
@@ -3926,6 +4155,10 @@ async def handle_open_place(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # отсутствовала в allow-list, и рабочая кнопка отвечала «Кнопка
         # устарела»/«Откройте раздел администрирования заново».
         "brick_list",
+        # Poster 2.6.2 §3.1: та же кнопка «◀️ Назад» из списка СИСТЕМНЫХ
+        # кирпичиков площадки. Без этой фазы рабочий возврат отвечал бы
+        # «Кнопка устарела».
+        "place_brick_list",
     }:
         await _stale(update)
         return
@@ -3962,6 +4195,11 @@ async def handle_open_place(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     state.pop("brick_scope", None)
     state.pop("brick_place_id", None)
     state.pop("brick_id", None)
+    # Poster 2.6.2 §3.1: страница и выбранный кирпичик системного каталога
+    # тоже не переживают возврат в карточку — иначе чужой подраздел
+    # открывался бы на «запомненной» странице другого места.
+    state.pop("place_brick_page", None)
+    state.pop("place_brick_id", None)
     await _render_phase(update, context, state)
 
 
@@ -6859,6 +7097,333 @@ async def handle_brick_description_text(
     )
 
 
+# --- Системные кирпичики площадки (Poster 2.6.2 §3.1–3.2) -------------------
+
+
+async def _answer_place_brick_denied(update: Update, *, exists: bool) -> None:
+    """
+    Плашка отказа на экране системных кирпичиков места.
+
+    Место не существует/удалено — отдельная формулировка; права не
+    подтверждены — общая. Состояние экрана не расширяется: чужое место не
+    становится «текущим» из-за одного нажатия.
+    """
+    text = DENIED_ALERT if exists else tr("alerts.admin.mesto_suschestvuet_udaleno")
+    await ctx.query(update).answer(text, show_alert=True)
+
+
+async def handle_place_bricks_open(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    `adm_pbricks[:<place_id>]` и `adm_pbricks_page[:<offset>]`.
+
+    Один обработчик на вход и пагинацию: оба состояния (место и смещение)
+    берутся из доверенного `admin_sessions`, а права перепроверяются по БД.
+    """
+    query = ctx.query(update)
+    data = str(query.data or "")
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {
+        "place",
+        "place_brick_list",
+        "place_brick_card",
+        "place_brick_description_input",
+    }:
+        await _stale(update)
+        return
+
+    if data.startswith("adm_pbricks_page:"):
+        place_id = state.get("brick_place_id")
+        offset = _brick_callback_id(data)
+        if offset is None or not isinstance(place_id, int):
+            await _stale(update)
+            return
+        session = SessionLocal()
+        try:
+            allowed = can_manage_place(session, user_id, place_id)
+            available = get_place_details(session, place_id) is not None
+        finally:
+            session.close()
+        if not allowed:
+            await _answer_place_brick_denied(update, exists=available)
+            return
+        await query.answer()
+        state["phase"] = "place_brick_list"
+        state["place_brick_page"] = offset
+        state.pop("place_brick_id", None)
+        await _render_phase(update, context, state)
+        return
+
+    place_id = _brick_callback_id(data)
+    if place_id is None:
+        # `adm_pbricks` без id — вход из карточки места: место уже выбрано.
+        place_id = state.get("place_id")
+    if not isinstance(place_id, int) or isinstance(place_id, bool):
+        await _stale(update)
+        return
+    session = SessionLocal()
+    try:
+        allowed = can_manage_place(session, user_id, place_id)
+        available = get_place_details(session, place_id) is not None
+    finally:
+        session.close()
+    if not available:
+        await query.answer(
+            tr("alerts.admin.mesto_suschestvuet_udaleno"), show_alert=True
+        )
+        return
+    if not allowed:
+        await query.answer(DENIED_ALERT, show_alert=True)
+        return
+    await query.answer()
+    state["phase"] = "place_brick_list"
+    state["brick_place_id"] = place_id
+    state["place_id"] = place_id
+    state["place_brick_page"] = 0
+    state.pop("place_brick_id", None)
+    await _render_phase(update, context, state)
+
+
+async def handle_place_brick_card(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    `adm_pbrick:<brick_id>` — карточка и «Назад» из режима ввода.
+
+    Кирпичик проверяется как ВИДИМЫЙ системный кирпичик этого места: чужой,
+    локальный, архивный или удалённый id безопасно возвращает список.
+    """
+    query = ctx.query(update)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {
+        "place_brick_list",
+        "place_brick_card",
+        "place_brick_description_input",
+    }:
+        await _stale(update)
+        return
+    brick_id = _brick_callback_id(str(query.data or ""))
+    place_id = state.get("brick_place_id")
+    if brick_id is None or not isinstance(place_id, int) or isinstance(place_id, bool):
+        await _stale(update)
+        return
+    session = SessionLocal()
+    try:
+        allowed = can_manage_place(session, user_id, place_id)
+        view = get_place_brick_view(session, place_id, brick_id) if allowed else None
+    finally:
+        session.close()
+    if not allowed:
+        await query.answer(DENIED_ALERT, show_alert=True)
+        return
+    if view is None:
+        await query.answer(tr("admin.brick_list.kirpichik_nedostupen"), show_alert=True)
+        return
+    await query.answer()
+    state["phase"] = "place_brick_card"
+    state["place_brick_id"] = brick_id
+    await _render_phase(update, context, state)
+
+
+async def handle_place_brick_description_start(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«✏️ Своё описание»: переход к вводу текста (только активный кирпичик)."""
+    query = ctx.query(update)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {
+        "place_brick_card",
+        "place_brick_description_input",
+    }:
+        await _stale(update)
+        return
+    brick_id = _brick_callback_id(str(query.data or ""))
+    place_id = state.get("brick_place_id")
+    if brick_id is None or not isinstance(place_id, int) or isinstance(place_id, bool):
+        await _stale(update)
+        return
+    session = SessionLocal()
+    try:
+        allowed = can_manage_place(session, user_id, place_id)
+        view = get_place_brick_view(session, place_id, brick_id) if allowed else None
+    finally:
+        session.close()
+    if not allowed:
+        await query.answer(DENIED_ALERT, show_alert=True)
+        return
+    if view is None or view.brick.status != BRICK_STATUS_ACTIVE:
+        await query.answer(
+            tr("admin.place_brick_input.arhivnyy_kirpichik"), show_alert=True
+        )
+        return
+    await query.answer()
+    state["phase"] = "place_brick_description_input"
+    state["place_brick_id"] = brick_id
+    await _render_phase(update, context, state, drop_input=True)
+
+
+async def handle_place_brick_description_reset(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«↩️ Общее описание»: удаляет локальное переопределение этого места."""
+    query = ctx.query(update)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {
+        "place_brick_card",
+        "place_brick_description_input",
+    }:
+        await _stale(update)
+        return
+    brick_id = _brick_callback_id(str(query.data or ""))
+    place_id = state.get("brick_place_id")
+    if brick_id is None or not isinstance(place_id, int) or isinstance(place_id, bool):
+        await _stale(update)
+        return
+    await query.answer()
+    session = SessionLocal()
+    try:
+        try:
+            result = reset_place_brick_description(
+                session,
+                actor_telegram_user_id=user_id,
+                place_id=place_id,
+                brick_id=brick_id,
+            )
+        except BrickPermissionError as exc:
+            session.rollback()
+            await query.answer(str(exc), show_alert=True)
+            return
+        except BrickNotFoundError:
+            session.rollback()
+            state.pop("place_brick_id", None)
+            state["phase"] = "place_brick_list"
+            await _render_phase(
+                update,
+                context,
+                state,
+                notice=tr("admin.brick_list.kirpichik_nedostupen"),
+            )
+            return
+    finally:
+        session.close()
+    state["phase"] = "place_brick_card"
+    await _render_phase(update, context, state, notice=result.message)
+
+
+async def handle_place_brick_description_text(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    Новый текст локального описания из фазы `place_brick_description_input`.
+
+    Пустой текст — «вернуть общее описание» (тот же доменный вызов). Права
+    проверяются доменом по фактическим строкам; ошибки не оставляют мусора.
+    """
+    user = ctx.user(update)
+    state = load_admin_session(user.id)
+    if state is None or state.get("phase") != "place_brick_description_input":
+        return
+    brick_id = state.get("place_brick_id")
+    place_id = state.get("brick_place_id")
+    if (
+        not isinstance(brick_id, int)
+        or isinstance(brick_id, bool)
+        or not isinstance(place_id, int)
+        or isinstance(place_id, bool)
+    ):
+        return
+    text = ctx.message(update).text or ""
+    session = SessionLocal()
+    try:
+        try:
+            result = set_place_brick_description(
+                session,
+                actor_telegram_user_id=user.id,
+                place_id=place_id,
+                brick_id=brick_id,
+                description=text,
+            )
+        except (BrickPermissionError, BrickNotFoundError) as exc:
+            session.rollback()
+            clear_admin_session(user.id)
+            await _render_denied(update, context)
+            logger.info("Описание кирпичика площадки не сохранено: %s", exc)
+            return
+        except PlaceBrickDescriptionError as exc:
+            session.rollback()
+            notice = str(exc)
+            failed = True
+        except Exception:  # noqa: BLE001 — экран не должен падать
+            session.rollback()
+            logger.exception("Не удалось сохранить описание кирпичика площадки.")
+            notice = tr("admin.place_brick_input.ne_udalos_sohranit")
+            failed = True
+        else:
+            notice = result.message or tr("admin.place_brick_input.ne_udalos_sohranit")
+            failed = result.status not in {"updated", "unchanged", "reset"}
+    finally:
+        session.close()
+
+    if failed:
+        # Ввод остаётся открытым: человек не теряет набранный текст.
+        await _render_phase(
+            update,
+            context,
+            state,
+            notice=notice,
+            drop_input=True,
+        )
+        return
+    state["phase"] = "place_brick_card"
+    cleanup = _failed_take(state)
+    message = getattr(update, "message", None)
+    if message is not None and message.message_id is not None:
+        cleanup.append(int(message.message_id))
+    await _render_phase(
+        update,
+        context,
+        state,
+        notice=notice,
+        cleanup_ids=cleanup,
+        drop_input=True,
+    )
+
+
+async def handle_place_brick_back(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«◀️ Назад»: карточка → список области, список → карточка места."""
+    query = ctx.query(update)
+    state = load_admin_session(ctx.user(update).id)
+    if state is None or state.get("phase") not in {
+        "place_brick_list",
+        "place_brick_card",
+        "place_brick_description_input",
+    }:
+        await _stale(update)
+        return
+    await query.answer()
+    place_id = state.get("brick_place_id")
+    if state.get("phase") == "place_brick_list":
+        state.pop("place_brick_page", None)
+        state.pop("place_brick_id", None)
+        if isinstance(place_id, int) and not isinstance(place_id, bool):
+            state["phase"] = "place"
+            state["place_id"] = place_id
+        else:
+            state.clear()
+            state.update(_new_state())
+    else:
+        state.pop("place_brick_id", None)
+        state["phase"] = "place_brick_list"
+    await _render_phase(update, context, state)
+
+
 # --- Конфликты кодов: обработчики (Poster 2.1 R3) --------------------------
 
 
@@ -7862,6 +8427,28 @@ def admin_handlers() -> list[BaseHandler]:
             filters.TEXT & ~filters.COMMAND,
             handle_brick_description_text,
             allowed_phases=frozenset({"brick_description_input"}),
+        ),
+        # Poster 2.6.2 §3.1–3.2: системные кирпичики площадки и её ЛОКАЛЬНЫЕ
+        # описания. Регистрируются до финального `^adm_`: иначе кнопки
+        # получали бы «устаревшую» заглушку.
+        CallbackQueryHandler(
+            handle_place_bricks_open,
+            pattern=r"^adm_pbricks(?:_page)?(?::\d+)?$",
+        ),
+        CallbackQueryHandler(handle_place_brick_card, pattern=r"^adm_pbrick:\d+$"),
+        CallbackQueryHandler(
+            handle_place_brick_description_start,
+            pattern=r"^adm_pbrick_desc:\d+$",
+        ),
+        CallbackQueryHandler(
+            handle_place_brick_description_reset,
+            pattern=r"^adm_pbrick_reset:\d+$",
+        ),
+        CallbackQueryHandler(handle_place_brick_back, pattern=r"^adm_pbrick_back$"),
+        AdminTextHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_place_brick_description_text,
+            allowed_phases=frozenset({"place_brick_description_input"}),
         ),
         # Конфликты кодов (Poster 2.1 R3).
         CallbackQueryHandler(handle_conflicts_open, pattern=r"^adm_bconflicts:\d+$"),

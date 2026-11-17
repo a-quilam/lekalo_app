@@ -75,6 +75,7 @@ from models import (
     User,
     utcnow,
 )
+from place_brick_store import place_brick_description_map
 from place_store import get_place_details, get_place_name
 from template_compiler import (
     PLACEHOLDER_TEXT,
@@ -3218,6 +3219,11 @@ def build_announcement_fields(
         or brick_id in chosen_extras
         or details.value_for(brick_id) is not None
     ]
+    # Poster 2.6.2 §3.2: действующее описание системного кирпичика для ЭТОГО
+    # места — локальное переопределение площадки, иначе описание каталога.
+    # Карта читается один раз на сборку полей: подсказка автора одна и та же
+    # в списке полей и в вопросах.
+    local_descriptions = place_brick_description_map(session, row.place_id)
 
     states: list[AnnouncementFieldState] = []
     for brick_id in field_ids:
@@ -3260,7 +3266,7 @@ def build_announcement_fields(
                 rules=dict(
                     question.rules if question is not None else definition.rules
                 ),
-                description=definition.description,
+                description=local_descriptions.get(brick_id, definition.description),
                 raw_html=raw_html,
             )
         )
