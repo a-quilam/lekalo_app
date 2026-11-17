@@ -123,12 +123,80 @@ class Place(Base):
     # новой зарегистрированной площадки (`place_store.create_place`), но в
     # схеме nullable: старые записи не блокируются и не переписываются.
     city: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Poster 2.6.2 (миграция 2, требование 3.2): эмодзи места в списках и
+    # карточке. В схеме nullable (SQLite не даёт `ALTER TABLE ... NOT NULL`
+    # без DEFAULT), существующие строки миграция заполняет текущим `🚀`;
+    # пустое значение читается как эмодзи по умолчанию.
+    emoji: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
     )
 
     def __repr__(self) -> str:
         return f"<Place(id={self.id}, created_by={self.created_by_user_id})>"
+
+
+class PlaceBrickDescription(Base):
+    """
+    Локальное описание системного кирпичика для одного места (Poster 2.6.2).
+
+    Каталог `bricks` общий: описание системного кирпичика правит владелец
+    системы, а площадке нужно своё пояснение для автора анонса. Поэтому
+    переопределение хранится отдельно и не меняет каталог: `brick_id` —
+    внутренний ключ `bricks` (`INTEGER`), `place_id` — место.
+
+    Пара (`place_id`, `brick_id`) уникальна: у места не больше одного
+    описания данного кирпичика. `revision` — оптимистическая блокировка
+    (как у `bricks`/`templates`): успешная правка увеличивает её, устаревшая
+    запись отклоняется. Текст не пустой после trim.
+    """
+
+    __tablename__ = "place_brick_descriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    place_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("places.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    brick_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("bricks.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(description)) > 0",
+            name="ck_place_brick_descriptions_not_empty",
+        ),
+        CheckConstraint("revision >= 1", name="ck_place_brick_descriptions_revision"),
+        Index("ix_place_brick_descriptions_place_id", "place_id"),
+        Index(
+            "ux_place_brick_descriptions_unique",
+            "place_id",
+            "brick_id",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<PlaceBrickDescription(id={self.id}, place_id={self.place_id}, "
+            f"brick_id={self.brick_id})>"
+        )
 
 
 class PlaceName(Base):

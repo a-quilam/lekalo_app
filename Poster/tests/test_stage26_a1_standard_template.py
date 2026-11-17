@@ -996,13 +996,14 @@ class MigrationIdempotencyTests(_StandardTemplateCase):
         )
 
     def test_clean_database_applies_baseline_once(self) -> None:
-        self.assertEqual(self.migrations_applied, 1)
-        self.assertEqual(LATEST_VERSION, 1, "последняя версия схемы — 1.0.0")
-        self.assertEqual(self._journal(), [1])
+        # Poster 2.6.2: базовая версия 1.0.0 + добавочная миграция 2.
+        self.assertEqual(self.migrations_applied, 2)
+        self.assertEqual(LATEST_VERSION, 2, "последняя версия схемы — 2.6.2")
+        self.assertEqual(self._journal(), [1, 2])
 
         # Повторный запуск на уже мигрированной базе ничего не добавляет.
-        self.assertEqual(run_migrations(self.engine), 1)
-        self.assertEqual(self._journal(), [1])
+        self.assertEqual(run_migrations(self.engine), 2)
+        self.assertEqual(self._journal(), [1, 2])
 
     def _count(self, model: type) -> int:
         return int(self.session.scalar(select(func.count()).select_from(model)) or 0)
@@ -1020,7 +1021,7 @@ class MigrationIdempotencyTests(_StandardTemplateCase):
 
         # Повторная инициализация на «живой» тестовой базе: ни шаблонов, ни
         # кирпичиков, ни правил не прибавилось.
-        self.assertEqual(run_migrations(self.engine), 1)
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
         self.session.expire_all()
         self.assertEqual(self._count(Template), 1)
         self.assertEqual(
