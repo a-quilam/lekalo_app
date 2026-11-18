@@ -584,6 +584,12 @@ DEFAULTS: dict[str, str] = {
     "admin.place_photos.uzhe_v_biblioteke": (
         "Этот снимок уже есть в фототеке площадки."
     ),
+    # --- 2.6.2 §5.2: редактор эмодзи площадки ------------------------------
+    "admin.place_emoji.title": (
+        "🎨 <b>Эмодзи площадки</b>\n\n📍 {emoji} {canonical_name}\n\n"
+        "Выберите эмодзи: он показывается рядом с названием площадки "
+        "в карточках и списках."
+    ),
     "admin.build.izmenenie_adresa_tekuschiy_adres": (
         "🏠 Изменить адрес\n\n📍 {canonical_name}\n"
         "Текущий адрес: {current}\n\n"
@@ -848,7 +854,7 @@ DEFAULTS: dict[str, str] = {
         "\nДля кого: {proposal_target_label}.\n"
         "Создан отдельный кирпичик. Ваш личный кирпичик и шаблоны остались прежними."
     ),
-    "admin.place.mesto": "🛡 Место\n\n📍 {canonical_name}",
+    "admin.place.mesto": "🛡 Место\n\n{emoji} {canonical_name}",
     "admin.places.deystvuyuschih_naznacheniy_poka": "Пока нет назначенных администраторов.",
     "admin.places.moi_mesta": "🛡 Мои места",
     "admin.places.ne_naznachen": "не назначен",
@@ -1221,6 +1227,8 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.globalnye_predlozheniya": "🌍 Глобальные предложения ({system_pending})",
     "buttons.admin.izmenit_gorod": "🏙 Изменить город",
     "buttons.admin.izmenit_nazvanie": "🏷 Изменить название",
+    "buttons.admin.izmenit_emodzi": "🎨 Изменить эмодзи",
+    "buttons.admin.sluchaynyy_emodzi": "🎲 Случайный эмодзи",
     "buttons.admin.kirpichiki": "🧩 Кирпичики",
     "buttons.admin.k_konfliktam": "◀️ К конфликтам",
     "buttons.admin.k_ocheredi": "◀️ К очереди",

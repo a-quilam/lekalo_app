@@ -185,11 +185,19 @@ from place_photo_store import (
 )
 from place_state import clear_place_session
 from place_store import (
+    PLACE_EMOJI_CHOICES,
+    PLACE_EMOJI_PAGE_SIZE,
     PlaceDetails,
+    PlaceEmojiError,
+    PlaceEmojiNotFoundError,
+    PlaceEmojiPermissionError,
     PlaceNameError,
     find_name_conflicts,
     get_place_details,
     normalize_place_name,
+    place_emoji,
+    random_place_emoji,
+    set_place_emoji,
     validate_place_city,
     validate_place_name,
 )
@@ -264,6 +272,10 @@ PHASES = {
     "place_photo_intro",
     "place_photo_list",
     "place_photo_delete_confirm",
+    # Poster 2.6.2 §5.2: пикер эмодзи площадки (страницы по 5 из общего
+    # набора). Фаза отдельная, чтобы «◀️ Назад» возвращала в карточку, а не
+    # в список мест.
+    "place_emoji_picker",
     # Poster 2.4.1 T2: ссылка для создания анонса — экран полной карточки.
     "invite",
     # Poster 2.5 A3: служебный подраздел управления администратором места.
@@ -1537,6 +1549,73 @@ def _place_photos_content(
     return _place_photo_list_content(session, state)
 
 
+# --- Редактор эмодзи площадки (Poster 2.6.2 §5.2) --------------------------
+
+
+def _place_emoji_place_id(state: dict) -> int | None:
+    """Место пикера из состояния: подмена id чужой площадки сюда не проходит."""
+    place_id = state.get("emoji_place_id")
+    if not isinstance(place_id, int) or isinstance(place_id, bool):
+        return None
+    return place_id
+
+
+def _place_emoji_content(
+    session: Session, state: dict
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    """
+    Экран пикера: страницы по 5 эмодзи из общего набора.
+
+    `None` — площадки больше нет или в состоянии не число: вызывающий слой
+    возвращает карточку места/список, а не рисует пикер по мусору.
+    """
+    place_id = _place_emoji_place_id(state)
+    if place_id is None:
+        return None
+    details = get_place_details(session, place_id)
+    if details is None:
+        return None
+    page = pagination.page_items(
+        list(PLACE_EMOJI_CHOICES),
+        _page_value(state, "emoji_page"),
+        PLACE_EMOJI_PAGE_SIZE,
+    )
+    state["emoji_page"] = page.page
+
+    text = tr_safe(
+        "admin.place_emoji.title",
+        emoji=_h(place_emoji(details.emoji)),
+        canonical_name=_h(details.canonical_name),
+    )
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            InlineKeyboardButton(emoji, callback_data=f"adm_pemoji_set:{emoji}")
+            for emoji in page.items
+        ]
+    ]
+    nav = pagination.nav_keyboard(
+        page.page,
+        page.total_pages,
+        "adm_pemoji_page",
+        page_size=PLACE_EMOJI_PAGE_SIZE,
+        as_offset=False,
+    )
+    if nav:
+        rows.append(nav)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                tr("buttons.admin.sluchaynyy_emodzi"),
+                callback_data="adm_pemoji_random",
+            )
+        ]
+    )
+    rows.append(
+        [InlineKeyboardButton(tr("buttons.nav.back"), callback_data="adm_pemoji_back")]
+    )
+    return text, InlineKeyboardMarkup(rows)
+
+
 def _places_content(
     session: Session,
     state: dict,
@@ -1644,7 +1723,9 @@ def _places_content(
         rows.append(
             [
                 InlineKeyboardButton(
-                    _button_name(f"{index}. ", item.canonical_name),
+                    _button_name(
+                        f"{index}. {place_emoji(item.emoji)} ", item.canonical_name
+                    ),
                     callback_data=f"adm_place:{item.place_id}",
                 )
             ]
@@ -2074,7 +2155,11 @@ def _place_text(
     viewer_telegram_user_id: int | None = None,
 ) -> str:
     active = get_active_place_admin(session, details.place_id)
-    head = tr_safe("admin.place.mesto", canonical_name=_h(details.canonical_name))
+    head = tr_safe(
+        "admin.place.mesto",
+        emoji=_h(place_emoji(details.emoji)),
+        canonical_name=_h(details.canonical_name),
+    )
     alternatives = [item for item in details.names if not item.is_canonical]
     if alternatives:
         head += tr("admin.place.alternativnye_nazvaniya") + "\n".join(
@@ -2243,6 +2328,17 @@ def _place_keyboard(
                 InlineKeyboardButton(
                     tr("buttons.admin.foto_ploschadki"),
                     callback_data=f"adm_pfotos:{details.place_id}",
+                )
+            ]
+        )
+        # Poster 2.6.2 §5.2: редактор эмодзи площадки. Строка идёт в блоке
+        # действий места (после фототеки), не сдвигая навигацию и последние
+        # административные строки контракта E4; подпись не сокращается.
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tr("buttons.admin.izmenit_emodzi"),
+                    callback_data=f"adm_pemoji:{details.place_id}",
                 )
             ]
         )
@@ -4075,6 +4171,34 @@ async def _render_phase(
                     )
                 else:
                     text, keyboard = photo_screen
+        elif phase == "place_emoji_picker":
+            # Poster 2.6.2 §5.2: права проверяются по фактическим строкам
+            # `place_admins` при КАЖДОЙ отрисовке, а не по факту входа.
+            emoji_place_id = _place_emoji_place_id(state)
+            managed = emoji_place_id is not None and can_manage_place(
+                session, user_id, emoji_place_id
+            )
+            if not managed:
+                state.clear()
+                state.update(_new_state())
+                notice = notice or tr(
+                    "admin.render_phase.dostup_etomu_mestu_podtverzhden"
+                )
+                text, keyboard = _places_content(session, state, access_kind, user_id)
+            else:
+                emoji_screen = _place_emoji_content(session, state)
+                if emoji_screen is None:
+                    # Площадка исчезла: безопасный родитель — список мест.
+                    state.clear()
+                    state.update(_new_state())
+                    notice = notice or tr(
+                        "admin.render_phase.mesto_suschestvuet_bylo_udaleno"
+                    )
+                    text, keyboard = _places_content(
+                        session, state, access_kind, user_id
+                    )
+                else:
+                    text, keyboard = emoji_screen
         else:  # confirm_*
             if details is None:
                 state.clear()
@@ -7879,6 +8003,192 @@ async def handle_place_photo_back(
     await _render_phase(update, context, state)
 
 
+# --- Редактор эмодзи площадки: обработчики (Poster 2.6.2 §5.2) --------------
+
+
+async def _answer_place_emoji_denied(update: Update, *, exists: bool) -> None:
+    """Плашка отказа пикера: нет прав или площадки уже нет."""
+    text = DENIED_ALERT if exists else tr("alerts.admin.mesto_suschestvuet_udaleno")
+    await ctx.query(update).answer(text, show_alert=True)
+
+
+async def _place_emoji_access(user_id: int, place_id: int) -> tuple[bool, bool]:
+    """(права управлять, место существует и доступно карточке)."""
+    session = SessionLocal()
+    try:
+        allowed = can_manage_place(session, user_id, place_id)
+        available = get_place_details(session, place_id) is not None
+    finally:
+        session.close()
+    return allowed, available
+
+
+async def handle_place_emoji_open(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    `adm_pemoji[:<place_id>]` и `adm_pemoji_page:<number>`.
+
+    Один обработчик на вход и листание: место и номер страницы берутся из
+    доверенного `admin_sessions`, права перепроверяются по фактическим
+    строкам БД. Подделанный `place_id` чужой площадки получает отказ.
+    """
+    query = ctx.query(update)
+    data = str(query.data or "")
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {
+        "place",
+        "place_emoji_picker",
+    }:
+        await _stale(update)
+        return
+
+    if data.startswith("adm_pemoji_page:"):
+        place_id = _place_emoji_place_id(state)
+        page = _brick_callback_id(data)
+        if page is None or place_id is None:
+            await _stale(update)
+            return
+        allowed, available = await _place_emoji_access(user_id, place_id)
+        if not available or not allowed:
+            await _answer_place_emoji_denied(update, exists=available)
+            return
+        await query.answer()
+        state["phase"] = "place_emoji_picker"
+        state["emoji_page"] = page
+        await _render_phase(update, context, state)
+        return
+
+    place_id = _brick_callback_id(data)
+    if place_id is None:
+        # `adm_pemoji` без id — вход из карточки места: место уже выбрано.
+        place_id = state.get("place_id")
+    if not isinstance(place_id, int) or isinstance(place_id, bool):
+        await _stale(update)
+        return
+    if state.get("place_id") != place_id:
+        # Своя карточка открыта, а в кнопке чужой id — подделка.
+        await _stale(update)
+        return
+    allowed, available = await _place_emoji_access(user_id, place_id)
+    if not available:
+        await query.answer(
+            tr("alerts.admin.mesto_suschestvuet_udaleno"), show_alert=True
+        )
+        return
+    if not allowed:
+        await query.answer(DENIED_ALERT, show_alert=True)
+        return
+    await query.answer()
+    state["phase"] = "place_emoji_picker"
+    state["emoji_place_id"] = place_id
+    state["emoji_page"] = 0
+    await _render_phase(update, context, state)
+
+
+async def _apply_place_emoji(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    emoji: str,
+) -> None:
+    """Общий путь сохранения выбранного/случайного эмодзи."""
+    query = ctx.query(update)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") != "place_emoji_picker":
+        await _stale(update)
+        return
+    place_id = _place_emoji_place_id(state)
+    if place_id is None:
+        await _stale(update)
+        return
+    allowed, available = await _place_emoji_access(user_id, place_id)
+    if not available:
+        await query.answer(
+            tr("alerts.admin.mesto_suschestvuet_udaleno"), show_alert=True
+        )
+        return
+    if not allowed:
+        await query.answer(DENIED_ALERT, show_alert=True)
+        return
+    session = SessionLocal()
+    try:
+        try:
+            set_place_emoji(
+                session,
+                actor_telegram_user_id=user_id,
+                place_id=place_id,
+                emoji=emoji,
+            )
+        except PlaceEmojiPermissionError:
+            session.rollback()
+            await query.answer(DENIED_ALERT, show_alert=True)
+            return
+        except PlaceEmojiNotFoundError:
+            session.rollback()
+            state.clear()
+            state.update(_new_state())
+            await _render_phase(
+                update,
+                context,
+                state,
+                notice=tr("admin.render_phase.mesto_suschestvuet_bylo_udaleno"),
+            )
+            return
+        except PlaceEmojiError as exc:
+            session.rollback()
+            await query.answer(str(exc), show_alert=True)
+            return
+    finally:
+        session.close()
+    await query.answer()
+    state["phase"] = "place"
+    state["place_id"] = place_id
+    state.pop("emoji_place_id", None)
+    state.pop("emoji_page", None)
+    await _render_phase(update, context, state)
+
+
+async def handle_place_emoji_set(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """`adm_pemoji_set:<эмодзи>`: сохраняет выбранный символ пикера."""
+    emoji = str(ctx.query(update).data or "")[len("adm_pemoji_set:") :]
+    await _apply_place_emoji(update, context, emoji=emoji)
+
+
+async def handle_place_emoji_random(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«🎲 Случайный эмодзи»: сразу сохраняет случайный символ набора."""
+    await _apply_place_emoji(update, context, emoji=random_place_emoji())
+
+
+async def handle_place_emoji_back(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«◀️ Назад»: карточка места, эмодзи не меняется."""
+    query = ctx.query(update)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") != "place_emoji_picker":
+        await _stale(update)
+        return
+    place_id = _place_emoji_place_id(state)
+    await query.answer()
+    state.pop("emoji_place_id", None)
+    state.pop("emoji_page", None)
+    if place_id is not None:
+        state["phase"] = "place"
+        state["place_id"] = place_id
+    else:
+        state.clear()
+        state.update(_new_state())
+    await _render_phase(update, context, state)
+
+
 def _photo_candidates(message: object) -> list[PhotoCandidate]:
     """
     Кандидаты из сообщения: сжатое фото (последний размер) или документ.
@@ -9053,6 +9363,14 @@ def admin_handlers() -> list[BaseHandler]:
             handle_place_photo_delete_confirm, pattern=r"^adm_pfoto_del_yes:\d+$"
         ),
         CallbackQueryHandler(handle_place_photo_back, pattern=r"^adm_pfoto_back$"),
+        # Poster 2.6.2 §5.2: редактор эмодзи площадки. Регистрируются до
+        # финального `^adm_`: иначе кнопки получали бы «устаревшую» заглушку.
+        CallbackQueryHandler(
+            handle_place_emoji_open, pattern=r"^adm_pemoji(?:_page)?(?::\d+)?$"
+        ),
+        CallbackQueryHandler(handle_place_emoji_set, pattern=r"^adm_pemoji_set:.+$"),
+        CallbackQueryHandler(handle_place_emoji_random, pattern=r"^adm_pemoji_random$"),
+        CallbackQueryHandler(handle_place_emoji_back, pattern=r"^adm_pemoji_back$"),
         AdminAttachmentHandler(
             (filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND,
             handle_place_photo_upload,

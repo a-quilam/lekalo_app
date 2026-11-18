@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import difflib
+import secrets
 import unicodedata
 from dataclasses import dataclass
 
@@ -28,6 +29,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from models import Place, PlaceName, utcnow
+from permissions import can_manage_place
 from template_store import create_standard_template_for_place
 
 # Предел интерфейса: название должно помещаться в карточку/кнопку вместе с
@@ -42,9 +44,76 @@ MAX_PLACE_CITY_LENGTH = 120
 # Достаточно строгий порог «очень похожего» названия для предупреждения.
 SIMILARITY_THRESHOLD = 0.8
 
+# Poster 2.6.2 §5.1: набор эмодзи площадки. Он ОДИН на создание места и на
+# редактор — иначе «случайный» выбор мог бы дать символ, которого нет в
+# пикере. Порядок фиксирован: страницы пикера не «прыгают» между входами.
+PLACE_EMOJI_CHOICES: tuple[str, ...] = (
+    "🎭",
+    "🎨",
+    "🎬",
+    "🎵",
+    "🎤",
+    "📚",
+    "🧩",
+    "🎲",
+    "🪩",
+    "🌿",
+    "🏡",
+    "🛠️",
+    "💡",
+    "🧪",
+    "🚀",
+    "✨",
+    "🦊",
+    "🐈",
+    "☕",
+    "🎪",
+    "🧵",
+    "🏛️",
+    "🥁",
+)
+
+# Эмодзи старых мест (бэкфилл миграции v2) и безопасный запасной вариант:
+# пустое значение в строке не должно ломать рендер карточки.
+PLACE_EMOJI_DEFAULT = "🚀"
+
+# Сколько эмодзи показывает одна страница пикера.
+PLACE_EMOJI_PAGE_SIZE = 5
+
+
+def random_place_emoji() -> str:
+    """Случайный эмодзи из набора — значение НОВОГО места (дубли допустимы)."""
+    return secrets.choice(PLACE_EMOJI_CHOICES)
+
+
+def place_emoji(value: object) -> str:
+    """
+    Эмодзи площадки для экрана: сохранённое значение или запасное `🚀`.
+
+    Рендер только читает сохранённое: пустая строка/NULL/не-строка дают
+    `PLACE_EMOJI_DEFAULT`, поэтому повреждённая строка не ломает карточку.
+    """
+    if isinstance(value, str):
+        cleaned = value.strip()
+        if cleaned:
+            return cleaned
+    return PLACE_EMOJI_DEFAULT
+
 
 class PlaceNameError(ValueError):
     """Название места пустое, слишком длинное или без букв/цифр."""
+
+
+class PlaceEmojiError(ValueError):
+    """Эмодзи площадки не из набора или площадка недоступна."""
+
+
+class PlaceEmojiPermissionError(PlaceEmojiError):
+    """Нет прав менять эмодзи этой площадки."""
+
+
+class PlaceEmojiNotFoundError(PlaceEmojiError):
+    """Место не найдено (удалено или никогда не существовало)."""
 
 
 @dataclass(frozen=True)
@@ -57,6 +126,9 @@ class PlaceListItem:
     # Poster 2.0 U1a: город показывается рядом с названием, но у старых
     # записей его нет — интерфейс тогда печатает только название.
     city: str | None = None
+    # Poster 2.6.2 §5: эмодзи площадки (NULL у повреждённых строк — рендер
+    # подставит запасной `🚀`).
+    emoji: str | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +152,9 @@ class PlaceDetails:
     url: str | None
     # Poster 2.0 U1a: город; NULL у старых записей (не backfill).
     city: str | None = None
+    # Poster 2.6.2 §5: сохранённый эмодзи площадки; NULL — рендер подставит
+    # запасной `🚀` (`place_store.place_emoji`).
+    emoji: str | None = None
 
 
 @dataclass(frozen=True)
@@ -95,6 +170,8 @@ class SearchResult:
     # Город найденного места (NULL у старых записей): список печатает
     # «Название · Город», если город известен.
     city: str | None = None
+    # Poster 2.6.2 §5: эмодзи площадки для подписи результата.
+    emoji: str | None = None
 
 
 @dataclass(frozen=True)
@@ -238,6 +315,11 @@ def create_place(
         address=_optional_text(address),
         url=_optional_text(url),
         city=display_city,
+        # Poster 2.6.2 §5.1: НОВОЕ место получает случайный эмодзи из набора
+        # один раз — при создании. Дальше рендер только читает сохранённое,
+        # поэтому эмодзи не «перескакивает» между экранами. Дубли у разных
+        # мест допустимы.
+        emoji=random_place_emoji(),
         created_at=now,
     )
     session.add(place)
@@ -277,7 +359,7 @@ def list_places(
     названия невозможна по прикладному контракту Stage 19A.
     """
     base = (
-        select(Place.id, PlaceName.id, PlaceName.name, Place.city)
+        select(Place.id, PlaceName.id, PlaceName.name, Place.city, Place.emoji)
         .join(PlaceName, PlaceName.place_id == Place.id)
         .where(PlaceName.is_canonical == 1)
     )
@@ -292,6 +374,7 @@ def list_places(
                 canonical_name_id=int(row[1]),
                 canonical_name=str(row[2]),
                 city=(str(row[3]) if row[3] else None),
+                emoji=(str(row[4]) if row[4] else None),
             )
             for row in rows
         ],
@@ -327,6 +410,7 @@ def get_place_details(session: Session, place_id: int) -> PlaceDetails | None:
         address=place.address or None,
         url=place.url or None,
         city=place.city or None,
+        emoji=place.emoji or None,
     )
 
 
@@ -466,6 +550,7 @@ def search_places(session: Session, query: str) -> list[SearchResult]:
                 category=category,
                 score=score,
                 city=place.city or None,
+                emoji=place.emoji or None,
             )
             current = best_by_place.get(place.id)
             if current is None or (
@@ -490,6 +575,7 @@ def search_places(session: Session, query: str) -> list[SearchResult]:
                 category="city",
                 score=city_score,
                 city=place.city or None,
+                emoji=place.emoji or None,
             )
             current = best_by_place.get(place.id)
             if current is None or (
@@ -646,3 +732,33 @@ def add_alternative_name(
     return AlternativeNameResult(
         status="created", display_name=row.name, name_id=row.id
     )
+
+
+def set_place_emoji(
+    session: Session,
+    *,
+    actor_telegram_user_id: int,
+    place_id: int,
+    emoji: str,
+) -> Place:
+    """
+    Poster 2.6.2 §5.2: сохраняет выбранный эмодзи площадки.
+
+    Права проверяются здесь, по фактическим строкам БД (как в остальных
+    административных операциях слоя): роль из callback/состояния экрана не
+    принимается. Значение обязано быть из общего набора — иначе в кнопке
+    могло оказаться что угодно, а не символ пикера.
+    """
+    if not can_manage_place(session, actor_telegram_user_id, place_id):
+        raise PlaceEmojiPermissionError(
+            "Эмодзи может менять только администратор места."
+        )
+    place = session.get(Place, place_id)
+    if place is None:
+        raise PlaceEmojiNotFoundError("Место не найдено.")
+    cleaned = emoji.strip() if isinstance(emoji, str) else ""
+    if cleaned not in PLACE_EMOJI_CHOICES:
+        raise PlaceEmojiError("Такого эмодзи нет в наборе площадок.")
+    place.emoji = cleaned
+    session.commit()
+    return place

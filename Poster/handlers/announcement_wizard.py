@@ -143,6 +143,7 @@ from place_brick_store import place_brick_description_map
 from place_store import (
     get_place_details,
     list_places,
+    place_emoji,
     search_places,
 )
 from template_compiler import (
@@ -1772,17 +1773,23 @@ def _clamped_page(page: int, total: int, size: int) -> int:
 
 
 def _place_buttons(
-    places: list[tuple[int, str]], *, prefix: str, page: int, total: int
+    places: list[tuple[int, str, str | None]],
+    *,
+    prefix: str,
+    page: int,
+    total: int,
 ) -> list[list[InlineKeyboardButton]]:
     # U3a №13: строки списка — общий шаблон компоновки.
+    # Poster 2.6.2 §5.1: вместо одинакового `📍` — сохранённый эмодзи места.
     rows = keyboard_layouts.list_rows(
         (
             keyboard_layouts.button(
-                _short(f"📍 {name}", 60), f"aw_place_open:{place_id}"
+                _short(f"{place_emoji(emoji)} {name}", 60),
+                f"aw_place_open:{place_id}",
             ),
             None,
         )
-        for place_id, name in places
+        for place_id, name, emoji in places
     )
     # Poster 2.5 §14: строка `◀️ | 2/4 | ▶️` из единого механизма; callback
     # хранит НОМЕР страницы — так его читает обработчик `aw_place_all`.
@@ -1837,7 +1844,7 @@ async def _render_all_places(
     ]
     rows = _place_buttons(
         [
-            (item.place_id, place_title(item.canonical_name, item.city))
+            (item.place_id, place_title(item.canonical_name, item.city), item.emoji)
             for item in places
         ],
         prefix="aw_place_all",
@@ -1904,7 +1911,11 @@ async def _render_search_results(
     rows = [
         [
             InlineKeyboardButton(
-                _short(f"📍 {place_title(result.canonical_name, result.city)}", 60),
+                _short(
+                    f"{place_emoji(result.emoji)} "
+                    f"{place_title(result.canonical_name, result.city)}",
+                    60,
+                ),
                 callback_data=f"aw_place_open:{result.place_id}",
             )
         ]

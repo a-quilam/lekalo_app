@@ -81,6 +81,8 @@ class ManagedPlace:
     canonical_name: str
     admin: AdminUser | None
     assigned_at: datetime | None
+    # Poster 2.6.2 §5.1: эмодзи места виден и в списке кабинета.
+    emoji: str | None = None
 
 
 @dataclass(frozen=True)
@@ -199,7 +201,7 @@ def list_places_for_administration(
         raise AdminPermissionError("Кабинет доступен только администраторам.")
 
     base = (
-        select(Place.id, PlaceName.name)
+        select(Place.id, PlaceName.name, Place.emoji)
         .join(PlaceName, PlaceName.place_id == Place.id)
         .where(PlaceName.is_canonical == 1)
     )
@@ -223,7 +225,7 @@ def list_places_for_administration(
     ).all()
 
     items: list[ManagedPlace] = []
-    for place_id, canonical_name in rows:
+    for place_id, canonical_name, emoji in rows:
         active = get_active_place_admin(session, int(place_id))
         items.append(
             ManagedPlace(
@@ -231,6 +233,7 @@ def list_places_for_administration(
                 canonical_name=str(canonical_name),
                 admin=active.user if active is not None else None,
                 assigned_at=active.assigned_at if active is not None else None,
+                emoji=str(emoji) if emoji else None,
             )
         )
     return items, total

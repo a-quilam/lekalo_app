@@ -51,6 +51,7 @@ from place_store import (
     get_place_name,
     list_places,
     normalize_place_name,
+    place_emoji,
     search_places,
     validate_place_city,
     validate_place_name,
@@ -1176,7 +1177,10 @@ def _pick_content(session: Session, state: dict) -> tuple[str, InlineKeyboardMar
         rows.append(
             [
                 InlineKeyboardButton(
-                    _button_name("🚀 ", _place_title(item.canonical_name, item.city)),
+                    _button_name(
+                        f"{place_emoji(item.emoji)} ",
+                        _place_title(item.canonical_name, item.city),
+                    ),
                     callback_data=f"pl_pick:{item.place_id}",
                 )
             ]
@@ -1265,7 +1269,8 @@ def _pick_search_content(
             [
                 InlineKeyboardButton(
                     _button_name(
-                        "🚀 ", _place_title(result.canonical_name, result.city)
+                        f"{place_emoji(result.emoji)} ",
+                        _place_title(result.canonical_name, result.city),
                     ),
                     callback_data=f"pl_pick:{result.place_id}",
                 )
@@ -1409,7 +1414,7 @@ def _manage_list_content(
             [
                 InlineKeyboardButton(
                     _button_name(
-                        f"{index}. ",
+                        f"{index}. {place_emoji(item.emoji)} ",
                         _place_title(item.canonical_name, item.city),
                     ),
                     callback_data=f"plm_open:{item.place_id}",
@@ -1478,7 +1483,7 @@ def _manage_search_content(
             [
                 InlineKeyboardButton(
                     _button_name(
-                        f"{index}. ",
+                        f"{index}. {place_emoji(result.emoji)} ",
                         _place_title(result.canonical_name, result.city),
                     ),
                     callback_data=f"plm_open:{result.place_id}",
@@ -1539,7 +1544,9 @@ def _manage_card_content(
     остаётся только просмотр чужого места и объяснение «🛡 Я админ места».
     """
     alternatives = [item for item in details.names if not item.is_canonical]
-    lines = [f"📍 {_h(details.canonical_name)}", ""]
+    # Poster 2.6.2 §5.1: эмодзи места хранится в БД и виден в публичной
+    # карточке; `📍` из шапки убран — его место занимает символ площадки.
+    lines = [f"{place_emoji(details.emoji)} {_h(details.canonical_name)}", ""]
     lines.append(
         tr(
             "places.manage_card.alternativnye_nazvaniya",
