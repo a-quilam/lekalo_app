@@ -123,12 +123,131 @@ class Place(Base):
     # новой зарегистрированной площадки (`place_store.create_place`), но в
     # схеме nullable: старые записи не блокируются и не переписываются.
     city: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Poster 2.6.2 (миграция 2, требование 3.2): эмодзи места в списках и
+    # карточке. В схеме nullable (SQLite не даёт `ALTER TABLE ... NOT NULL`
+    # без DEFAULT), существующие строки миграция заполняет текущим `🚀`;
+    # пустое значение читается как эмодзи по умолчанию.
+    emoji: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False
     )
 
     def __repr__(self) -> str:
         return f"<Place(id={self.id}, created_by={self.created_by_user_id})>"
+
+
+class PlacePhoto(Base):
+    """
+    Снимок фототеки площадки (Poster 2.6.2, требование 3.3).
+
+    Хранится только Telegram `file_id`: бинарных копий нет, повторная отправка
+    использует файл Telegram. `file_unique_id` нужен для дедупликации — в одну
+    площадку один и тот же снимок не попадает дважды (уникальный индекс
+    `ux_place_photos_unique`, тот же приём, что у `ux_place_brick_descriptions_unique`).
+
+    Строка библиотеки — НЕ ссылка из анонса: черновик и опубликованный анонс
+    хранят собственный `file_id`-снимок, поэтому удаление фото из фототеки не
+    ломает уже выбранный анонс.
+    """
+
+    __tablename__ = "place_photos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    place_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("places.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    file_id: Mapped[str] = mapped_column(Text, nullable=False)
+    file_unique_id: Mapped[str] = mapped_column(Text, nullable=False)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(file_id)) > 0",
+            name="ck_place_photos_not_empty",
+        ),
+        CheckConstraint(
+            "length(trim(file_unique_id)) > 0",
+            name="ck_place_photos_id_not_empty",
+        ),
+        Index("ix_place_photos_place_id", "place_id"),
+        Index(
+            "ux_place_photos_unique",
+            "place_id",
+            "file_unique_id",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<PlacePhoto(id={self.id}, place_id={self.place_id}, "
+            f"file_unique_id={self.file_unique_id!r})>"
+        )
+
+
+class PlaceBrickDescription(Base):
+    """
+    Локальное описание системного кирпичика для одного места (Poster 2.6.2).
+
+    Каталог `bricks` общий: описание системного кирпичика правит владелец
+    системы, а площадке нужно своё пояснение для автора анонса. Поэтому
+    переопределение хранится отдельно и не меняет каталог: `brick_id` —
+    внутренний ключ `bricks` (`INTEGER`), `place_id` — место.
+
+    Пара (`place_id`, `brick_id`) уникальна: у места не больше одного
+    описания данного кирпичика. `revision` — оптимистическая блокировка
+    (как у `bricks`/`templates`): успешная правка увеличивает её, устаревшая
+    запись отклоняется. Текст не пустой после trim.
+    """
+
+    __tablename__ = "place_brick_descriptions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    place_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("places.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    brick_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("bricks.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    revision: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+    updated_by_user_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(description)) > 0",
+            name="ck_place_brick_descriptions_not_empty",
+        ),
+        CheckConstraint("revision >= 1", name="ck_place_brick_descriptions_revision"),
+        Index("ix_place_brick_descriptions_place_id", "place_id"),
+        Index(
+            "ux_place_brick_descriptions_unique",
+            "place_id",
+            "brick_id",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<PlaceBrickDescription(id={self.id}, place_id={self.place_id}, "
+            f"brick_id={self.brick_id})>"
+        )
 
 
 class PlaceName(Base):

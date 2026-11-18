@@ -170,7 +170,8 @@ class AnnouncementSchemaContractTests(_FilledDatabaseTestCase):
     """Схема анонса на заполненной базе 1.0.0: данные, ограничения, триггеры."""
 
     def test_reinit_keeps_rows_links_checks_and_passes_integrity(self) -> None:
-        self.assertEqual(LATEST_VERSION, 1)
+        # Poster 2.6.2: базовая версия 1.0.0 + добавочная миграция 2.
+        self.assertEqual(LATEST_VERSION, 2)
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
 
         connection = sqlite3.connect(self.path)

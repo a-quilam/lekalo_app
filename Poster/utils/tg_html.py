@@ -638,6 +638,66 @@ _TEMPLATE_ESCAPES = {
     "]": "]]",
 }
 
+# Инверсия `_TEMPLATE_ESCAPES` для показа текста человеку (2.6.2, треб. 2):
+# обратный слэш снимается ТОЛЬКО перед символом грамматики, прочие `\`
+# (например, в `C:\tmp`) остаются частью текста. Квадратные скобки
+# разэкранируются по отдельному правилу `[[`/`]]` — их в карте нет.
+_TEMPLATE_UNESCAPES = {
+    escaped[1]: char
+    for char, escaped in _TEMPLATE_ESCAPES.items()
+    if escaped.startswith("\\")
+}
+
+
+def template_markup_to_display(text: str) -> str:
+    """
+    Канонический текст грамматики Stage 24 → человекочитаемый вид.
+
+    Точная инверсия `_TEMPLATE_ESCAPES`: `\\*` → `*`, `\\{` → `{`, `\\\\` →
+    `\\`, `[[` → `[`, `]]` → `]`. Обратный слэш перед любым другим символом —
+    обычный текст и не трогается, поэтому путь `C:\\tmp` показывается как есть.
+
+    Функция чисто отображающая: канонический текст в базе, разбор грамматики,
+    подстановка кирпичиков и рендер поста не меняются. Для сохранения правок
+    используется ровно этот же результат: если присланный автором текст
+    совпал с показанным, канонический черновик остаётся прежним и повторного
+    экранирования (`\\*` → `\\\\*`) не происходит.
+    """
+    if not text:
+        return text
+    out: list[str] = []
+    offset = 0
+    length = len(text)
+    while offset < length:
+        char = text[offset]
+        # Кирпичик `[код]` переносится дословно: иначе его закрывающая `]`
+        # вместе со следующей литеральной скобкой читалась бы как `]]`, и
+        # автор потерял бы символ (`[main]]` → `[main]`).
+        if char == "[":
+            brick = _brick_token_at(text, offset)
+            if brick is not None:
+                out.append(brick)
+                offset += len(brick)
+                continue
+        if char == "\\" and offset + 1 < length:
+            replacement = _TEMPLATE_UNESCAPES.get(text[offset + 1])
+            if replacement is not None:
+                out.append(replacement)
+                offset += 2
+                continue
+        if text.startswith("[[", offset):
+            out.append("[")
+            offset += 2
+            continue
+        if text.startswith("]]", offset):
+            out.append("]")
+            offset += 2
+            continue
+        out.append(char)
+        offset += 1
+    return "".join(out)
+
+
 # Токен кирпичика: код без квадратных и круглых скобок — ровно правила
 # `template_parser.BRICK_PATTERN`. Здесь шаблон повторён, а не импортирован:
 # `utils` не зависит от прикладных модулей. Согласованность с парсером

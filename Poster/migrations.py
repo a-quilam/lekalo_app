@@ -2244,7 +2244,82 @@ MIGRATION_1_0_0_BASELINE = Migration(
     + _BASELINE_SEED,
 )
 
-DEFAULT_MIGRATIONS: tuple[Migration, ...] = (MIGRATION_1_0_0_BASELINE,)
+# Poster 2.6.2: карточка площадки — фототека, эмодзи места и локальные
+# описания системных кирпичиков (требования 3.2 и 5).
+#
+# - `place_photos`: снимки хранятся Telegram `file_id` (повторное
+#   использование без бинарных копий), дубль внутри площадки запрещён
+#   уникальным индексом по `file_unique_id`;
+# - `places.emoji`: колонка добавляется nullable (SQLite не разрешает
+#   `NOT NULL` без DEFAULT в `ALTER TABLE`), существующие строки получают
+#   текущее захардкоженное отображение `🚀` отдельным UPDATE;
+# - `place_brick_descriptions`: описание системного кирпичика, переопределённое
+#   в рамках одного места. `brick_id` — внутренний ключ каталога `bricks`
+#   (`INTEGER`, как в остальных ссылках на кирпичики), пара
+#   (`place_id`, `brick_id`) уникальна именованным индексом по образцу
+#   `ux_place_photos_unique`.
+#
+# Миграция ещё не применялась в рабочей базе, поэтому расширяется на месте:
+# отдельная версия 3 не нужна. Обратная совместимость: только добавочные
+# объекты (ALTER ADD COLUMN, новая таблица с индексами).
+_MIGRATION_2_PLACE_PHOTOS = Migration(
+    version=2,
+    name="place_photos_2_6_2",
+    statements=(
+        "ALTER TABLE places ADD COLUMN emoji TEXT",
+        "UPDATE places SET emoji = '🚀' WHERE emoji IS NULL",
+        """
+        CREATE TABLE place_photos (
+            id INTEGER PRIMARY KEY,
+            place_id INTEGER NOT NULL REFERENCES places (id) ON DELETE CASCADE,
+            file_id TEXT NOT NULL,
+            file_unique_id TEXT NOT NULL,
+            added_at DATETIME NOT NULL,
+            CONSTRAINT ck_place_photos_not_empty CHECK (length(trim(file_id)) > 0),
+            CONSTRAINT ck_place_photos_id_not_empty CHECK (
+                length(trim(file_unique_id)) > 0
+            )
+        )
+        """,
+        "CREATE INDEX ix_place_photos_place_id ON place_photos (place_id)",
+        (
+            "CREATE UNIQUE INDEX ux_place_photos_unique "
+            "ON place_photos (place_id, file_unique_id)"
+        ),
+        """
+        CREATE TABLE place_brick_descriptions (
+            id INTEGER NOT NULL PRIMARY KEY,
+            place_id INTEGER NOT NULL REFERENCES places (id) ON DELETE CASCADE,
+            brick_id INTEGER NOT NULL REFERENCES bricks (id) ON DELETE RESTRICT,
+            description TEXT NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1,
+            updated_at DATETIME NOT NULL,
+            updated_by_user_id INTEGER REFERENCES users (id) ON DELETE SET NULL,
+            CONSTRAINT ck_place_brick_descriptions_not_empty CHECK (
+                length(trim(description)) > 0
+            ),
+            CONSTRAINT ck_place_brick_descriptions_revision CHECK (revision >= 1)
+        )
+        """,
+        (
+            "CREATE INDEX ix_place_brick_descriptions_place_id "
+            "ON place_brick_descriptions (place_id)"
+        ),
+        (
+            "CREATE UNIQUE INDEX ux_place_brick_descriptions_unique "
+            "ON place_brick_descriptions (place_id, brick_id)"
+        ),
+    ),
+    # Шаги применимы, пока есть `places`: `ALTER TABLE places`, а внешний
+    # ключ `place_brick_descriptions.brick_id` на отсутствующую `bricks`
+    # SQLite при создании таблицы не проверяет.
+    requires_tables=("places",),
+)
+
+DEFAULT_MIGRATIONS: tuple[Migration, ...] = (
+    MIGRATION_1_0_0_BASELINE,
+    _MIGRATION_2_PLACE_PHOTOS,
+)
 
 LATEST_VERSION = DEFAULT_MIGRATIONS[-1].version if DEFAULT_MIGRATIONS else 0
 

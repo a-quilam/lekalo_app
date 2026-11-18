@@ -139,9 +139,11 @@ from handlers import (
     wizard_photos,
     wizard_questions,
 )
+from place_brick_store import place_brick_description_map
 from place_store import (
     get_place_details,
     list_places,
+    place_emoji,
     search_places,
 )
 from template_compiler import (
@@ -333,6 +335,11 @@ def _fresh_ui() -> dict[str, Any]:
         "photo_add": False,
         # H1: шаг фото ждёт ввода — сохраняется в resume-снимке.
         "photo_step": False,
+        # Poster 2.6.2 §4: конструктор открыт по публичной ссылке площадки.
+        # У такого входа нет экрана-источника (списка площадок), поэтому
+        # «Назад» с первого вопроса ведёт в главное меню, а не к выбору
+        # шаблона: шаблон был выбран автоматически.
+        "link_entry": False,
         "place": {
             "phase": "home",
             "query": "",
@@ -768,6 +775,12 @@ def _resume_snapshot(
             "brick_id": int(brick_id),
             "source": str(source),
         }
+        # Poster 2.6.2 §4: вход по публичной ссылке — свойство СЕАНСА, а не
+        # только памяти: после рестарта «◀️ Назад» с первого вопроса обязан
+        # вести в главное меню, а не к выбору шаблона. Ключ пишем только для
+        # link-входа, поэтому старые снимки остаются совместимыми.
+        if ui.get("link_entry"):
+            snapshot["link_entry"] = True
         instance_id = ui.get("field_input")
         if source == "field":
             # 2.5.4 §1: ввод значения поля доставленного анонса живёт на самом
@@ -874,6 +887,22 @@ def _remember_resume(
     screen.save_state(user_id, user_data, chat_id, payload or None)
 
 
+def mark_link_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    §4: отметить вход по публичной ссылке и пересобрать resume-снимок.
+
+    Снимок «экран ждёт ввода» снимается при рендере первого вопроса — раньше,
+    чем вызывающий (`handlers/place_invite.py`) успевает поставить отметку.
+    Поэтому после отметки снимок обновляется ещё раз: иначе после рестарта
+    службы «◀️ Назад» с первого вопроса повела бы к выбору шаблона вместо
+    главного меню. Без активного черновика — только отметка в `ui`.
+    """
+    ui = _ui(context)
+    ui["link_entry"] = True
+    if ui.get("draft_id"):
+        _remember_resume(_user_id(update), ctx.data(context), ctx.chat(update).id, ui)
+
+
 def _clear_resume(
     user_id: int,
     user_data: dict[str, Any],
@@ -965,6 +994,9 @@ def _resume_target(
         return None
 
     ui = _fresh_ui()
+    # §4: восстановленная сессия помнит, что вход был по публичной ссылке —
+    # иначе «Назад» с первого вопроса после рестарта поведёт к выбору шаблона.
+    ui["link_entry"] = bool(snapshot.get("link_entry"))
     _set_details(ui, details)
     if mode == RESUME_MODE_TEXT:
         brick_id = snapshot.get("brick_id")
@@ -1766,17 +1798,23 @@ def _clamped_page(page: int, total: int, size: int) -> int:
 
 
 def _place_buttons(
-    places: list[tuple[int, str]], *, prefix: str, page: int, total: int
+    places: list[tuple[int, str, str | None]],
+    *,
+    prefix: str,
+    page: int,
+    total: int,
 ) -> list[list[InlineKeyboardButton]]:
     # U3a №13: строки списка — общий шаблон компоновки.
+    # Poster 2.6.2 §5.1: вместо одинакового `📍` — сохранённый эмодзи места.
     rows = keyboard_layouts.list_rows(
         (
             keyboard_layouts.button(
-                _short(f"📍 {name}", 60), f"aw_place_open:{place_id}"
+                _short(f"{place_emoji(emoji)} {name}", 60),
+                f"aw_place_open:{place_id}",
             ),
             None,
         )
-        for place_id, name in places
+        for place_id, name, emoji in places
     )
     # Poster 2.5 §14: строка `◀️ | 2/4 | ▶️` из единого механизма; callback
     # хранит НОМЕР страницы — так его читает обработчик `aw_place_all`.
@@ -1831,7 +1869,7 @@ async def _render_all_places(
     ]
     rows = _place_buttons(
         [
-            (item.place_id, place_title(item.canonical_name, item.city))
+            (item.place_id, place_title(item.canonical_name, item.city), item.emoji)
             for item in places
         ],
         prefix="aw_place_all",
@@ -1898,7 +1936,11 @@ async def _render_search_results(
     rows = [
         [
             InlineKeyboardButton(
-                _short(f"📍 {place_title(result.canonical_name, result.city)}", 60),
+                _short(
+                    f"{place_emoji(result.emoji)} "
+                    f"{place_title(result.canonical_name, result.city)}",
+                    60,
+                ),
                 callback_data=f"aw_place_open:{result.place_id}",
             )
         ]
@@ -4609,14 +4651,39 @@ async def _show_field_input(
     return AW_PREVIEW
 
 
-def _extra_field_state(details, definition) -> AnnouncementFieldState:
+def _place_local_descriptions(details) -> dict[int, str]:
+    """
+    Действующие локальные описания системных кирпичиков площадки черновика.
+
+    Poster 2.6.2 §3.2: подсказка автора анонса — своя у площадки, если она
+    задана, иначе общая из каталога. Карта читается ОДНОЙ сессией на экран;
+    вызывающий слой передаёт её в `_extra_field_state`, чтобы список из
+    десятка кирпичиков не открывал десяток сессий.
+    """
+    place_id = getattr(details, "place_id", None)
+    if not isinstance(place_id, int) or isinstance(place_id, bool):
+        return {}
+    with SessionLocal() as session:
+        return place_brick_description_map(session, place_id)
+
+
+def _extra_field_state(
+    details, definition, *, local_descriptions=None
+) -> AnnouncementFieldState:
     """
     Состояние значения кирпичика для экрана доп. полей.
 
     `definition` — определение кирпичика (`BrickDefinition`) из payload
     рендера: экран показывает и незаполненные кирпичики, поэтому для
     «нет строки» возвращается MISSING, а не ошибка.
+
+    Poster 2.6.2 §3.2: действующее описание системного кирпичика берётся с
+    учётом локального переопределения площадки. Карта читается один раз на
+    экран (`local_descriptions`), иначе каждый кирпичик открывал бы свою
+    сессию; без карты — одна сессия на вызов.
     """
+    if local_descriptions is None:
+        local_descriptions = _place_local_descriptions(details)
     value = details.value_for(definition.id)
     status = FIELD_STATUS_MISSING
     raw: object | None = None
@@ -4642,7 +4709,7 @@ def _extra_field_state(details, definition) -> AnnouncementFieldState:
         status=status,
         raw_value=raw,
         rules=dict(definition.rules),
-        description=definition.description,
+        description=local_descriptions.get(definition.id, definition.description),
         raw_html=raw_html,
     )
 
@@ -5215,6 +5282,8 @@ def _extras_entries(details, telegram_user_id: int):
     # дополнительных полей не показываем вовсе и не открываем экран пустого
     # справочника. Само значение анонса при этом не меняется.
     footers_available: bool | None = None
+    # Одна карта локальных описаний на экран (Poster 2.6.2 §3.2).
+    local_descriptions = _place_local_descriptions(details)
     entries: list[dict[str, Any]] = []
     for brick_id in order:
         definition = payload.definitions_by_id.get(brick_id)
@@ -5231,7 +5300,9 @@ def _extras_entries(details, telegram_user_id: int):
                 "brick_id": brick_id,
                 "extra_id": extra.extra_id if extra is not None else None,
                 "title": brick_title_display(definition.title, definition.code),
-                "field": _extra_field_state(details, definition),
+                "field": _extra_field_state(
+                    details, definition, local_descriptions=local_descriptions
+                ),
                 "catalog": (
                     definition.code if definition.code in CATALOG_BRICK_CODES else None
                 ),
@@ -6229,8 +6300,11 @@ def _preview_summary_lines(
     extras = _extras_with_definitions(details, telegram_user_id)
     if extras:
         lines.extend(["", tr("wizard.preview_summary_lines.dopolnitelnye_kirpichiki")])
+        local_descriptions = _place_local_descriptions(details)
         for extra, definition in extras[:MAX_PREVIEW_EXTRAS]:
-            field = _extra_field_state(details, definition)
+            field = _extra_field_state(
+                details, definition, local_descriptions=local_descriptions
+            )
             if field.status == FIELD_STATUS_VALID:
                 value = _short(_field_value_text(field), FIELD_DISPLAY_LIMIT)
                 value_text = tr_safe(
@@ -9781,6 +9855,12 @@ async def handle_question_callback(
             if rendered is not None:
                 return rendered
             if index <= 0:
+                if _ui(context).get("link_entry"):
+                    # Вход по публичной ссылке (§4): шаблон подставлен
+                    # автоматически, выбирать его заново нечего — «Назад»
+                    # возвращает в главное меню, черновик остаётся в «Мои
+                    # анонсы».
+                    return await _exit_to_main_menu(update, context)
                 return await _render_template_screen(update, context, details)
             return await _render_question(update, context, details, fields, index - 1)
         return await _skip_question(update, context, details, field, index)
@@ -10200,6 +10280,101 @@ async def handle_preview_callback(
             return await _render_publish_status(update, context, details)
         await _answer(update)
         return await _back_from_photo_step(update, context, details)
+    if action == "aw_photolib" and len(parts) == 4:
+        # Poster 2.6.2 §3.4: раздел «Фото площадки» — библиотека ЭТОЙ
+        # площадки. Черновик по личному шаблону площадки не имеет, поэтому
+        # раздел для него не открывается (пустая библиотека не показывается).
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
+        if guarded is None:
+            return await _stale(update, context)
+        _ui_data, details = guarded
+        if _edit_blocked(details):
+            await _answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
+            return await _render_publish_status(update, context, details)
+        library = wizard_photos.library_photo_ids(details)
+        if not library:
+            await _answer(update, tr("wizard.photo_library.pustaya"), alert=True)
+            return await wizard_photos.render_photo_step(
+                update,
+                context,
+                details,
+                announcement_is_empty=_announcement_is_empty(update, details),
+            )
+        await _answer(update)
+        return await wizard_photos.render_photo_library(
+            update,
+            context,
+            details,
+            page=int(parts[3]),
+            library=library,
+        )
+    if action == "aw_phototoggle" and len(parts) == 4:
+        # Тумблер «выбрать/снять»: выбора без нажатия не происходит,
+        # автодобавления нет. Лимит 10 суммарно и запрет дублей — в домене.
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
+        if guarded is None:
+            return await _stale(update, context)
+        _ui_data, details = guarded
+        if _edit_blocked(details):
+            await _answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
+            return await _render_publish_status(update, context, details)
+        library = wizard_photos.library_photo_ids(details)
+        index = int(parts[3])
+        try:
+            updated, notice = wizard_photos.toggle_library_photo(
+                telegram_user_id=_user_id(update),
+                draft_id=details.draft_id,
+                revision=details.revision,
+                index=index,
+                library=library,
+                session_factory=SessionLocal,
+            )
+        except (
+            AnnouncementError,
+            TemplateError,
+            TemplateCompileError,
+            BrickError,
+        ) as exc:
+            await _answer(update, str(exc), alert=True)
+            return await wizard_photos.render_photo_library(
+                update,
+                context,
+                details,
+                page=index // wizard_photos.PHOTO_LIBRARY_PAGE_SIZE,
+                library=library,
+            )
+        await _answer(update, notice)
+        _set_details(_ui(context), updated)
+        next_page = index // wizard_photos.PHOTO_LIBRARY_PAGE_SIZE
+        return await wizard_photos.render_photo_library(
+            update,
+            context,
+            updated,
+            page=next_page,
+            library=wizard_photos.library_photo_ids(updated),
+        )
+    if action == "aw_photoback" and len(parts) == 3:
+        # «Назад» из раздела «Фото площадки»: раздел рисуется ВМЕСТО шага
+        # фото, поэтому его родитель — шаг, а не список вложений. Иначе
+        # кнопка «Фото площадки» пропадала бы и повторный выбор из
+        # библиотеки стал бы недоступен (§3.4).
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
+        if guarded is None:
+            return await _stale(update, context)
+        _ui_data, details = guarded
+        await _answer(update)
+        return await wizard_photos.render_photo_step(
+            update,
+            context,
+            details,
+            announcement_is_empty=_announcement_is_empty(update, details),
+        )
     if action == "aw_photo_none" and len(parts) == 3:
         # S4 п.2: «Без фотографий» на шаге фото — это финал: шаг собран в
         # `wizard_photos`, доставка идёт общим путём без кнопки «Готово».

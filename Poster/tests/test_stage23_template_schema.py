@@ -55,8 +55,11 @@ class TemplateSchemaTests(TemplateDatabaseTestCase):
 
     def test_template_migrations_apply_and_are_idempotent(self) -> None:
         self.assertEqual(self.migrations_applied, LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 1)
-        self.assertEqual(self.journal(), [(1, "baseline_1_0_0")])
+        # Poster 2.6.2: базовая версия 1.0.0 + добавочная миграция 2.
+        self.assertEqual(LATEST_VERSION, 2)
+        self.assertEqual(
+            self.journal(), [(1, "baseline_1_0_0"), (2, "place_photos_2_6_2")]
+        )
 
         tables = set(self.engine.dialect.get_table_names(self.engine.connect()))
         self.assertTrue(

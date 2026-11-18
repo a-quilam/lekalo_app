@@ -51,6 +51,7 @@ from place_store import (
     get_place_name,
     list_places,
     normalize_place_name,
+    place_emoji,
     search_places,
     validate_place_city,
     validate_place_name,
@@ -836,7 +837,11 @@ async def _render_phase(
                 )
                 text, keyboard = _manage_back_to_source(session, state)
             else:
-                text, keyboard = _manage_card_content(session, details)
+                # Poster 2.6.2 §4: публичная карточка показывает ссылку
+                # «создать анонс этой площадки». Ссылка одна на площадку и
+                # не персональная; прав она не даёт.
+                link = await _public_invite_link(context, session, details.place_id)
+                text, keyboard = _manage_card_content(session, details, link=link)
         elif phase == "manage_admin_request":
             place_id = state.get("place_id")
             details = (
@@ -1172,7 +1177,10 @@ def _pick_content(session: Session, state: dict) -> tuple[str, InlineKeyboardMar
         rows.append(
             [
                 InlineKeyboardButton(
-                    _button_name("🚀 ", _place_title(item.canonical_name, item.city)),
+                    _button_name(
+                        f"{place_emoji(item.emoji)} ",
+                        _place_title(item.canonical_name, item.city),
+                    ),
                     callback_data=f"pl_pick:{item.place_id}",
                 )
             ]
@@ -1261,7 +1269,8 @@ def _pick_search_content(
             [
                 InlineKeyboardButton(
                     _button_name(
-                        "🚀 ", _place_title(result.canonical_name, result.city)
+                        f"{place_emoji(result.emoji)} ",
+                        _place_title(result.canonical_name, result.city),
                     ),
                     callback_data=f"pl_pick:{result.place_id}",
                 )
@@ -1405,7 +1414,7 @@ def _manage_list_content(
             [
                 InlineKeyboardButton(
                     _button_name(
-                        f"{index}. ",
+                        f"{index}. {place_emoji(item.emoji)} ",
                         _place_title(item.canonical_name, item.city),
                     ),
                     callback_data=f"plm_open:{item.place_id}",
@@ -1474,7 +1483,7 @@ def _manage_search_content(
             [
                 InlineKeyboardButton(
                     _button_name(
-                        f"{index}. ",
+                        f"{index}. {place_emoji(result.emoji)} ",
                         _place_title(result.canonical_name, result.city),
                     ),
                     callback_data=f"plm_open:{result.place_id}",
@@ -1499,8 +1508,33 @@ def _manage_search_content(
     return text, InlineKeyboardMarkup(rows)
 
 
+async def _public_invite_link(
+    context: ContextTypes.DEFAULT_TYPE, session: Session, place_id: int
+) -> str | None:
+    """
+    Deep link конструктора для публичной карточки (Poster 2.6.2 §4).
+
+    Ссылка не персональная и не даёт прав: показывается ДЕЙСТВУЮЩАЯ ссылка
+    площадки (её выдаёт администратор в своей карточке). Просмотр карточки
+    ничего не создаёт и не перевыпускает — иначе обычный просмотр был бы
+    скрытой записью в БД. Любая ошибка чтения — карточка просто остаётся
+    без блока, а не падает.
+    """
+    from place_invite_store import get_active_invite
+    from utils.deep_links import deep_link
+
+    try:
+        invite = get_active_invite(session, place_id)
+        if invite is None:
+            return None
+        return await deep_link(context, invite.token)
+    except Exception as exc:  # noqa: BLE001 — ссылка не должна ронять карточку
+        logger.info("Ссылка для площадки %s не показана: %s", place_id, exc)
+        return None
+
+
 def _manage_card_content(
-    session: Session, details: PlaceDetails
+    session: Session, details: PlaceDetails, *, link: str | None = None
 ) -> tuple[str, InlineKeyboardMarkup]:
     """
     Карточка просмотра справочника для не-управляющих.
@@ -1510,7 +1544,9 @@ def _manage_card_content(
     остаётся только просмотр чужого места и объяснение «🛡 Я админ места».
     """
     alternatives = [item for item in details.names if not item.is_canonical]
-    lines = [f"📍 {_h(details.canonical_name)}", ""]
+    # Poster 2.6.2 §5.1: эмодзи места хранится в БД и виден в публичной
+    # карточке; `📍` из шапки убран — его место занимает символ площадки.
+    lines = [f"{place_emoji(details.emoji)} {_h(details.canonical_name)}", ""]
     lines.append(
         tr(
             "places.manage_card.alternativnye_nazvaniya",
@@ -1547,6 +1583,15 @@ def _manage_card_content(
     lines.append(tr("places.manage_card.eto_prosmotr_spravochnika"))
 
     rows: list[list[InlineKeyboardButton]] = []
+    if link:
+        # Poster 2.6.2 §4: блок «Создать анонс для этой площадки:» и кнопка
+        # со ссылкой. Ссылка ведёт в конструктор именно этого места и НЕ
+        # открывает админ-экраны: прав по ней не выдаётся.
+        lines.append("")
+        lines.append(tr("places.public.invite_title"))
+        rows.append(
+            [InlineKeyboardButton(tr("buttons.places.public_invite"), url=link)]
+        )
     rows.append(
         [
             InlineKeyboardButton(

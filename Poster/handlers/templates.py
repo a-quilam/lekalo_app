@@ -107,7 +107,11 @@ from template_types import (
 )
 from user_store import get_or_create_user
 from utils import current_value, pagination
-from utils.tg_html import entities_to_template_markup, escape_html
+from utils.tg_html import (
+    entities_to_template_markup,
+    escape_html,
+    template_markup_to_display,
+)
 from utils.ui_texts import tr, tr_safe
 
 logger = logging.getLogger(__name__)
@@ -722,7 +726,12 @@ def _card_content(
             "",
             tr("templates.card.simple_html"),
             "",
-            current_value.clip_html(_h(version.content), limit=limits[0]),
+            # Канонический текст (грамматика `\*`, `[[`) показывается без
+            # технических backslash-escape: администратор видит свой шаблон,
+            # а хранение и рендер остаются каноническими (2.6.2, треб. 2).
+            current_value.clip_html(
+                _h(template_markup_to_display(version.content)), limit=limits[0]
+            ),
         ]
         if extended_on:
             lines.extend(["", tr("templates.card.extended_on")])
@@ -1065,7 +1074,12 @@ def _text_edit_content(
                 title,
                 "",
                 tr("templates.edit.current"),
-                current_value.clip_html(_h(draft), limit=limits[0]),
+                # Редактор показывает авторский вид без служебного
+                # экранирования грамматики (`\*` → `*`); в состоянии и в БД
+                # черновик остаётся каноническим (2.6.2, треб. 2).
+                current_value.clip_html(
+                    _h(template_markup_to_display(draft)), limit=limits[0]
+                ),
                 "",
                 tr("templates.edit.instruction"),
             ]
@@ -1461,10 +1475,14 @@ def _help_content() -> tuple[str, InlineKeyboardMarkup]:
     """
     «Как редактировать» (§7.5 задания 2.6.1).
 
-    Короткий экран: что писать, пример отдельным блоком и одна строка
-    поддерживаемого форматирования. Синтаксис примера совпадает с
+    Короткий экран: что писать, пример отдельным блоком и абзац о
+    форматировании. Синтаксис примера совпадает с
     `template_parser`/`template_compiler`: `**[кирпичик]**` — жирный вокруг
-    значения, `*текст*` — курсив, `Текст(URL)` — ссылка.
+    значения, `*текст*` — курсив, `Текст(URL)` и `{подпись}(URL)` — ссылка.
+    Абзац форматов (2.6.2, треб. 2) объясняет, что звёздочки, фигурные и
+    круглые скобки — техническая структура шаблона, а `\\*`/`\\{` —
+    экранирование литеральных символов; форматирование из Telegram
+    сохраняется.
     """
     text = "\n".join(
         [
@@ -3322,14 +3340,28 @@ async def _process_section_text(
     state: dict,
 ) -> None:
     message = ctx.message(update)
+    raw_text = message.text if message.text is not None else ""
+    entities = getattr(message, "entities", None)
     # Единая точка захвата: entities клиента становятся канонической
     # грамматикой Stage 24 (`**жирный**`, `URL(подпись)` и т.д.), поэтому
     # разметка переживает сохранение, повторное открытие и рендер анонса.
     # Работает одинаково для content/extended_content и обоих видов шаблонов.
-    new_text = entities_to_template_markup(
-        message.text if message.text is not None else "",
-        getattr(message, "entities", None),
-    )
+    new_text = entities_to_template_markup(raw_text, entities)
+    current_draft = state.get("draft_text")
+    if (
+        not entities
+        and isinstance(current_draft, str)
+        and raw_text == template_markup_to_display(current_draft)
+    ):
+        # Автор прислал обратно ровно то, что видел на экране (без служебного
+        # экранирования) и ничего не выделял — значит, правок нет. Канонический
+        # черновик остаётся прежним: иначе `\*` превратился бы в `\\*`, а
+        # сохранение без правок создало бы лишнюю версию (2.6.2, треб. 2).
+        # Явный выбор кирпичиков тоже сохраняется: нового текста не появилось.
+        # entities — это осознанное форматирование, его не отбрасываем.
+        state["draft_text"] = current_draft
+        await _validate_and_show(update, context, state, drop_input=True)
+        return
     state["draft_text"] = new_text
     # Новый авторский текст требует нового явного выбора при неоднозначности.
     state["chosen_brick_ids"] = {}

@@ -1482,7 +1482,8 @@ class R3MigrationTests(unittest.TestCase):
         return None if row is None else str(row[0])
 
     def test_latest_version_is_baseline(self) -> None:
-        self.assertEqual(LATEST_VERSION, 1)
+        # Poster 2.6.2: базовая версия 1.0.0 + добавочная миграция 2.
+        self.assertEqual(LATEST_VERSION, 2)
 
     def test_fresh_database_has_conflict_tables_and_integrity(self) -> None:
         from migrations import run_migrations

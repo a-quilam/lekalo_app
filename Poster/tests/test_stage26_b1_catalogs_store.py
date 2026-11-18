@@ -86,15 +86,19 @@ class BaselineCatalogsTests(unittest.TestCase):
         self.addCleanup(self.engine.dispose)
 
     def test_latest_version_is_baseline(self) -> None:
-        self.assertEqual(LATEST_VERSION, 1)
+        # Poster 2.6.2: базовая версия 1.0.0 + добавочная миграция 2.
+        self.assertEqual(LATEST_VERSION, 2)
         self.assertEqual(
             [(m.version, m.name) for m in DEFAULT_MIGRATIONS],
-            [(1, "baseline_1_0_0")],
+            [(1, "baseline_1_0_0"), (2, "place_photos_2_6_2")],
         )
 
     def test_fresh_database_creates_both_tables_and_indexes(self) -> None:
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
-        self.assertEqual(_journal(self.path), [(1, "baseline_1_0_0")])
+        self.assertEqual(
+            _journal(self.path),
+            [(1, "baseline_1_0_0"), (2, "place_photos_2_6_2")],
+        )
         tables = table_names(self.path)
         self.assertIn("curator_entries", tables)
         self.assertIn("footer_entries", tables)
@@ -157,7 +161,7 @@ class BaselineCatalogsTests(unittest.TestCase):
         self.assertEqual(
             _sql(self.path, "SELECT name, sql FROM sqlite_master ORDER BY name"), before
         )
-        self.assertEqual(len(_journal(self.path)), 1)
+        self.assertEqual(len(_journal(self.path)), len(DEFAULT_MIGRATIONS))
 
     def test_scope_xor_check(self) -> None:
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)

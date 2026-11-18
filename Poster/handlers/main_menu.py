@@ -874,6 +874,17 @@ async def cancel_without_dialog(
         await screen.drop_user_input(update, context)
 
 
+# Poster 2.6.2: категория экрана-источника подсказки «неожиданного ввода».
+# Живёт в персистентном payload `user_states` рядом с resume-снимком: после
+# рестарта службы «◀️ Назад» возвращает на прежний экран (сессии разделов
+# и resume-снимок тоже персистентны), а не в главное меню.
+OUTSIDE_RETURN_PAYLOAD_KEY = "outside_return"
+
+OUTSIDE_BACK_CATEGORIES = frozenset(
+    {"places", "places_manage", "templates", "bricks", "admin", "wizard"}
+)
+
+
 async def outside_dialog_hint(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:
@@ -884,20 +895,134 @@ async def outside_dialog_hint(
     Внутри диалога этот хендлер не вызывается: ConversationHandler анонсов и
     прежнего мастера зарегистрированы первой группой и свой ввод обслуживают
     сами.
+
+    Poster 2.6.2: экран показывает текст подсказки И кнопку «◀️ Назад»,
+    возвращающую на экран-источник (категория берётся из того же расчёта,
+    что и у справки: персистентные сессии разделов + resume-снимок
+    конструктора). Возврат — существующими входами разделов/конструктора,
+    отдельного параллельного состояния нет.
     """
     message = ctx.message(update)
+    user_id = ctx.user(update).id
+    user_data = ctx.data(context)
+    # Poster 2.6.2: адрес возврата запоминается ДО пересоздания экрана.
+    # «main» из общего расчёта справки — это отсутствие источника: из
+    # главного меню возвращаться некуда, кнопки «◀️ Назад» быть не должно.
+    target = help_return_target(user_id, user_data)
+    source = target if target in OUTSIDE_BACK_CATEGORIES else None
     # навигация сообщением ниже экрана → подсказка рядом с вводом
     await screen.reanchor_screen(update, context)
-    user_data = ctx.data(context)
     if screen.screen_ref(user_data) is None:
-        screen.hydrate_screen_ref(user_data, ctx.user(update).id)
+        screen.hydrate_screen_ref(user_data, user_id)
     if message.photo:
         text = tr("menu.outside.photo")
     else:
         text = tr("menu.outside.text")
-    await screen.render_screen(
-        context, user_data, ctx.chat(update).id, text, user_id=ctx.user(update).id
+    keyboard = (
+        None
+        if source is None
+        else InlineKeyboardMarkup(
+            [[InlineKeyboardButton(tr("buttons.nav.back"), callback_data="nav_back")]]
+        )
     )
+    # Poster 2.6.2: возврат возможен и после рестарта службы — категория
+    # экрана-источника живёт в персистентном payload. Запись делается всегда:
+    # `None` снимает устаревший адрес прежней подсказки (иначе кнопка со
+    # старого экрана вернула бы не туда).
+    screen.save_payload_key(user_id, OUTSIDE_RETURN_PAYLOAD_KEY, source)
+    await screen.render_screen(
+        context,
+        user_data,
+        ctx.chat(update).id,
+        text,
+        keyboard,
+        user_id=ctx.user(update).id,
+    )
+
+
+async def _restore_outside_source(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, source: str
+) -> None:
+    """
+    Возвращает на экран-источник подсказки (Poster 2.6.2).
+
+    Ровно тот же маршрут, что и возврат «◀️ Назад» из справки (`help_back`):
+    входы существующие, отрисовка — по персистентным сессиям разделов и
+    resume-снимку конструктора. Ответ на callback здесь не делается:
+    открытые входы разделов отвечают сами, а конструктор отвечает
+    `restore_wizard_or_menu`.
+
+    Категория проверена вызывающим (`OUTSIDE_BACK_CATEGORIES`), поэтому
+    неизвестная ветка — не ошибка пользователя, а сбой кода: падение
+    обрабатывается вызывающим как сбой Telegram.
+    """
+    if source == "places":
+        from handlers.places import open_places
+
+        await open_places(update, context)
+        return
+    if source == "places_manage":
+        from handlers.places import open_places_manage
+
+        await open_places_manage(update, context)
+        return
+    if source == "templates":
+        from handlers.templates import open_templates
+
+        await open_templates(update, context)
+        return
+    if source == "bricks":
+        from handlers.bricks import open_bricks
+
+        await open_bricks(update, context)
+        return
+    if source == "admin":
+        from handlers.admin import open_admin
+
+        await open_admin(update, context)
+        return
+    if source == "wizard":
+        await restore_wizard_or_menu(update, context)
+        return
+    raise ValueError(f"неизвестный источник возврата подсказки: {source!r}")
+
+
+async def handle_outside_back(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    «◀️ Назад» на подсказке неожиданного ввода (Poster 2.6.2).
+
+    Категория источника живёт в персистентном payload (возврат работает и
+    после рестарта службы) и снимается только после успешной отрисовки.
+
+    Повторное нажатие (кнопка старого сообщения, двойной тап) безвредно:
+    адреса возврата уже нет — экран не трогается вовсе. Это важнее фолбэка
+    в меню: пользователь уже стоит на восстановленном экране, и уводить его
+    в меню значило бы «потерять» возврат. Сбой Telegram оставляет подсказку
+    на месте, а отметка сохраняется — нажатие можно повторить.
+    """
+    user_id = ctx.user(update).id
+    # Источник — персистентная отметка payload; ключ справки
+    # (`help_return`) не трогаем: у подсказки свой адрес возврата.
+    payload = screen.load_payload(user_id) or {}
+    source = payload.get(OUTSIDE_RETURN_PAYLOAD_KEY)
+    if not isinstance(source, str) or source not in OUTSIDE_BACK_CATEGORIES:
+        # Возвращаться некуда: экран уже актуален (или его не было).
+        await ctx.query(update).answer()
+        return
+    try:
+        await _restore_outside_source(update, context, source)
+    except Exception:  # noqa: BLE001 — сбой Telegram не оставляет без экрана
+        logger.exception("Возврат на экран-источник не удался (%s).", source)
+        # Вход раздела мог уже ответить на callback — повторный answer
+        # Telegram считает ошибкой запроса, поэтому он best-effort.
+        try:
+            await ctx.query(update).answer()
+        except Exception:  # noqa: BLE001 — подсказка важнее ответа
+            logger.info("Ответ на callback после сбоя возврата не отправлен.")
+        return
+    screen.save_payload_key(user_id, OUTSIDE_RETURN_PAYLOAD_KEY, None)
 
 
 async def handle_main_menu_selection(
@@ -938,6 +1063,9 @@ def main_menu_handlers() -> list[BaseHandler]:
         CallbackQueryHandler(menu_help, pattern="^help$"),
         # Poster 2.5.1: возврат из Rich Message справки на экран-источник.
         CallbackQueryHandler(help_back, pattern="^help_back$"),
+        # Poster 2.6.2: «◀️ Назад» на подсказке неожиданного ввода —
+        # на экран-источник (те же маршруты, что у возврата из справки).
+        CallbackQueryHandler(handle_outside_back, pattern=r"^nav_back$"),
         # Poster 2.5.4 §7: «ℹ️ О проекте» со справки и возврат «◀️ К помощи».
         CallbackQueryHandler(render_about, pattern="^help_about$"),
         CallbackQueryHandler(about_back, pattern="^about_help$"),

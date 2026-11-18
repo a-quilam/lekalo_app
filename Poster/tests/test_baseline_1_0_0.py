@@ -12,6 +12,10 @@
 - `ref_triggers.json` — все 45 триггеров (имя → SQL);
 - `ref_bricks.json` — 13 системных кирпичиков с финальными описаниями.
 
+С Poster 2.6.2 к эталону добавлена добавочная версия 2 (фототека площадки,
+`places.emoji`, `place_brick_descriptions`), поэтому цифры ниже описывают
+актуальную схему после применения всех версий `DEFAULT_MIGRATIONS`.
+
 Допустимые различия с эталоном: форматирование SQL (пробелы, отступы,
 регистр), запись журнала (одна строка вместо 33) и `created_at`/`updated_at`
 кирпичиков (момент инициализации).
@@ -157,15 +161,17 @@ class _TempDatabase(unittest.TestCase):
 
 
 class BaselineContractTests(_TempDatabase):
-    """Версия 1.0.0 как единственная запись журнала и как механизм."""
+    """Базовая версия 1.0.0 и добавочные версии: журнал и механизм."""
 
-    def test_default_migrations_is_one_baseline(self) -> None:
-        self.assertEqual(LATEST_VERSION, 1)
-        self.assertEqual(len(DEFAULT_MIGRATIONS), 1)
+    def test_baseline_first_then_new_versions(self) -> None:
+        # Poster 2.6.2: базовая версия остаётся первой, новые — добавочные.
+        self.assertEqual(LATEST_VERSION, 2)
+        self.assertEqual(len(DEFAULT_MIGRATIONS), 2)
         baseline = DEFAULT_MIGRATIONS[0]
         self.assertEqual(baseline.version, 1)
         self.assertEqual(baseline.name, BASELINE_NAME)
         self.assertIs(baseline, MIGRATION_1_0_0_BASELINE)
+        self.assertEqual(DEFAULT_MIGRATIONS[1].version, 2)
 
     def test_checksum_is_sha256_of_ddl(self) -> None:
         checksum = MIGRATION_1_0_0_BASELINE.checksum
@@ -187,9 +193,10 @@ class BaselineContractTests(_TempDatabase):
             for key in sqlite_master(self.path)
             if key.startswith("table|")
         }
-        # 32 таблицы: вся схема, включая `user_states` (раньше её создавал
-        # только create_all) и журнал версий.
-        self.assertEqual(len(tables), 32)
+        # 34 таблицы: вся схема 1.0.0 (32, включая `user_states` и журнал
+        # версий) плюс `place_photos` и `place_brick_descriptions`
+        # (Poster 2.6.2, миграция 2).
+        self.assertEqual(len(tables), 34)
         for expected in (
             "users",
             "places",
@@ -201,6 +208,8 @@ class BaselineContractTests(_TempDatabase):
             "reports",
             "user_states",
             "schema_migrations",
+            "place_photos",
+            "place_brick_descriptions",
         ):
             with self.subTest(table=expected):
                 self.assertIn(expected, tables)
@@ -219,14 +228,19 @@ class BaselineContractTests(_TempDatabase):
         }
         self.assertEqual(len(triggers), 45)
         indexes = {key for key in sqlite_master(self.path) if key.startswith("index|")}
-        self.assertEqual(len(indexes), 73)
+        # Poster 2.6.2 (миграция 2): +4 индекса (`place_photos` и
+        # `place_brick_descriptions`).
+        self.assertEqual(len(indexes), 77)
 
-        self.assertEqual(journal(self.path), [(1, BASELINE_NAME)])
+        self.assertEqual(
+            journal(self.path), [(1, BASELINE_NAME), (2, "place_photos_2_6_2")]
+        )
 
-    def test_journal_has_single_baseline_record(self) -> None:
+    def test_journal_keeps_baseline_first(self) -> None:
         run_migrations(self.engine)
         rows = journal(self.path)
-        self.assertEqual(len(rows), 1)
+        # Poster 2.6.2: журнал — базовая версия + добавочная миграция 2.
+        self.assertEqual(len(rows), 2)
         version, name = rows[0]
         self.assertEqual(version, 1)
         self.assertEqual(name, BASELINE_NAME)
@@ -256,6 +270,110 @@ class BaselineContractTests(_TempDatabase):
         before = sqlite_master(self.path)
         Base.metadata.create_all(bind=self.engine)
         self.assertEqual(sqlite_master(self.path), before)
+
+
+class Poster262MigrationTests(_TempDatabase):
+    """Миграция 2 (Poster 2.6.2): эмодзи места и локальные описания."""
+
+    def test_places_emoji_column_is_nullable_text(self) -> None:
+        run_migrations(self.engine)
+
+        columns = {
+            row[1]: row
+            for row in connect(self.path).execute("PRAGMA table_info(places)")
+        }
+        self.assertIn("emoji", columns)
+        self.assertEqual(columns["emoji"][2], "TEXT")
+        # SQLite не даёт `ALTER TABLE ... ADD COLUMN ... NOT NULL` без
+        # DEFAULT, поэтому колонка nullable и без DEFAULT в схеме; бэкфилл
+        # существующих строк делает сама миграция (см. следующий тест).
+        self.assertEqual(columns["emoji"][3], 0)
+        self.assertIsNone(columns["emoji"][4])
+        self.assertEqual(columns["emoji"][5], 0)
+
+    def test_existing_rows_keep_default_emoji_on_upgrade(self) -> None:
+        """Бэкфилл миграции 2: у строк до версии 2 появляется `🚀`."""
+        # Только базовая версия: имитация базы до Poster 2.6.2.
+        run_migrations(self.engine, (MIGRATION_1_0_0_BASELINE,))
+        with self.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "INSERT INTO places (id, created_at) VALUES (5, CURRENT_TIMESTAMP)"
+            )
+        self.assertNotIn(
+            "emoji",
+            {row[1] for row in connect(self.path).execute("PRAGMA table_info(places)")},
+        )
+
+        self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
+        self.assertEqual(
+            scalar(self.path, "SELECT emoji FROM places WHERE id = 5"), ("🚀",)
+        )
+
+    def test_place_brick_descriptions_shape(self) -> None:
+        run_migrations(self.engine)
+        columns = {
+            row[1]: (row[2].upper(), int(row[3]), row[4], int(row[5]))
+            for row in connect(self.path).execute(
+                "PRAGMA table_info(place_brick_descriptions)"
+            )
+        }
+        self.assertEqual(
+            columns,
+            {
+                "id": ("INTEGER", 1, None, 1),
+                "place_id": ("INTEGER", 1, None, 0),
+                "brick_id": ("INTEGER", 1, None, 0),
+                "description": ("TEXT", 1, None, 0),
+                "revision": ("INTEGER", 1, "1", 0),
+                "updated_at": ("DATETIME", 1, None, 0),
+                "updated_by_user_id": ("INTEGER", 0, None, 0),
+            },
+        )
+
+    def test_place_brick_descriptions_constraints(self) -> None:
+        run_migrations(self.engine)
+        connection = sqlite3.connect(self.path)
+        connection.execute("PRAGMA foreign_keys=ON")
+        try:
+            connection.execute(
+                "INSERT INTO users (id, telegram_user_id, created_at) "
+                "VALUES (1, 777001, CURRENT_TIMESTAMP)"
+            )
+            connection.execute(
+                "INSERT INTO places (id, created_at) VALUES (1, CURRENT_TIMESTAMP)"
+            )
+            connection.execute(
+                "INSERT INTO place_brick_descriptions "
+                "(place_id, brick_id, description, updated_at, updated_by_user_id) "
+                "VALUES (1, 1, 'Своё пояснение', CURRENT_TIMESTAMP, 1)"
+            )
+            # Пара (place_id, brick_id) уникальна.
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO place_brick_descriptions "
+                    "(place_id, brick_id, description, updated_at) "
+                    "VALUES (1, 1, 'Дубль', CURRENT_TIMESTAMP)"
+                )
+            # Ссылка на несуществующий кирпичик запрещена FK.
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "INSERT INTO place_brick_descriptions "
+                    "(place_id, brick_id, description, updated_at) "
+                    "VALUES (1, 999, 'Нет кирпичика', CURRENT_TIMESTAMP)"
+                )
+            connection.commit()
+
+            # Удаление места уносит и его локальное описание (CASCADE).
+            connection.execute("DELETE FROM places WHERE id = 1")
+            connection.commit()
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM place_brick_descriptions"
+                ).fetchone()[0],
+                0,
+            )
+        finally:
+            connection.close()
 
 
 # —— сидирование системных кирпичиков ---------------------------------------
@@ -319,7 +437,7 @@ class BaselineSeedTests(_TempDatabase):
         after = bricks(self.path)
         self.assertEqual(len(after), 13)
         self.assertEqual(after, before)
-        self.assertEqual(len(journal(self.path)), 1)
+        self.assertEqual(len(journal(self.path)), 2)
 
     def test_owner_edit_survives_reinit(self) -> None:
         """Правка владельца описания не откатывается повторной инициализацией."""
@@ -403,7 +521,7 @@ class BaselineDataSafetyTests(_TempDatabase):
             ('{"screen": 1}',),
         )
         self.assertEqual(scalar(self.path, "SELECT count(*) FROM bricks"), (13,))
-        self.assertEqual(len(journal(self.path)), 1)
+        self.assertEqual(len(journal(self.path)), 2)
 
 
 # —— несовместимость --------------------------------------------------------
@@ -426,11 +544,11 @@ class BaselineIncompatibilityTests(_TempDatabase):
             connection.close()
 
     def test_future_version_is_incompatible(self) -> None:
-        """Журнал с версией 2 (будущая схема) отвергается, данные целы."""
-        self._insert_journal(2, "future_schema")
+        """Журнал с версией вне списка кода (будущая схема) отвергается."""
+        self._insert_journal(3, "future_schema")
         with self.assertRaises(IncompatibleSchemaError) as caught:
             run_migrations(self.engine)
-        self.assertIn("2", str(caught.exception))
+        self.assertIn("3", str(caught.exception))
         self.assertEqual(scalar(self.path, "SELECT count(*) FROM bricks"), (13,))
 
     def test_gap_in_journal_is_incompatible(self) -> None:
@@ -438,7 +556,7 @@ class BaselineIncompatibilityTests(_TempDatabase):
         self._insert_journal(3, "future_schema")
         with self.assertRaises(IncompatibleSchemaError) as caught:
             run_migrations(self.engine)
-        # Вершина кода — 1, поэтому версия 3 не только разрыв, но и чужая.
+        # Вершина кода — 2, поэтому версия 3 не только разрыв, но и чужая.
         self.assertIn("3", str(caught.exception))
         self.assertIn("неизвестн", str(caught.exception).lower())
 
@@ -474,7 +592,9 @@ class BaselineIncompatibilityTests(_TempDatabase):
         self.assertEqual(
             scalar(str(copies[0]), "SELECT note FROM legacy_marker"), ("было",)
         )
-        self.assertEqual(journal(self.path), [(1, BASELINE_NAME)])
+        self.assertEqual(
+            journal(self.path), [(1, BASELINE_NAME), (2, "place_photos_2_6_2")]
+        )
 
     def test_real_database_is_not_touched(self) -> None:
         """Тесты инициализируют только временный файл, не рабочую базу."""
@@ -544,8 +664,11 @@ class MigrationMechanismInvariantsTests(_TempDatabase):
         self.assertEqual(scalar(self.path, "SELECT note FROM legacy_marker"), ("было",))
 
     def test_applied_version_survives_failed_later_migration(self) -> None:
-        """Версия 1 остаётся зафиксированной, данные целы после сбоя версии 2."""
-        run_migrations(self.engine)
+        """Зафиксированная версия и данные целы после сбоя следующей версии."""
+        # Только базовая версия: сбой будет у следующей (2), а не у уже
+        # применённой. Так инвариант не зависит от реального набора
+        # добавочных версий `DEFAULT_MIGRATIONS`.
+        run_migrations(self.engine, (MIGRATION_1_0_0_BASELINE,))
         connection = connect(self.path)
         try:
             connection.execute(
@@ -609,7 +732,9 @@ class MigrationMechanismInvariantsTests(_TempDatabase):
                 # Любое исключение потока всплывает здесь: все обязаны пройти.
                 future.result()
 
-        self.assertEqual(journal(self.path), [(1, BASELINE_NAME)])
+        self.assertEqual(
+            journal(self.path), [(1, BASELINE_NAME), (2, "place_photos_2_6_2")]
+        )
         self.assertEqual(scalar(self.path, "SELECT count(*) FROM bricks"), (13,))
         self.assertEqual(
             scalar(self.path, "PRAGMA integrity_check"),
@@ -700,7 +825,9 @@ class BaselineReferenceComparisonTests(_TempDatabase):
     def test_sqlite_master_matches_reference(self) -> None:
         reference = json.loads(REF_SCHEMA.read_text(encoding="utf-8"))
         actual = sqlite_master(self.path)
-        self.assertEqual(len(reference), 150)
+        # Poster 2.6.2 (миграция 2): + `place_photos` (3 объекта) и
+        # `place_brick_descriptions` (3 объекта) к эталону 1.0.0.
+        self.assertEqual(len(reference), 156)
         self.assertEqual(set(actual), set(reference))
         for key, expected_sql in reference.items():
             with self.subTest(object=key):
@@ -711,7 +838,9 @@ class BaselineReferenceComparisonTests(_TempDatabase):
         tables = {key for key in actual if key.startswith("table|")}
         indexes = {key for key in actual if key.startswith("index|")}
         triggers = {key for key in actual if key.startswith("trigger|")}
-        self.assertEqual((len(tables), len(indexes), len(triggers)), (32, 73, 45))
+        # Poster 2.6.2 (миграция 2): +2 таблицы и +4 индекса (`place_photos`
+        # и `place_brick_descriptions`).
+        self.assertEqual((len(tables), len(indexes), len(triggers)), (34, 77, 45))
 
     def test_columns_foreign_keys_and_indexes_match_reference(self) -> None:
         reference = json.loads(REF_SEMANTIC.read_text(encoding="utf-8"))

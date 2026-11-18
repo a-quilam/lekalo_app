@@ -77,9 +77,12 @@ DEFAULTS: dict[str, str] = {
         )
     ),
     "menu.outside.photo": (
-        "Фото можно добавить при создании анонса, на шаге «Фотографии». Чтобы начать, нажмите «📝 Создать анонс»."
+        "Фото можно добавить при создании анонса, на шаге «Фотографии». "
+        "Чтобы начать, нажмите «📝 Создать анонс»."
     ),
-    "menu.outside.text": ("Выберите действие в меню. Список команд — /help."),
+    "menu.outside.text": (
+        "Выберите действие в меню. Продолжить работу с последним экраном — «◀️ Назад». Список команд — /help."
+    ),
     "menu.cancel.place": "Выбор места отменён.",
     "menu.cancel.admin": "Действие в разделе администрирования отменено.",
     "menu.cancel.brick": "Работа с кирпичиком отменена. Изменения не сохранены.",
@@ -155,6 +158,23 @@ DEFAULTS: dict[str, str] = {
     "wizard.photos.accepted_many": "✅ Добавлено фото: {count}.",
     "wizard.photos.duplicate": "Это фото уже есть в анонсе. Повторно добавлять его не нужно.",
     "wizard.photos.rejected": "Фото не добавлено: {reason}",
+    # --- 2.6.2 §3.4: «Фото площадки» на шаге фото --------------------------
+    "wizard.photos.library_hint": (
+        "В фототеке площадки снимков: {count}. Выбрано из неё: {picked}."
+    ),
+    "wizard.photo_library.title": "📷 Фото площадки",
+    "wizard.photo_library.hint": (
+        "Выбрано из фототеки: {picked} из {total}. "
+        "Нажмите номер, чтобы выбрать или снять снимок. "
+        "Всего в анонсе может быть не больше {limit} фото."
+    ),
+    "wizard.photo_library.limit": (
+        "В анонсе уже {limit} фото — больше добавить нельзя. "
+        "Снимите лишнее фото, чтобы выбрать другое."
+    ),
+    "wizard.photo_library.pustaya": ("В фототеке этой площадки пока нет снимков."),
+    "wizard.photo_library.snyato": "Снимок {number} снят с анонса.",
+    "wizard.photo_library.vybrano": "Снимок {number} выбран для анонса.",
     # --- конструктор: текстовые поля доставленного анонса (§5, 2.5.3) -------
     # Список полей живёт на самом управлении (клавиатура анонса/панель),
     # поэтому тело — только заголовок и одна подсказка, без перечня полей.
@@ -504,6 +524,72 @@ DEFAULTS: dict[str, str] = {
     "admin.brick_list.mesto_line": "Место: {place}.",
     "admin.brick_list.net_kirpichikov": "Кирпичиков пока нет.",
     "admin.brick_list.sistema_line": "Системные кирпичики: общий каталог.",
+    # Poster 2.6.2 §3.1–3.2: каталог системных кирпичиков глазами площадки.
+    # Меняется только описание, действующее для автора анонса этого места.
+    "admin.place_brick_card.istochnik_katalog": "общее описание каталога",
+    "admin.place_brick_card.istochnik_mesto": "своё описание площадки",
+    "admin.place_brick_card.kartochka_html": (
+        "🧩 <b>{title}</b>\n\n"
+        "Код: <code>[{code}]</code>\n"
+        "Описание для площадки: {description_block}\n"
+        "Источник: {source_label}\n\n"
+        "Меняется только описание — подсказка автору анонса. Название, код и "
+        "тип кирпичика остаются прежними."
+    ),
+    "admin.place_brick_input.arhivnyy_kirpichik": (
+        "Кирпичик в архиве: описание для площадки не меняется."
+    ),
+    "admin.place_brick_input.ne_udalos_sohranit": (
+        "Не удалось сохранить описание. Попробуйте ещё раз."
+    ),
+    "admin.place_brick_input.opisanie_html": (
+        "✏️ Своё описание кирпичика <code>[{code}]</code>\n\n"
+        "Отправьте текст описания для этой площадки. Пустой текст вернёт "
+        "общее описание каталога."
+    ),
+    "admin.place_bricks.net_kirpichikov": "Системных кирпичиков нет.",
+    "admin.place_bricks.spisok_html": (
+        "🧩 <b>Системные кирпичики</b>\n\n📍 {place}\n\n"
+        "Выберите кирпичик: своё описание площадки заменяет общее для автора "
+        "анонса. Название, код и тип кирпичика не меняются."
+    ),
+    "admin.place_bricks.svoe_opisanie": " · своё описание",
+    # --- 2.6.2 §3.3: фототека площадки -------------------------------------
+    "admin.place_photos.dobavleno": "✅ Добавлено фото: {count}.",
+    "admin.place_photos.foto_nedostupno": (
+        "Этот снимок уже удалён из фототеки площадки."
+    ),
+    "admin.place_photos.ne_udalos_sohranit": (
+        "Не удалось сохранить снимок. Попробуйте ещё раз."
+    ),
+    "admin.place_photos.net_foto": "В фототеке площадки пока нет снимков.",
+    "admin.place_photos.obyasnenie_html": (
+        "📷 <b>Приложить файлы</b>\n\n"
+        "Пришлите фотографии или файлы-изображения (JPEG, PNG, WebP) — "
+        "по одному или альбомом. Размер одного файла — до {limit_mb} МБ.\n\n"
+        "Изображения сохраняются ссылкой Telegram: повторная отправка не "
+        "занимает место. Другие файлы не принимаются.\n\n"
+        "Удалить снимок можно в списке фототеки — с подтверждением."
+    ),
+    "admin.place_photos.spisok_html": (
+        "📷 <b>Фото площадки</b>\n\n📍 {place}\n\n"
+        "Снимков в фототеке: {count}. Выберите номер, чтобы удалить снимок. "
+        "Эти фото доступны автору анонса на шаге «Фотографии»."
+    ),
+    "admin.place_photos.udalit_foto_podtverzhdenie_html": (
+        "🗑 <b>Удалить снимок {number}?</b>\n\n"
+        "Снимок исчезнет из фототеки площадки. Уже добавленные в анонсы "
+        "фотографии останутся на месте."
+    ),
+    "admin.place_photos.uzhe_v_biblioteke": (
+        "Этот снимок уже есть в фототеке площадки."
+    ),
+    # --- 2.6.2 §5.2: редактор эмодзи площадки ------------------------------
+    "admin.place_emoji.title": (
+        "🎨 <b>Эмодзи площадки</b>\n\n📍 {emoji} {canonical_name}\n\n"
+        "Выберите эмодзи: он показывается рядом с названием площадки "
+        "в карточках и списках."
+    ),
     "admin.build.izmenenie_adresa_tekuschiy_adres": (
         "🏠 Изменить адрес\n\n📍 {canonical_name}\n"
         "Текущий адрес: {current}\n\n"
@@ -768,7 +854,7 @@ DEFAULTS: dict[str, str] = {
         "\nДля кого: {proposal_target_label}.\n"
         "Создан отдельный кирпичик. Ваш личный кирпичик и шаблоны остались прежними."
     ),
-    "admin.place.mesto": "🛡 Место\n\n📍 {canonical_name}",
+    "admin.place.mesto": "🛡 Место\n\n{emoji} {canonical_name}",
     "admin.places.deystvuyuschih_naznacheniy_poka": "Пока нет назначенных администраторов.",
     "admin.places.moi_mesta": "🛡 Мои места",
     "admin.places.ne_naznachen": "не назначен",
@@ -1133,10 +1219,16 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.da_otklonit": "❌ Да, отклонить",
     "buttons.admin.da_pereklyuchit": "✅ Да, переключить",
     "buttons.admin.dobavit_nazvanie": "➕ Добавить название",
+    "buttons.admin.da_udalit_foto": "🗑 Да, удалить снимок",
+    "buttons.admin.foto_nomer": "🗑 Снимок {number}",
+    "buttons.admin.foto_ploschadki": "📷 Фото площадки",
+    "buttons.admin.prilozhit_fayly": "📷 Приложить файлы",
     "buttons.admin.glavnoe_menyu": "🏠 В меню",
     "buttons.admin.globalnye_predlozheniya": "🌍 Глобальные предложения ({system_pending})",
     "buttons.admin.izmenit_gorod": "🏙 Изменить город",
     "buttons.admin.izmenit_nazvanie": "🏷 Изменить название",
+    "buttons.admin.izmenit_emodzi": "🎨 Изменить эмодзи",
+    "buttons.admin.sluchaynyy_emodzi": "🎲 Случайный эмодзи",
     "buttons.admin.kirpichiki": "🧩 Кирпичики",
     "buttons.admin.k_konfliktam": "◀️ К конфликтам",
     "buttons.admin.k_ocheredi": "◀️ К очереди",
@@ -1162,6 +1254,9 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.predlozheniya_mestam": "📍 Предложения по местам ({places_pending})",
     "buttons.admin.redaktirovat_mesto": "✏️ Редактировать место",
     "buttons.admin.snyat_administratora": "🚫 Снять администратора",
+    "buttons.admin.vernut_obshee_opisanie": "↩️ Общее описание",
+    "buttons.admin.sistemnye_kirpichiki": "🧩 Системные кирпичики",
+    "buttons.admin.svoi_opisanie": "✏️ Своё описание",
     "buttons.admin.sozdat_kirpichik": "➕ Создать кирпичик",
     "buttons.admin.sozdat_predlozhenie": "✅ Создать предложение",
     "buttons.admin.sozdat_ssylku_priglashenie": "🔗 Создать ссылку-приглашение",
@@ -1214,6 +1309,7 @@ DEFAULTS: dict[str, str] = {
     "buttons.places.vernutsya_spisku": "◀️ Вернуться к списку",
     "buttons.places.vybrat_alternativnoe_nazvanie": "🔤 Выбрать альтернативное название",
     "buttons.places.ya_admin_mesta": "🛡 Я администратор места",
+    "buttons.places.public_invite": "📝 Создать анонс по этой площадке",
     "buttons.templates.ispravit": "✏️ Исправить",
     "buttons.templates.ispravit_tekst": "✏️ Исправить текст",
     "buttons.templates.izmenit_nazvanie": "✏️ Изменить название",
@@ -1245,6 +1341,8 @@ DEFAULTS: dict[str, str] = {
     "buttons.wizard.da_udalit_vse": "🗑 Да, удалить все",
     "buttons.wizard.dopolnitelnye_kirpichiki": "➕ Дополнительные поля",
     "buttons.wizard.fotografii": "📷 Фотографии ({count_photos})",
+    "buttons.wizard.foto_ploschadki": "📷 Фото площадки ({count})",
+    "buttons.wizard.foto_vybor": "{mark} Снимок {number}",
     "buttons.wizard.gotovo": "✅ Готово",
     "buttons.wizard.izmenit_polya": "✏️ Изменить поля",
     "buttons.wizard.izmenit_zapros": "🔎 Изменить запрос",
@@ -1305,6 +1403,7 @@ DEFAULTS: dict[str, str] = {
     "places.handle_save_candidate.vvedennoe_nazvanie_sohraneno": "Введённое название сохранено как альтернативное.",
     "places.manage_card.alternativnye_nazvaniya": "Альтернативные названия: {count_alternatives}",
     "places.manage_card.eto_prosmotr_spravochnika": "Здесь можно посмотреть данные места. Изменять их могут администратор места и суперадминистратор Poster.",
+    "places.public.invite_title": "Создать анонс для этой площадки:",
     "places.names.kanonicheskoe": "основное",
     "places.names.nazvaniya_mesta": "🔤 Названия места\n\n📍 {canonical_name}\n\n",
     "places.names.vybrano": "выбрано",
@@ -1455,7 +1554,11 @@ DEFAULTS: dict[str, str] = {
     # Пример §7.5: ровно тот синтаксис, который понимает template_parser.
     "templates.help.example": "**[название]**\n\n[дата], [время_начала]\n\n[описание]",
     "templates.help.formats": (
-        "Жирный: **текст**. Курсив: *текст*. Ссылка: Текст(https://example.com)."
+        "Жирный: **текст**. Курсив: *текст*. Ссылка: {фраза}(ссылка) или "
+        "Текст(https://example.com). Звёздочки, фигурные и круглые скобки — "
+        "техническая структура шаблона; чтобы показать такой символ буквально, "
+        "поставьте перед ним обратный слэш: \\*, \\{. Жирный, курсив и ссылки, "
+        "отправленные из Telegram, сохраняются."
     ),
     "templates.help.intro": (
         "Напишите анонс так, как он должен выглядеть. Вместо информации, "

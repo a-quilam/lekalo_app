@@ -108,8 +108,11 @@ class BaselineConditionalPartsTests(unittest.TestCase):
 
     def test_fresh_install_has_conditional_parts_table(self) -> None:
         self.assertEqual(self.migrate(), LATEST_VERSION)
-        self.assertEqual(LATEST_VERSION, 1)
-        self.assertEqual(_journal(self.path), [(1, "baseline_1_0_0")])
+        # Poster 2.6.2: базовая версия 1.0.0 + добавочная миграция 2.
+        self.assertEqual(LATEST_VERSION, 2)
+        self.assertEqual(
+            _journal(self.path), [(1, "baseline_1_0_0"), (2, "place_photos_2_6_2")]
+        )
         columns = {
             str(row[1]): (str(row[2]).upper(), int(row[3]), row[4])
             for row in _sql(self.path, "PRAGMA table_info(template_conditional_parts)")

@@ -1122,10 +1122,11 @@ class SystemBrickHintsBaselineTests(unittest.TestCase):
         return {str(code): description for code, description in rows}
 
     def test_latest_version_is_baseline(self) -> None:
-        self.assertEqual(LATEST_VERSION, 1)
+        # Poster 2.6.2: базовая версия 1.0.0 + добавочная миграция 2.
+        self.assertEqual(LATEST_VERSION, 2)
         self.assertEqual(
             [(migration.version, migration.name) for migration in DEFAULT_MIGRATIONS],
-            [(1, "baseline_1_0_0")],
+            [(1, "baseline_1_0_0"), (2, "place_photos_2_6_2")],
         )
         self.assertEqual(run_migrations(self.engine), LATEST_VERSION)
 

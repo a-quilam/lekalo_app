@@ -1189,8 +1189,9 @@ class ConflictMigrationTests(unittest.TestCase):
 
     def test_latest_version_is_baseline(self) -> None:
         # Вся схема, включая таблицы конфликтов R3, входит в базовую версию
-        # 1.0.0: отдельных накопительных миграций больше нет.
-        self.assertEqual(LATEST_VERSION, 1)
+        # 1.0.0; Poster 2.6.2 добавил добавочную версию 2 (фото, эмодзи,
+        # локальные описания кирпичиков).
+        self.assertEqual(LATEST_VERSION, 2)
 
     def test_filled_database_keeps_data_and_tables(self) -> None:
         from sqlalchemy import text

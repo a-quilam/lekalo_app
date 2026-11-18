@@ -62,6 +62,7 @@ try:
     import handlers.templates as templates_module
     import handlers.user_tracking as user_tracking_module
     import handlers.wizard_live as wizard_live_module
+    import handlers.wizard_photos as wizard_photos_module
     import place_state as place_state_module
     import template_state as template_state_module
     import utils.parsers as parsers_module
@@ -205,6 +206,25 @@ class FakeBot:
             is_bot=True,
             first_name=self.first_name,
             username=self.username,
+        )
+
+    async def get_file(self, file_id: str, *args: Any, **kwargs: Any) -> Any:
+        """
+        Метаданные файла без сети (Poster 2.6.2 §3.3).
+
+        Продукт фототеки НЕ скачивает вложения: ему достаточно `file_id`,
+        который уже есть в Update. Заглушка нужна, чтобы код, проверяющий
+        метаданные через Bot API, не ходил в настоящий Telegram, и чтобы
+        тесты видели сам факт запроса. `file_path` синтетический — тесты не
+        читают файл.
+        """
+        record = self._record("get_file", (file_id,), kwargs)
+        self.call_message_ids.setdefault(id(record), ())
+        return SimpleNamespace(
+            file_id=file_id,
+            file_unique_id=f"u_{file_id}",
+            file_size=None,
+            file_path=f"photos/{file_id}.jpg",
         )
 
     # —— методы, которые реально зовут обработчики ——
@@ -543,7 +563,45 @@ def make_photo_update(
     return Update(update_id=update_id, message=message)
 
 
-# Ключи записей ПРЯМЫХ send_message из send_post (и его частей): ровно
+def make_document_update(
+    file_id: str,
+    *,
+    mime_type: str = "image/jpeg",
+    file_size: int | None = None,
+    file_unique_id: str | None = None,
+    media_group_id: str | None = None,
+    caption: str | None = None,
+    chat_id: int = DEFAULT_CHAT_ID,
+    user_id: int = DEFAULT_USER_ID,
+    update_id: int = 3,
+    message_id: int = 3,
+    chat_type: str = "private",
+) -> Update:
+    """
+    Сообщение-файл (Poster 2.6.2 §3.3): изображение-документ или не-картинка.
+
+    Продукт фототеки принимает `document` только с `image/*` MIME и без
+    бинарных копий — файл читается из `Document`, а не скачивается. Поэтому
+    тесту достаточно метаданных: `mime_type`, `file_size`, `file_id`.
+    """
+    document = Document(
+        file_id=file_id,
+        file_unique_id=file_unique_id if file_unique_id is not None else f"u_{file_id}",
+        mime_type=mime_type,
+        file_size=file_size,
+    )
+    message = Message(
+        message_id=message_id,
+        date=FIXTURE_DATE,
+        chat=Chat(id=chat_id, type=chat_type),
+        from_user=User(id=user_id, first_name="Тест", is_bot=False),
+        document=document,
+        media_group_id=media_group_id,
+        caption=caption,
+    )
+    return Update(update_id=update_id, message=message)
+
+
 # chat_id/text/parse_mode/link_preview_options[/reply_markup], без «лишних»
 # параметров. Ответы бота на сообщения пользователя (Message.reply_text)
 # всегда передают полный пакет параметров (reply_parameters, entities,
@@ -730,6 +788,7 @@ class Harness:
             place_invite_module.SessionLocal,
             report_module.SessionLocal,
             catalogs_module.SessionLocal,
+            wizard_photos_module.SessionLocal,
         )
         screen_module.SessionLocal = self.session_factory
         places_module.SessionLocal = self.session_factory
@@ -748,6 +807,9 @@ class Harness:
         place_invite_module.SessionLocal = self.session_factory
         report_module.SessionLocal = self.session_factory
         catalogs_module.SessionLocal = self.session_factory
+        # Poster 2.6.2 §3.4: шаг фото читает фототеку площадки собственной
+        # сессией — без подмены он обращался бы к рабочей базе.
+        wizard_photos_module.SessionLocal = self.session_factory
 
         # Уведомления об ошибках троттлятся по (chat_id, time.monotonic) —
         # без сброса тесты «повторно заметили бы» чужие уведомления
@@ -816,6 +878,7 @@ class Harness:
         place_invite_module.SessionLocal = self._orig_session_local[14]
         report_module.SessionLocal = self._orig_session_local[15]
         catalogs_module.SessionLocal = self._orig_session_local[16]
+        wizard_photos_module.SessionLocal = self._orig_session_local[17]
         errors_module._last_error_notice.clear()
         errors_module._last_error_notice.update(self._orig_error_notice)
         self.engine.dispose()
@@ -931,6 +994,35 @@ class Harness:
         return await self.feed(
             make_photo_update(
                 file_id,
+                media_group_id=media_group_id,
+                caption=caption,
+                chat_id=chat_id if chat_id is not None else self.chat_id,
+                user_id=user_id if user_id is not None else self.user_id,
+                update_id=self._update_seq,
+                message_id=self._next_user_msg_id(),
+            )
+        )
+
+    async def document(
+        self,
+        file_id: str,
+        *,
+        mime_type: str = "image/jpeg",
+        file_size: int | None = None,
+        file_unique_id: str | None = None,
+        media_group_id: str | None = None,
+        caption: str | None = None,
+        chat_id: int | None = None,
+        user_id: int | None = None,
+    ) -> Update:
+        """Сообщение-файл: изображение-документ или не-картинка (§3.3)."""
+        self._update_seq += 1
+        return await self.feed(
+            make_document_update(
+                file_id,
+                mime_type=mime_type,
+                file_size=file_size,
+                file_unique_id=file_unique_id,
                 media_group_id=media_group_id,
                 caption=caption,
                 chat_id=chat_id if chat_id is not None else self.chat_id,

@@ -71,6 +71,7 @@ from models import (
     BrickProposal,
     Place,
     PlaceAdmin,
+    PlaceBrickDescription,
     PlaceName,
     Template,
     TemplateSnapshotBrick,
@@ -1312,6 +1313,11 @@ _BRICK_REFERENCE_COLUMNS: tuple[tuple[type[Any], InstrumentedAttribute[Any]], ..
     (BrickProposal, BrickProposal.approved_brick_id),
     (BrickConflict, BrickConflict.system_brick_id),
     (BrickConflict, BrickConflict.local_brick_id),
+    # Poster 2.6.2 §3.2: локальное описание площадки тоже ссылается на
+    # кирпичик (`ON DELETE RESTRICT`). Без этой строки проверка «кирпичик
+    # используется» не видела переопределение, и удаление упиралось в
+    # ограничение БД вместо понятного `in_use`.
+    (PlaceBrickDescription, PlaceBrickDescription.brick_id),
 )
 
 

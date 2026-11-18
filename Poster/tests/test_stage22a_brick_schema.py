@@ -76,7 +76,9 @@ class BrickSchemaTests(BrickDatabaseTestCase):
             )
 
     def test_migrations_seed_exactly_thirteen_stable_system_bricks(self) -> None:
-        self.assertEqual(self.journal(), [(1, "baseline_1_0_0")])
+        self.assertEqual(
+            self.journal(), [(1, "baseline_1_0_0"), (2, "place_photos_2_6_2")]
+        )
         # Каталог и БД обязаны совпадать по коду и порядку: базовая версия
         # 1.0.0 сидирует ровно тринадцать системных кирпичиков.
         definitions = list_system_bricks(self.session)
