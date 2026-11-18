@@ -173,6 +173,16 @@ from place_edit_store import (
     set_place_city,
     set_place_url,
 )
+from place_photo_store import (
+    PLACE_PHOTO_MAX_BYTES,
+    PhotoCandidate,
+    PlacePhotoNotFoundError,
+    PlacePhotoPermissionError,
+    add_place_photos,
+    delete_place_photo,
+    list_place_photos,
+    place_photo_view,
+)
 from place_state import clear_place_session
 from place_store import (
     PlaceDetails,
@@ -250,6 +260,10 @@ PHASES = {
     "place_brick_list",
     "place_brick_card",
     "place_brick_description_input",
+    # Poster 2.6.2 §3.3: фототека площадки — объяснение, список, удаление.
+    "place_photo_intro",
+    "place_photo_list",
+    "place_photo_delete_confirm",
     # Poster 2.4.1 T2: ссылка для создания анонса — экран полной карточки.
     "invite",
     # Poster 2.5 A3: служебный подраздел управления администратором места.
@@ -1376,6 +1390,153 @@ def _place_bricks_content(
     return _place_brick_card_content(session, state)
 
 
+# --- Фототека площадки (Poster 2.6.2 §3.3) ---------------------------------
+
+
+def _place_photo_place_id(state: dict) -> int | None:
+    """Место фототеки из состояния: чужая подмена id сюда не проходит."""
+    place_id = state.get("photo_place_id")
+    if not isinstance(place_id, int) or isinstance(place_id, bool):
+        return None
+    return place_id
+
+
+def _place_photo_list_content(
+    session: Session,
+    state: dict,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """
+    «📷 Фото площадки»: библиотека снимков ЭТОЙ площадки.
+
+    Порядок — порядок добавления (`place_photo_store.list_place_photos`), он
+    стабилен между открытиями: номер строки не меняется от повторного входа.
+    Пять снимков на страницу — общий механизм `utils.pagination`.
+    """
+    place_id = _place_photo_place_id(state)
+    if place_id is None:
+        raise PlacePhotoNotFoundError("Площадка не выбрана.")
+    place_name = get_place_name_for_display(session, place_id)
+    photos = list_place_photos(session, place_id)
+    offset = _clamp_offset(
+        _page_value(state, "place_photo_page"), len(photos), pagination.PAGE_SIZE
+    )
+    state["place_photo_page"] = offset
+    page_photos = photos[offset : offset + pagination.PAGE_SIZE]
+
+    text = tr_safe(
+        "admin.place_photos.spisok_html",
+        place=_h(place_name or tr("admin.brick_card.mesto_bez_nazvaniya")),
+        count=len(photos),
+    )
+    rows: list[list[InlineKeyboardButton]] = []
+    for number, photo in enumerate(page_photos, start=offset + 1):
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tr("buttons.admin.foto_nomer", number=number),
+                    callback_data=f"adm_pfoto_del:{photo.photo_id}",
+                )
+            ]
+        )
+    if not photos:
+        text += "\n\n" + tr("admin.place_photos.net_foto")
+    nav = pagination.nav_keyboard_for_offset(offset, len(photos), "adm_pfotos_page")
+    if nav:
+        rows.append(nav)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                tr("buttons.admin.prilozhit_fayly"),
+                callback_data="adm_pfoto_upload",
+            )
+        ]
+    )
+    rows.append(
+        [InlineKeyboardButton(tr("buttons.nav.back"), callback_data="adm_pfoto_back")]
+    )
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _place_photo_intro_content(
+    session: Session,
+    state: dict,
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Экран объяснения: что можно загружать, лимит и как удалить."""
+    place_id = _place_photo_place_id(state)
+    if place_id is None:
+        raise PlacePhotoNotFoundError("Площадка не выбрана.")
+    text = tr_safe(
+        "admin.place_photos.obyasnenie_html",
+        limit_mb=PLACE_PHOTO_MAX_BYTES // (1024 * 1024),
+    )
+    # Вперёд кнопки нет: следующий шаг — обычное сообщение с файлом, о чём и
+    # говорит текст. «Назад» возвращает к списку, ничего не меняя.
+    rows = [
+        [InlineKeyboardButton(tr("buttons.nav.back"), callback_data="adm_pfoto_back")],
+    ]
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _place_photo_delete_confirm_content(
+    session: Session,
+    state: dict,
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    """
+    Подтверждение удаления снимка.
+
+    `None` — снимок уже удалён или принадлежит другой площадке: вызывающий
+    слой возвращает список с плашкой, а не чужое подтверждение.
+    """
+    place_id = _place_photo_place_id(state)
+    if place_id is None:
+        return None
+    photo_id = state.get("place_photo_id")
+    view = place_photo_view(session, place_id, photo_id)
+    if view is None:
+        return None
+    photos = list_place_photos(session, place_id)
+    number = next(
+        (
+            index
+            for index, item in enumerate(photos, start=1)
+            if item.photo_id == view.photo_id
+        ),
+        0,
+    )
+    text = tr("admin.place_photos.udalit_foto_podtverzhdenie_html", number=number)
+    rows = [
+        [
+            InlineKeyboardButton(
+                tr("buttons.admin.da_udalit_foto"),
+                callback_data=f"adm_pfoto_del_yes:{view.photo_id}",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                tr("buttons.admin.otmena_2"),
+                callback_data="adm_pfoto_back",
+            )
+        ],
+    ]
+    return text, InlineKeyboardMarkup(rows)
+
+
+def _place_photos_content(
+    session: Session, state: dict, phase: str
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    """
+    Экран фазы «Фото площадки».
+
+    `None` — снимок больше не принадлежит площадке: вызывающий слой
+    возвращает список библиотеки с плашкой.
+    """
+    if phase == "place_photo_intro":
+        return _place_photo_intro_content(session, state)
+    if phase == "place_photo_delete_confirm":
+        return _place_photo_delete_confirm_content(session, state)
+    return _place_photo_list_content(session, state)
+
+
 def _places_content(
     session: Session,
     state: dict,
@@ -2071,6 +2232,17 @@ def _place_keyboard(
                 InlineKeyboardButton(
                     tr("buttons.admin.sistemnye_kirpichiki"),
                     callback_data=f"adm_pbricks:{details.place_id}",
+                )
+            ]
+        )
+        # Poster 2.6.2 §3.3: фототека площадки — отдельная строка в блоке
+        # действий места. Раскладка не меняется: одна кнопка в строке, а
+        # навигация и последние административные строки остаются на месте.
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    tr("buttons.admin.foto_ploschadki"),
+                    callback_data=f"adm_pfotos:{details.place_id}",
                 )
             ]
         )
@@ -3863,6 +4035,46 @@ async def _render_phase(
                     )
                 else:
                     text, keyboard = place_brick_screen
+        elif phase in {
+            "place_photo_intro",
+            "place_photo_list",
+            "place_photo_delete_confirm",
+        }:
+            # Poster 2.6.2 §3.3: фототека площадки. Права проверяются по
+            # фактической строке `place_admins` при КАЖДОЙ отрисовке, а не
+            # по факту прихода в экран.
+            photo_place_id = _place_photo_place_id(state)
+            managed = photo_place_id is not None and can_manage_place(
+                session, user_id, photo_place_id
+            )
+            if not managed:
+                state.clear()
+                state.update(_new_state())
+                notice = notice or tr(
+                    "admin.render_phase.dostup_etomu_mestu_podtverzhden"
+                )
+                text, keyboard = _places_content(session, state, access_kind, user_id)
+            else:
+                # `None` — снимок удалён/подменён или принадлежит другой
+                # площадке: возвращаем список библиотеки с плашкой.
+                photo_screen = _place_photos_content(session, state, phase)
+                if photo_screen is None:
+                    state.pop("place_photo_id", None)
+                    state["phase"] = "place_photo_list"
+                    notice = notice or tr("admin.place_photos.foto_nedostupno")
+                    photo_screen = _place_photos_content(
+                        session, state, "place_photo_list"
+                    )
+                if photo_screen is None:
+                    # Список библиотеки не собрался (площадка исчезла):
+                    # безопасный родитель — карточка моих мест.
+                    state.clear()
+                    state.update(_new_state())
+                    text, keyboard = _places_content(
+                        session, state, access_kind, user_id
+                    )
+                else:
+                    text, keyboard = photo_screen
         else:  # confirm_*
             if details is None:
                 state.clear()
@@ -4159,6 +4371,8 @@ async def handle_open_place(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # кирпичиков площадки. Без этой фазы рабочий возврат отвечал бы
         # «Кнопка устарела».
         "place_brick_list",
+        # Poster 2.6.2 §3.3: возврат из фототеки площадки в её карточку.
+        "place_photo_list",
     }:
         await _stale(update)
         return
@@ -4200,6 +4414,10 @@ async def handle_open_place(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # открывался бы на «запомненной» странице другого места.
     state.pop("place_brick_page", None)
     state.pop("place_brick_id", None)
+    # Poster 2.6.2 §3.3: то же для фототеки — страница и выбранный снимок.
+    state.pop("photo_place_id", None)
+    state.pop("place_photo_page", None)
+    state.pop("place_photo_id", None)
     await _render_phase(update, context, state)
 
 
@@ -6281,6 +6499,16 @@ class AdminTextHandler(MessageHandler):
         return matched
 
 
+class AdminAttachmentHandler(AdminTextHandler):
+    """
+    Вложения (фото/файл) принимаются только в явных фазах кабинета.
+
+    Poster 2.6.2 §3.3: фототека площадки принимает снимки обычным сообщением.
+    Без проверки фазы обработчик съедал бы фото в других сценариях (главное
+    меню, «Места»), где подсказку даёт их собственный обработчик.
+    """
+
+
 # --- Предложения кирпичиков: очереди и решения (Stage 26) ------------------
 
 
@@ -7424,6 +7652,363 @@ async def handle_place_brick_back(
     await _render_phase(update, context, state)
 
 
+# --- Фототека площадки: обработчики (Poster 2.6.2 §3.3) --------------------
+
+
+async def _answer_place_photo_denied(update: Update, *, exists: bool) -> None:
+    """Плашка отказа на экранах фототеки: нет места или нет прав."""
+    text = DENIED_ALERT if exists else tr("alerts.admin.mesto_suschestvuet_udaleno")
+    await ctx.query(update).answer(text, show_alert=True)
+
+
+async def _place_photo_access(user_id: int, place_id: int) -> tuple[bool, bool]:
+    """(права управлять, место существует и доступно карточке)."""
+    session = SessionLocal()
+    try:
+        allowed = can_manage_place(session, user_id, place_id)
+        available = get_place_details(session, place_id) is not None
+    finally:
+        session.close()
+    return allowed, available
+
+
+async def handle_place_photos_open(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    `adm_pfotos[:<place_id>]` и `adm_pfotos_page:<offset>`.
+
+    Один обработчик на вход и пагинацию: место и смещение берутся из
+    доверенного `admin_sessions`, а права перепроверяются по фактическим
+    строкам БД. Подделанный `place_id` чужой площадки получает отказ.
+    """
+    query = ctx.query(update)
+    data = str(query.data or "")
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {
+        "place",
+        "place_photo_intro",
+        "place_photo_list",
+        "place_photo_delete_confirm",
+    }:
+        await _stale(update)
+        return
+
+    if data.startswith("adm_pfotos_page:"):
+        place_id = state.get("photo_place_id")
+        offset = _brick_callback_id(data)
+        if (
+            offset is None
+            or not isinstance(place_id, int)
+            or isinstance(place_id, bool)
+        ):
+            await _stale(update)
+            return
+        allowed, available = await _place_photo_access(user_id, place_id)
+        if not available or not allowed:
+            await _answer_place_photo_denied(update, exists=available)
+            return
+        await query.answer()
+        state["phase"] = "place_photo_list"
+        state["place_photo_page"] = offset
+        state.pop("place_photo_id", None)
+        await _render_phase(update, context, state)
+        return
+
+    place_id = _brick_callback_id(data)
+    if place_id is None:
+        # `adm_pfotos` без id — вход из карточки места: место уже выбрано.
+        place_id = state.get("place_id")
+    if not isinstance(place_id, int) or isinstance(place_id, bool):
+        await _stale(update)
+        return
+    allowed, available = await _place_photo_access(user_id, place_id)
+    if not available:
+        await query.answer(
+            tr("alerts.admin.mesto_suschestvuet_udaleno"), show_alert=True
+        )
+        return
+    if not allowed:
+        await query.answer(DENIED_ALERT, show_alert=True)
+        return
+    await query.answer()
+    state["phase"] = "place_photo_list"
+    state["photo_place_id"] = place_id
+    state["place_id"] = place_id
+    state["place_photo_page"] = 0
+    state.pop("place_photo_id", None)
+    await _render_phase(update, context, state)
+
+
+async def handle_place_photo_upload_intro(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«📷 Приложить файлы»: экран объяснения перед загрузкой."""
+    query = ctx.query(update)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {
+        "place_photo_intro",
+        "place_photo_list",
+    }:
+        await _stale(update)
+        return
+    place_id = _place_photo_place_id(state)
+    if place_id is None:
+        await _stale(update)
+        return
+    allowed, available = await _place_photo_access(user_id, place_id)
+    if not available or not allowed:
+        await _answer_place_photo_denied(update, exists=available)
+        return
+    await query.answer()
+    state["phase"] = "place_photo_intro"
+    await _render_phase(update, context, state)
+
+
+async def handle_place_photo_delete_request(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """`adm_pfoto_del:<photo_id>`: подтверждение удаления снимка."""
+    query = ctx.query(update)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") != "place_photo_list":
+        await _stale(update)
+        return
+    photo_id = _brick_callback_id(str(query.data or ""))
+    place_id = _place_photo_place_id(state)
+    if photo_id is None or place_id is None:
+        await _stale(update)
+        return
+    allowed, available = await _place_photo_access(user_id, place_id)
+    if not available or not allowed:
+        await _answer_place_photo_denied(update, exists=available)
+        return
+    with SessionLocal() as session:
+        view = place_photo_view(session, place_id, photo_id)
+    if view is None:
+        await query.answer(tr("admin.place_photos.foto_nedostupno"), show_alert=True)
+        return
+    await query.answer()
+    state["phase"] = "place_photo_delete_confirm"
+    state["place_photo_id"] = photo_id
+    await _render_phase(update, context, state)
+
+
+async def handle_place_photo_delete_confirm(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """`adm_pfoto_del_yes:<photo_id>`: удаляет снимок только этой площадки."""
+    query = ctx.query(update)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {
+        "place_photo_delete_confirm",
+        "place_photo_list",
+    }:
+        await _stale(update)
+        return
+    photo_id = _brick_callback_id(str(query.data or ""))
+    place_id = _place_photo_place_id(state)
+    if photo_id is None or place_id is None:
+        await _stale(update)
+        return
+    await query.answer()
+    session = SessionLocal()
+    try:
+        try:
+            result = delete_place_photo(
+                session,
+                actor_telegram_user_id=user_id,
+                place_id=place_id,
+                photo_id=photo_id,
+            )
+        except PlacePhotoPermissionError as exc:
+            session.rollback()
+            await query.answer(str(exc), show_alert=True)
+            return
+        except PlacePhotoNotFoundError:
+            session.rollback()
+            state.pop("place_photo_id", None)
+            state["phase"] = "place_photo_list"
+            await _render_phase(
+                update,
+                context,
+                state,
+                notice=tr("admin.place_photos.foto_nedostupno"),
+            )
+            return
+    finally:
+        session.close()
+    state.pop("place_photo_id", None)
+    state["phase"] = "place_photo_list"
+    await _render_phase(update, context, state, notice=result.message)
+
+
+async def handle_place_photo_back(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """«◀️ Назад»: список → карточка места, объяснение/удаление → список."""
+    query = ctx.query(update)
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {
+        "place_photo_intro",
+        "place_photo_list",
+        "place_photo_delete_confirm",
+    }:
+        await _stale(update)
+        return
+    await query.answer()
+    place_id = _place_photo_place_id(state)
+    if state.get("phase") == "place_photo_list":
+        state.pop("place_photo_page", None)
+        state.pop("place_photo_id", None)
+        state.pop("photo_place_id", None)
+        if place_id is not None:
+            state["phase"] = "place"
+            state["place_id"] = place_id
+        else:
+            state.clear()
+            state.update(_new_state())
+    else:
+        state.pop("place_photo_id", None)
+        state["phase"] = "place_photo_list"
+    await _render_phase(update, context, state)
+
+
+def _photo_candidates(message: object) -> list[PhotoCandidate]:
+    """
+    Кандидаты из сообщения: сжатое фото (последний размер) или документ.
+
+    Для альбома Telegram присылает каждое вложение отдельным Update с общим
+    `media_group_id`, поэтому один Update даёт ровно одного кандидата, а
+    альбом сохраняется последовательностью вызовов без дублей.
+    """
+    photo = getattr(message, "photo", None)
+    if photo:
+        best = photo[-1]
+        return [
+            PhotoCandidate(
+                file_id=str(best.file_id),
+                file_unique_id=str(best.file_unique_id),
+                kind="photo",
+                file_size=getattr(best, "file_size", None),
+            )
+        ]
+    document = getattr(message, "document", None)
+    if document is not None:
+        return [
+            PhotoCandidate(
+                file_id=str(document.file_id),
+                file_unique_id=str(document.file_unique_id),
+                kind="document",
+                mime_type=getattr(document, "mime_type", None),
+                file_size=getattr(document, "file_size", None),
+            )
+        ]
+    return []
+
+
+async def handle_place_photo_upload(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """
+    Приём снимков в фототеку: обычное сообщение-фото или файл-изображение.
+
+    Сеть не нужна: сохраняется `file_id` из Update. Не-изображение и слишком
+    большой файл отклоняются плашкой; сбой Telegram при перерисовке экрана
+    не оставляет пользователя без ответа (ошибка уходит в журнал, а
+    библиотека уже сохранена).
+    """
+    user_id = ctx.user(update).id
+    state = load_admin_session(user_id)
+    if state is None or state.get("phase") not in {
+        "place_photo_intro",
+        "place_photo_list",
+    }:
+        return
+    place_id = _place_photo_place_id(state)
+    if place_id is None:
+        return
+    message = ctx.message(update)
+    candidates = _photo_candidates(message)
+    if not candidates:
+        return
+    cleanup: list[int] = []
+    session = SessionLocal()
+    try:
+        try:
+            result = add_place_photos(
+                session,
+                actor_telegram_user_id=user_id,
+                place_id=place_id,
+                candidates=candidates,
+            )
+        except PlacePhotoPermissionError as exc:
+            session.rollback()
+            clear_admin_session(user_id)
+            await _render_denied(update, context)
+            logger.info("Фототека площадки недоступна: %s", exc)
+            return
+        except PlacePhotoNotFoundError:
+            session.rollback()
+            state.clear()
+            state.update(_new_state())
+            await _render_phase(
+                update,
+                context,
+                state,
+                notice=tr("alerts.admin.mesto_suschestvuet_udaleno"),
+            )
+            return
+        except Exception:  # noqa: BLE001 — экран не должен падать
+            session.rollback()
+            logger.exception("Не удалось сохранить снимок в фототеку площадки.")
+            await _render_phase(
+                update,
+                context,
+                state,
+                notice=tr("admin.place_photos.ne_udalos_sohranit"),
+            )
+            return
+    finally:
+        session.close()
+
+    if result.rejected:
+        reason = result.rejected[0]
+        notice = reason.reason
+        # Ввод остаётся в чате: человек видит, какой именно файл не принят.
+        await _render_phase(
+            update,
+            context,
+            state,
+            notice=notice,
+        )
+        return
+    state["phase"] = "place_photo_list"
+    if result.accepted:
+        notice = tr(
+            "admin.place_photos.dobavleno",
+            count=len(result.accepted),
+        )
+        if message is not None and getattr(message, "message_id", None) is not None:
+            cleanup.append(int(message.message_id))
+    else:
+        notice = tr("admin.place_photos.uzhe_v_biblioteke")
+        if message is not None and getattr(message, "message_id", None) is not None:
+            cleanup.append(int(message.message_id))
+    await _render_phase(
+        update,
+        context,
+        state,
+        notice=notice,
+        cleanup_ids=cleanup,
+    )
+
+
 # --- Конфликты кодов: обработчики (Poster 2.1 R3) --------------------------
 
 
@@ -8449,6 +9034,29 @@ def admin_handlers() -> list[BaseHandler]:
             filters.TEXT & ~filters.COMMAND,
             handle_place_brick_description_text,
             allowed_phases=frozenset({"place_brick_description_input"}),
+        ),
+        # Poster 2.6.2 §3.3: фототека площадки. Загрузка — обычным сообщением
+        # (фото или файл-изображение), состояние фазы проверяется обработчиком.
+        # Регистрируются до финального `^adm_`: иначе кнопки получали бы
+        # «устаревшую» заглушку.
+        CallbackQueryHandler(
+            handle_place_photos_open,
+            pattern=r"^adm_pfotos(?:_page)?(?::\d+)?$",
+        ),
+        CallbackQueryHandler(
+            handle_place_photo_upload_intro, pattern=r"^adm_pfoto_upload$"
+        ),
+        CallbackQueryHandler(
+            handle_place_photo_delete_request, pattern=r"^adm_pfoto_del:\d+$"
+        ),
+        CallbackQueryHandler(
+            handle_place_photo_delete_confirm, pattern=r"^adm_pfoto_del_yes:\d+$"
+        ),
+        CallbackQueryHandler(handle_place_photo_back, pattern=r"^adm_pfoto_back$"),
+        AdminAttachmentHandler(
+            (filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND,
+            handle_place_photo_upload,
+            allowed_phases=frozenset({"place_photo_intro", "place_photo_list"}),
         ),
         # Конфликты кодов (Poster 2.1 R3).
         CallbackQueryHandler(handle_conflicts_open, pattern=r"^adm_bconflicts:\d+$"),

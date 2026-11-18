@@ -10233,6 +10233,101 @@ async def handle_preview_callback(
             return await _render_publish_status(update, context, details)
         await _answer(update)
         return await _back_from_photo_step(update, context, details)
+    if action == "aw_photolib" and len(parts) == 4:
+        # Poster 2.6.2 §3.4: раздел «Фото площадки» — библиотека ЭТОЙ
+        # площадки. Черновик по личному шаблону площадки не имеет, поэтому
+        # раздел для него не открывается (пустая библиотека не показывается).
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
+        if guarded is None:
+            return await _stale(update, context)
+        _ui_data, details = guarded
+        if _edit_blocked(details):
+            await _answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
+            return await _render_publish_status(update, context, details)
+        library = wizard_photos.library_photo_ids(details)
+        if not library:
+            await _answer(update, tr("wizard.photo_library.pustaya"), alert=True)
+            return await wizard_photos.render_photo_step(
+                update,
+                context,
+                details,
+                announcement_is_empty=_announcement_is_empty(update, details),
+            )
+        await _answer(update)
+        return await wizard_photos.render_photo_library(
+            update,
+            context,
+            details,
+            page=int(parts[3]),
+            library=library,
+        )
+    if action == "aw_phototoggle" and len(parts) == 4:
+        # Тумблер «выбрать/снять»: выбора без нажатия не происходит,
+        # автодобавления нет. Лимит 10 суммарно и запрет дублей — в домене.
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
+        if guarded is None:
+            return await _stale(update, context)
+        _ui_data, details = guarded
+        if _edit_blocked(details):
+            await _answer(update, tr("alerts.wizard.otpravka_nachata"), alert=True)
+            return await _render_publish_status(update, context, details)
+        library = wizard_photos.library_photo_ids(details)
+        index = int(parts[3])
+        try:
+            updated, notice = wizard_photos.toggle_library_photo(
+                telegram_user_id=_user_id(update),
+                draft_id=details.draft_id,
+                revision=details.revision,
+                index=index,
+                library=library,
+                session_factory=SessionLocal,
+            )
+        except (
+            AnnouncementError,
+            TemplateError,
+            TemplateCompileError,
+            BrickError,
+        ) as exc:
+            await _answer(update, str(exc), alert=True)
+            return await wizard_photos.render_photo_library(
+                update,
+                context,
+                details,
+                page=index // wizard_photos.PHOTO_LIBRARY_PAGE_SIZE,
+                library=library,
+            )
+        await _answer(update, notice)
+        _set_details(_ui(context), updated)
+        next_page = index // wizard_photos.PHOTO_LIBRARY_PAGE_SIZE
+        return await wizard_photos.render_photo_library(
+            update,
+            context,
+            updated,
+            page=next_page,
+            library=wizard_photos.library_photo_ids(updated),
+        )
+    if action == "aw_photoback" and len(parts) == 3:
+        # «Назад» из раздела «Фото площадки»: раздел рисуется ВМЕСТО шага
+        # фото, поэтому его родитель — шаг, а не список вложений. Иначе
+        # кнопка «Фото площадки» пропадала бы и повторный выбор из
+        # библиотеки стал бы недоступен (§3.4).
+        if not all(item.isdigit() for item in parts[1:]):
+            return await _stale(update, context)
+        guarded = _guard_details(update, context, int(parts[1]), int(parts[2]))
+        if guarded is None:
+            return await _stale(update, context)
+        _ui_data, details = guarded
+        await _answer(update)
+        return await wizard_photos.render_photo_step(
+            update,
+            context,
+            details,
+            announcement_is_empty=_announcement_is_empty(update, details),
+        )
     if action == "aw_photo_none" and len(parts) == 3:
         # S4 п.2: «Без фотографий» на шаге фото — это финал: шаг собран в
         # `wizard_photos`, доставка идёт общим путём без кнопки «Готово».

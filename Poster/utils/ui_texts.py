@@ -158,6 +158,23 @@ DEFAULTS: dict[str, str] = {
     "wizard.photos.accepted_many": "✅ Добавлено фото: {count}.",
     "wizard.photos.duplicate": "Это фото уже есть в анонсе. Повторно добавлять его не нужно.",
     "wizard.photos.rejected": "Фото не добавлено: {reason}",
+    # --- 2.6.2 §3.4: «Фото площадки» на шаге фото --------------------------
+    "wizard.photos.library_hint": (
+        "В фототеке площадки снимков: {count}. Выбрано из неё: {picked}."
+    ),
+    "wizard.photo_library.title": "📷 Фото площадки",
+    "wizard.photo_library.hint": (
+        "Выбрано из фототеки: {picked} из {total}. "
+        "Нажмите номер, чтобы выбрать или снять снимок. "
+        "Всего в анонсе может быть не больше {limit} фото."
+    ),
+    "wizard.photo_library.limit": (
+        "В анонсе уже {limit} фото — больше добавить нельзя. "
+        "Снимите лишнее фото, чтобы выбрать другое."
+    ),
+    "wizard.photo_library.pustaya": ("В фототеке этой площадки пока нет снимков."),
+    "wizard.photo_library.snyato": "Снимок {number} снят с анонса.",
+    "wizard.photo_library.vybrano": "Снимок {number} выбран для анонса.",
     # --- конструктор: текстовые поля доставленного анонса (§5, 2.5.3) -------
     # Список полей живёт на самом управлении (клавиатура анонса/панель),
     # поэтому тело — только заголовок и одна подсказка, без перечня полей.
@@ -537,6 +554,36 @@ DEFAULTS: dict[str, str] = {
         "анонса. Название, код и тип кирпичика не меняются."
     ),
     "admin.place_bricks.svoe_opisanie": " · своё описание",
+    # --- 2.6.2 §3.3: фототека площадки -------------------------------------
+    "admin.place_photos.dobavleno": "✅ Добавлено фото: {count}.",
+    "admin.place_photos.foto_nedostupno": (
+        "Этот снимок уже удалён из фототеки площадки."
+    ),
+    "admin.place_photos.ne_udalos_sohranit": (
+        "Не удалось сохранить снимок. Попробуйте ещё раз."
+    ),
+    "admin.place_photos.net_foto": "В фототеке площадки пока нет снимков.",
+    "admin.place_photos.obyasnenie_html": (
+        "📷 <b>Приложить файлы</b>\n\n"
+        "Пришлите фотографии или файлы-изображения (JPEG, PNG, WebP) — "
+        "по одному или альбомом. Размер одного файла — до {limit_mb} МБ.\n\n"
+        "Изображения сохраняются ссылкой Telegram: повторная отправка не "
+        "занимает место. Другие файлы не принимаются.\n\n"
+        "Удалить снимок можно в списке фототеки — с подтверждением."
+    ),
+    "admin.place_photos.spisok_html": (
+        "📷 <b>Фото площадки</b>\n\n📍 {place}\n\n"
+        "Снимков в фототеке: {count}. Выберите номер, чтобы удалить снимок. "
+        "Эти фото доступны автору анонса на шаге «Фотографии»."
+    ),
+    "admin.place_photos.udalit_foto_podtverzhdenie_html": (
+        "🗑 <b>Удалить снимок {number}?</b>\n\n"
+        "Снимок исчезнет из фототеки площадки. Уже добавленные в анонсы "
+        "фотографии останутся на месте."
+    ),
+    "admin.place_photos.uzhe_v_biblioteke": (
+        "Этот снимок уже есть в фототеке площадки."
+    ),
     "admin.build.izmenenie_adresa_tekuschiy_adres": (
         "🏠 Изменить адрес\n\n📍 {canonical_name}\n"
         "Текущий адрес: {current}\n\n"
@@ -1166,6 +1213,10 @@ DEFAULTS: dict[str, str] = {
     "buttons.admin.da_otklonit": "❌ Да, отклонить",
     "buttons.admin.da_pereklyuchit": "✅ Да, переключить",
     "buttons.admin.dobavit_nazvanie": "➕ Добавить название",
+    "buttons.admin.da_udalit_foto": "🗑 Да, удалить снимок",
+    "buttons.admin.foto_nomer": "🗑 Снимок {number}",
+    "buttons.admin.foto_ploschadki": "📷 Фото площадки",
+    "buttons.admin.prilozhit_fayly": "📷 Приложить файлы",
     "buttons.admin.glavnoe_menyu": "🏠 В меню",
     "buttons.admin.globalnye_predlozheniya": "🌍 Глобальные предложения ({system_pending})",
     "buttons.admin.izmenit_gorod": "🏙 Изменить город",
@@ -1281,6 +1332,8 @@ DEFAULTS: dict[str, str] = {
     "buttons.wizard.da_udalit_vse": "🗑 Да, удалить все",
     "buttons.wizard.dopolnitelnye_kirpichiki": "➕ Дополнительные поля",
     "buttons.wizard.fotografii": "📷 Фотографии ({count_photos})",
+    "buttons.wizard.foto_ploschadki": "📷 Фото площадки ({count})",
+    "buttons.wizard.foto_vybor": "{mark} Снимок {number}",
     "buttons.wizard.gotovo": "✅ Готово",
     "buttons.wizard.izmenit_polya": "✏️ Изменить поля",
     "buttons.wizard.izmenit_zapros": "🔎 Изменить запрос",

@@ -136,6 +136,57 @@ class Place(Base):
         return f"<Place(id={self.id}, created_by={self.created_by_user_id})>"
 
 
+class PlacePhoto(Base):
+    """
+    Снимок фототеки площадки (Poster 2.6.2, требование 3.3).
+
+    Хранится только Telegram `file_id`: бинарных копий нет, повторная отправка
+    использует файл Telegram. `file_unique_id` нужен для дедупликации — в одну
+    площадку один и тот же снимок не попадает дважды (уникальный индекс
+    `ux_place_photos_unique`, тот же приём, что у `ux_place_brick_descriptions_unique`).
+
+    Строка библиотеки — НЕ ссылка из анонса: черновик и опубликованный анонс
+    хранят собственный `file_id`-снимок, поэтому удаление фото из фототеки не
+    ломает уже выбранный анонс.
+    """
+
+    __tablename__ = "place_photos"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    place_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("places.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    file_id: Mapped[str] = mapped_column(Text, nullable=False)
+    file_unique_id: Mapped[str] = mapped_column(Text, nullable=False)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    __table_args__ = (
+        CheckConstraint(
+            "length(trim(file_id)) > 0",
+            name="ck_place_photos_not_empty",
+        ),
+        CheckConstraint(
+            "length(trim(file_unique_id)) > 0",
+            name="ck_place_photos_id_not_empty",
+        ),
+        Index("ix_place_photos_place_id", "place_id"),
+        Index(
+            "ux_place_photos_unique",
+            "place_id",
+            "file_unique_id",
+            unique=True,
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<PlacePhoto(id={self.id}, place_id={self.place_id}, "
+            f"file_unique_id={self.file_unique_id!r})>"
+        )
+
+
 class PlaceBrickDescription(Base):
     """
     Локальное описание системного кирпичика для одного места (Poster 2.6.2).
