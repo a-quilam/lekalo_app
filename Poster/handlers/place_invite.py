@@ -153,6 +153,12 @@ async def open_invite_payload(
     state = await resume_place_announcement(update, context, invite.place_id)
     if state is None:
         state = await start_place_announcement_pick(update, context, invite.place_id)
+    # Poster 2.6.2 §4: у входа по ссылке нет экрана-источника. Отметка нужна
+    # «Назад» с первого вопроса: он ведёт в главное меню, а не к выбору
+    # шаблона (шаблон площадки подставлен автоматически).
+    ui = ctx.data(context).get("announcement_ui")
+    if isinstance(ui, dict):
+        ui["link_entry"] = True
     await screen.drop_user_input(update, context)
     return state
 

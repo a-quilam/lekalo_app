@@ -836,7 +836,11 @@ async def _render_phase(
                 )
                 text, keyboard = _manage_back_to_source(session, state)
             else:
-                text, keyboard = _manage_card_content(session, details)
+                # Poster 2.6.2 §4: публичная карточка показывает ссылку
+                # «создать анонс этой площадки». Ссылка одна на площадку и
+                # не персональная; прав она не даёт.
+                link = await _public_invite_link(context, session, details.place_id)
+                text, keyboard = _manage_card_content(session, details, link=link)
         elif phase == "manage_admin_request":
             place_id = state.get("place_id")
             details = (
@@ -1499,8 +1503,33 @@ def _manage_search_content(
     return text, InlineKeyboardMarkup(rows)
 
 
+async def _public_invite_link(
+    context: ContextTypes.DEFAULT_TYPE, session: Session, place_id: int
+) -> str | None:
+    """
+    Deep link конструктора для публичной карточки (Poster 2.6.2 §4).
+
+    Ссылка не персональная и не даёт прав: показывается ДЕЙСТВУЮЩАЯ ссылка
+    площадки (её выдаёт администратор в своей карточке). Просмотр карточки
+    ничего не создаёт и не перевыпускает — иначе обычный просмотр был бы
+    скрытой записью в БД. Любая ошибка чтения — карточка просто остаётся
+    без блока, а не падает.
+    """
+    from place_invite_store import get_active_invite
+    from utils.deep_links import deep_link
+
+    try:
+        invite = get_active_invite(session, place_id)
+        if invite is None:
+            return None
+        return await deep_link(context, invite.token)
+    except Exception as exc:  # noqa: BLE001 — ссылка не должна ронять карточку
+        logger.info("Ссылка для площадки %s не показана: %s", place_id, exc)
+        return None
+
+
 def _manage_card_content(
-    session: Session, details: PlaceDetails
+    session: Session, details: PlaceDetails, *, link: str | None = None
 ) -> tuple[str, InlineKeyboardMarkup]:
     """
     Карточка просмотра справочника для не-управляющих.
@@ -1547,6 +1576,15 @@ def _manage_card_content(
     lines.append(tr("places.manage_card.eto_prosmotr_spravochnika"))
 
     rows: list[list[InlineKeyboardButton]] = []
+    if link:
+        # Poster 2.6.2 §4: блок «Создать анонс для этой площадки:» и кнопка
+        # со ссылкой. Ссылка ведёт в конструктор именно этого места и НЕ
+        # открывает админ-экраны: прав по ней не выдаётся.
+        lines.append("")
+        lines.append(tr("places.public.invite_title"))
+        rows.append(
+            [InlineKeyboardButton(tr("buttons.places.public_invite"), url=link)]
+        )
     rows.append(
         [
             InlineKeyboardButton(

@@ -334,6 +334,11 @@ def _fresh_ui() -> dict[str, Any]:
         "photo_add": False,
         # H1: шаг фото ждёт ввода — сохраняется в resume-снимке.
         "photo_step": False,
+        # Poster 2.6.2 §4: конструктор открыт по публичной ссылке площадки.
+        # У такого входа нет экрана-источника (списка площадок), поэтому
+        # «Назад» с первого вопроса ведёт в главное меню, а не к выбору
+        # шаблона: шаблон был выбран автоматически.
+        "link_entry": False,
         "place": {
             "phase": "home",
             "query": "",
@@ -9814,6 +9819,12 @@ async def handle_question_callback(
             if rendered is not None:
                 return rendered
             if index <= 0:
+                if _ui(context).get("link_entry"):
+                    # Вход по публичной ссылке (§4): шаблон подставлен
+                    # автоматически, выбирать его заново нечего — «Назад»
+                    # возвращает в главное меню, черновик остаётся в «Мои
+                    # анонсы».
+                    return await _exit_to_main_menu(update, context)
                 return await _render_template_screen(update, context, details)
             return await _render_question(update, context, details, fields, index - 1)
         return await _skip_question(update, context, details, field, index)
