@@ -359,3 +359,47 @@ class PublicDeepLinkOpenTests(unittest.TestCase):
         # Ни справочника, ни админ-экранов по пути не показано.
         self.assertEqual(_callbacks(h, "plm_"), [])
         self.assertEqual(_callbacks(h, "adm_"), [])
+
+    @scenario_test
+    async def test_back_after_restart_still_goes_to_main_menu(self, h: Harness) -> None:
+        """
+        Пункт 6 + рестарт: вход по ссылке переживает перезапуск службы.
+
+        Отметка «вход по ссылке» живёт в памяти (`user_data`) и теряется при
+        рестарте. Resume-снимок обязан её сохранить, иначе «◀️ Назад» с
+        первого вопроса после продолжения ввода ведёт к выбору шаблона
+        вместо главного меню.
+        """
+        place_id = _seed_place(h)
+        _seed_user(h, VIEWER_TG)
+        await _open_public_card(h, place_id, tg=VIEWER_TG)
+        token = _token_from_link(_public_link(h))
+
+        await h.text(f"/start {token}", user_id=VIEWER_TG)
+        self.assertRegex(h.screen_text(), cat.question_re(1))
+
+        # Рестарт службы: состояние диалога и user_data потеряны, resume-снимок
+        # и черновик остаются в БД.
+        await h.restart()
+        # Первый текст после рестарта продолжает шаг (resume), а не уходит в
+        # подсказку главного меню.
+        await h.text("Мой концерт", user_id=VIEWER_TG)
+        self.assertIsNotNone(h.dialog_state(user_id=VIEWER_TG, name=CONVERSATION_NAME))
+
+        # «◀️ Назад» до первого вопроса: сначала предыдущий шаг, затем выход.
+        backs = _callbacks(h, "aw_qback:")
+        self.assertTrue(backs, f"нет кнопки «Назад»: {h.screen_buttons()}")
+        await h.callback(backs[0], user_id=VIEWER_TG)
+        backs = _callbacks(h, "aw_qback:")
+        self.assertTrue(backs, f"нет кнопки «Назад»: {h.screen_buttons()}")
+        await h.callback(backs[0], user_id=VIEWER_TG)
+
+        # Исходного списка у пришедшего по ссылке нет — ведёт главное меню.
+        cat.assert_shows(self, h.screen_text(), "menu.main")
+        self.assertIn("pick_place", _callbacks(h))
+        # Черновик с введённым значением не потерян.
+        drafts = _drafts(h, VIEWER_TG)
+        self.assertEqual(len(drafts), 1)
+        self.assertEqual(drafts[0].place_id, place_id)
+        self.assertEqual(_callbacks(h, "plm_"), [])
+        self.assertEqual(_callbacks(h, "adm_"), [])

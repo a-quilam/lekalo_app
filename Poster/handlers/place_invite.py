@@ -142,6 +142,7 @@ async def open_invite_payload(
         return ConversationHandler.END
 
     from handlers.announcement_wizard import (
+        mark_link_entry,
         resume_place_announcement,
         start_place_announcement_pick,
     )
@@ -155,10 +156,9 @@ async def open_invite_payload(
         state = await start_place_announcement_pick(update, context, invite.place_id)
     # Poster 2.6.2 §4: у входа по ссылке нет экрана-источника. Отметка нужна
     # «Назад» с первого вопроса: он ведёт в главное меню, а не к выбору
-    # шаблона (шаблон площадки подставлен автоматически).
-    ui = ctx.data(context).get("announcement_ui")
-    if isinstance(ui, dict):
-        ui["link_entry"] = True
+    # шаблона (шаблон площадки подставлен автоматически). Рендер вопроса уже
+    # снял resume-снимок, поэтому отметка пересобирает его (рестарт службы).
+    mark_link_entry(update, context)
     await screen.drop_user_input(update, context)
     return state
 

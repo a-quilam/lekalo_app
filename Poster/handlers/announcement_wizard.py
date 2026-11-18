@@ -775,6 +775,12 @@ def _resume_snapshot(
             "brick_id": int(brick_id),
             "source": str(source),
         }
+        # Poster 2.6.2 §4: вход по публичной ссылке — свойство СЕАНСА, а не
+        # только памяти: после рестарта «◀️ Назад» с первого вопроса обязан
+        # вести в главное меню, а не к выбору шаблона. Ключ пишем только для
+        # link-входа, поэтому старые снимки остаются совместимыми.
+        if ui.get("link_entry"):
+            snapshot["link_entry"] = True
         instance_id = ui.get("field_input")
         if source == "field":
             # 2.5.4 §1: ввод значения поля доставленного анонса живёт на самом
@@ -881,6 +887,22 @@ def _remember_resume(
     screen.save_state(user_id, user_data, chat_id, payload or None)
 
 
+def mark_link_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    §4: отметить вход по публичной ссылке и пересобрать resume-снимок.
+
+    Снимок «экран ждёт ввода» снимается при рендере первого вопроса — раньше,
+    чем вызывающий (`handlers/place_invite.py`) успевает поставить отметку.
+    Поэтому после отметки снимок обновляется ещё раз: иначе после рестарта
+    службы «◀️ Назад» с первого вопроса повела бы к выбору шаблона вместо
+    главного меню. Без активного черновика — только отметка в `ui`.
+    """
+    ui = _ui(context)
+    ui["link_entry"] = True
+    if ui.get("draft_id"):
+        _remember_resume(_user_id(update), ctx.data(context), ctx.chat(update).id, ui)
+
+
 def _clear_resume(
     user_id: int,
     user_data: dict[str, Any],
@@ -972,6 +994,9 @@ def _resume_target(
         return None
 
     ui = _fresh_ui()
+    # §4: восстановленная сессия помнит, что вход был по публичной ссылке —
+    # иначе «Назад» с первого вопроса после рестарта поведёт к выбору шаблона.
+    ui["link_entry"] = bool(snapshot.get("link_entry"))
     _set_details(ui, details)
     if mode == RESUME_MODE_TEXT:
         brick_id = snapshot.get("brick_id")
